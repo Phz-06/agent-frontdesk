@@ -1,0 +1,7 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "bridge-dev", "runtimeExecutable": "npm", "runtimeArgs": ["run", "dev"], "port": 4110, "env": { "PORT": "4110" } },
+    { "name": "fixture", "runtimeExecutable": "npx", "runtimeArgs": ["tsx", "test/preview-server.ts"], "port": 4102, "env": { "PORT": "4102" } }
+  ]
+}
