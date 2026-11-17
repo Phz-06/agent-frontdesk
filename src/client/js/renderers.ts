@@ -157,19 +157,50 @@ export function markdown(text: unknown): string {
   if (parts.length === 1) return renderMarkdown(parts[0] ?? '');
   return parts.map((part, index) => index % 2 ? `<p class="md-cut">${t('已省略 {n} 字节', { n: Number(part).toLocaleString() })}</p>` : renderMarkdown(part)).join('');
 }
-// Math the way the desktops draw it: $…$ inline and $$…$$ on its own lines (KaTeX). A dollar
-// sign followed by a space, or a closing one followed by a digit, is money, not math ($5 and $10).
-const MATH_INLINE = /^\$(?!\s)((?:\\.|[^\\$\n])+?)(?<!\s)\$(?!\d)/, MATH_BLOCK = /^ {0,3}\$\$([\s\S]+?)\$\$[ \t]*(?:\n|$)/;
+// Math the way the desktops draw it (KaTeX): $…$ and \(…\) inline, $$…$$ and \[…\] on lines of
+// their own (Codex writes the backslash forms). A dollar sign followed by a space, or a closing one
+// followed by a digit, is money, not math ($5 and $10).
+const MATH_INLINE = /^\$(?!\s)((?:\\.|[^\\$\n])+?)(?<!\s)\$(?!\d)/, MATH_BLOCK = /^ {0,3}(?:\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\])[ \t]*(?:\n|$)/;
+const MATH_DELIMITED = /^\\\(([\s\S]+?)\\\)|^\\\[([\s\S]+?)\\\]/;
+const firstOf = (src: string, ...marks: string[]): number | undefined => {
+  const found = marks.map(mark => src.indexOf(mark)).filter(index => index >= 0);
+  return found.length ? Math.min(...found) : undefined;
+};
+// Where a formula on lines of its own may begin: not inside a code block (an odd number of fence
+// lines before it), which the paragraph it follows would otherwise be cut short at.
+function mathBlockStart(src: string): number | undefined {
+  const lines = /(^|\n) {0,3}(\$\$|\\\[|```|~~~)/g;
+  let fence = '';
+  for (let match; (match = lines.exec(src));) {
+    const mark = match[2] || '';
+    if (mark === '```' || mark === '~~~') fence = !fence ? mark : fence === mark ? '' : fence;
+    else if (!fence) return match.index;
+  }
+  return undefined;
+}
 const mathSlot = (tex: string, display: boolean) => `<span class="md-math" data-display="${display ? 1 : 0}" data-tex="${escape(tex.trim())}"></span>`;
 let markedReady = false;
 function setUpMarked() {
   if (markedReady) return;
   markedReady = true;
   const math: TokenizerAndRendererExtension[] = [
-    { name: 'mathBlock', level: 'block', start: src => src.match(/(^|\n) {0,3}\$\$/)?.index, tokenizer(src) { const match = MATH_BLOCK.exec(src); if (match) return { type: 'mathBlock', raw: match[0], tex: match[1] }; return undefined; }, renderer: token => `<p>${mathSlot(String(token['tex']), true)}</p>` },
-    { name: 'mathInline', level: 'inline', start: src => src.indexOf('$') < 0 ? undefined : src.indexOf('$'), tokenizer(src) { const block = /^\$\$((?:\\.|[^\\$])+?)\$\$/.exec(src); if (block) return { type: 'mathInline', raw: block[0], tex: block[1], display: true }; const match = MATH_INLINE.exec(src); if (match) return { type: 'mathInline', raw: match[0], tex: match[1] }; return undefined; }, renderer: token => mathSlot(String(token['tex']), !!token['display']) },
+    { name: 'mathBlock', level: 'block', start: mathBlockStart, tokenizer(src) { const match = MATH_BLOCK.exec(src); if (match) return { type: 'mathBlock', raw: match[0], tex: match[1] ?? match[2] }; return undefined; }, renderer: token => `<p>${mathSlot(String(token['tex']), true)}</p>` },
+    { name: 'mathInline', level: 'inline', start: src => firstOf(src, '$', '\\(', '\\['), tokenizer(src) {
+      const delimited = MATH_DELIMITED.exec(src); if (delimited) return { type: 'mathInline', raw: delimited[0], tex: delimited[1] ?? delimited[2], display: delimited[2] != null };
+      const block = /^\$\$((?:\\.|[^\\$])+?)\$\$/.exec(src); if (block) return { type: 'mathInline', raw: block[0], tex: block[1], display: true };
+      const match = MATH_INLINE.exec(src); if (match) return { type: 'mathInline', raw: match[0], tex: match[1] }; return undefined;
+    }, renderer: token => mathSlot(String(token['tex']), !!token['display']) },
   ];
   marked.use({ extensions: [...math, writingExtension] });
+}
+/** The math a reply holds, as the page reads it: each formula's TeX and whether it is shown on a line of its own. */
+export function mathIn(text: string): Array<{ tex: string; display: boolean }> {
+  setUpMarked();
+  const found: Array<{ tex: string; display: boolean }> = [];
+  marked.walkTokens(marked.lexer(text), token => {
+    if (token.type === 'mathBlock' || token.type === 'mathInline') found.push({ tex: String(token['tex']).trim(), display: token.type === 'mathBlock' || !!token['display'] });
+  });
+  return found;
 }
 // Codex writes a draft meant to be used as is (an email, a message, a document) as a writing block:
 //   :::writing{variant="email" id="12345" title="…" subject="…" recipient="…"}

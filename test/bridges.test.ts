@@ -493,6 +493,13 @@ test('Antigravity reads the full transcript when the short one cut messages down
 });
 
 test('a code block cut short is closed so it cannot swallow the rest of a reply', async () => {
+  // Math in either form the desktops write: Codex's \( \) and \[ \] as well as $ and $$; money stays text.
+  const { mathIn } = await import('../src/client/js/renderers.js');
+  assert.deepEqual(mathIn('There are \\(k\\) pods, so\n\n\\[\nX=\\boxed{\\frac{5k^4}{4}}\n\\]\n\nand $n^2$ for \\[a\\] too.'),
+    [{ tex: 'k', display: false }, { tex: 'X=\\boxed{\\frac{5k^4}{4}}', display: true }, { tex: 'n^2', display: false }, { tex: 'a', display: true }]);
+  assert.deepEqual(mathIn('$$x$$\n\nit costs $5 and $10'), [{ tex: 'x', display: true }]);
+  assert.deepEqual(mathIn('`\\(code\\)` and\n```\n\\[x\\]\n```'), []);
+  assert.deepEqual(mathIn('text\n```\n$$x$$\n```'), []);
   const { closeFences } = await import('../src/client/js/renderers.js');
   assert.equal(closeFences('a\n```js\nx()'), 'a\n```js\nx()\n```');
   assert.equal(closeFences('a\n```js\nx()\n```\nb'), 'a\n```js\nx()\n```\nb');
