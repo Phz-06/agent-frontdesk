@@ -9,6 +9,42 @@ This is the hand-off for whoever continues the Windows port, in particular a Cla
 - **Not done:** steps 2 to 5 (settle, off screen, act, link) have not been run yet.
 - **Next:** run steps 2 to 5 on Windows (README), fix whatever stops it, and read the results against the open questions below. Port nothing before that.
 
+## Findings so far (Windows 11 26200, Claude 5.11492, Codex 26.1111)
+
+From step 1 (read) and read-only `act --do inspect` checks. Nothing was pressed.
+
+**Locators and roles**
+
+- **DOM classes:** `ClassName` carries the page's DOM classes on 363 of 476 web nodes. 7 of the Claude profile's 9 class tokens are found. The two missing ones, `group/menu-popup` and `text-on-primary`, belong to menus and dialogs and exist only while one is open. So the profiles can be shared (open question 1: yes).
+- **haspopup:** `AriaProperties` carries haspopup (19 nodes), so popup buttons map as on the Mac. `modelMenu` is found by its first way.
+- **Meta is written Control.** `newChat` is found by its mark only once `Meta+n` is read as `Control+n`. Claude's radio button in the Claude/Code switch carries `Control+Alt+ArrowLeft`. This becomes a rule in the Windows driver, not a profile edit (open question 2: yes, with Control for Meta).
+- **spaceSwitch:** on Windows the Claude/Code switch (a `radiogroup`) is in `dframe-chrome-bar`. That is a 36px draggable bar across the top of `dframe-root`, a sibling of `dframe-sidebar`. It is not inside the sidebar, `epitaxy-titlebar` or the chat pane. So the profile needs a `windows` override with a `chromeBar` locator (class `dframe-chrome-bar`) for `spaceSwitch` to be found by its mark. The role mapping (`AXRadioGroup` to `radiogroup`) is right.
+- **Radio buttons:** the space radio buttons offer `Invoke` and `SelectionItem`, but not `Toggle` or `ExpandCollapse`. They carry `checked=true|false` in `AriaProperties`. Which pattern replaces `AXPress` for them has not been tried.
+- **automationIds:** base-ui automationIds (`base-ui-_r_30_`) are generated, so they are not stable and cannot be used in locators.
+
+**Reading the page**
+
+- **Speed:** a read of about 480 nodes takes 60 ms, in one round trip (a cache request over the raw view).
+- **Cold shell:** Claude's page showed 24 nodes at first contact, then 462 to 480 nodes on the next read, under a minute later. The full curve (`settle`) has not been measured.
+- **Minimized Codex:** Codex's window was minimized throughout, and showed 9 nodes. This is a minimized measurement only: Codex has no census yet with its window restored.
+- **Background reads:** reads work while Claude is in the background, with another app in the foreground.
+
+**Outside accessibility**
+
+- **Codex's router pipe** is `codex-ipc` (route B's `socketPath()` on Windows).
+- **Deep links:** `codex://` is declared only in the MSIX manifest, not under `Software\Classes`. The read step now lists manifest protocols. The two AUMIDs:
+  - `OpenAI.Codex_2p2nqsd0c76g0!App` (`app/ChatGPT.exe`, protocol `codex`);
+  - `Claude_pzs8sxrjxfjjc!Claude` (`app\Claude.exe`, protocol `claude`, also registered under Classes).
+- **Both apps are MSIX packages.** Their window exes are `ChatGPT.exe` and `claude.exe`, under `C:\Program Files\WindowsApps`. The shell and both apps run at the same integrity level (medium, 12288).
+
+**Still open**
+
+- **Codex census:** a census of Codex with its window restored. Open questions 1, 2 and 5 are unanswered for Codex.
+- **Settle curves (question 6):** for both apps. Claude's must be run from a standalone PowerShell window, since quitting Claude ends a session that runs inside it.
+- **Off-screen states (question 6):** minimized, covered and other virtual desktop, and whether `ScrollIntoView` refreshes the page.
+- **The act scenarios (questions 3, 4, 5):** fill, menu, submenu, focus and refresh, in a test conversation, only with the person's agreement. Also which of `Invoke` / `SelectionItem.Select` switches the space.
+- **Deep link and foreground (question 8):** whether a deep link brings the app to the front.
+
 ## What has to be ported
 
 Reading history and drawing the page are plain files and the shared kit, so they mostly carry over. Paths need work, see the last section. Sending is decided per action across three routes (`channels.md`):
