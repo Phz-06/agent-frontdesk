@@ -17,6 +17,7 @@ import { randomUUID } from 'node:crypto';
 import { UnifiedSession, UnifiedTurn, UnifiedStep, EngineEvents, assignPhases } from './types.js';
 import { questionCard, desktopCard } from './core/presentation.js';
 import { withAttachments } from './core/attachments.js';
+import { promptStarts } from '../shared/turn-match.js';
 import { ClaudeDesktop, type DesktopSession } from './claude-desktop.js';
 import { newControlsOf, type DesktopFlags, type HelperResult } from './core/desktop-automation.js';
 import { globalSocket } from './services/node-websocket.js';
@@ -955,7 +956,7 @@ class ClaudeBridge {
     run.finish = finish;
     // How the desktop's latest reply ended ('tool_use': mid-step, see desktopRunning).
     let position = offset, partial = '', polls = 0, lastStop: unknown = this.parse(id)?.lastStop, edgedBefore = false;
-    const ours = (record: unknown) => { const typed = typedText(get(record, 'message', 'content')).trim(); return !!typed && message.trim().startsWith(typed.slice(0, 200)); };
+    const ours = (record: unknown) => promptStarts(message, typedText(get(record, 'message', 'content')), 200);
     const timer = run.timer = setInterval(() => {
       if (run.finished) { clearInterval(timer); return; }
       polls++;
@@ -979,7 +980,7 @@ class ClaudeBridge {
             }
             if (isHumanPrompt(record)) {
               // A message sent into this turn from here (steer) continues it; any other prompt ends it.
-              const typed = typedText(get(record, 'message', 'content')).trim(), index = (run.steers || []).findIndex(steered => typed && steered.trim().startsWith(typed.slice(0, 200)));
+              const typed = typedText(get(record, 'message', 'content')), index = (run.steers || []).findIndex(steered => promptStarts(steered, typed, 200));
               if (index >= 0) { run.steers?.splice(index, 1); continue; }
               finish('completed'); return;
             }
@@ -1037,7 +1038,7 @@ class ClaudeBridge {
     const drop = () => { const index = run?.steers?.indexOf(message) ?? -1; if (index >= 0) run?.steers?.splice(index, 1); };
     if (!result.ok) { drop(); throw Object.assign(new Error(result.error || '没能由 Claude 桌面版插话'), { status: 409 }); }
     // Confirmed once the desktop records it: queued (enqueue) or already put in (a prompt).
-    const seen = await this.waitForRecord(route.file, offset, record => (get(record, 'type') === 'queue-operation' && get(record, 'operation') === 'enqueue') || (isHumanPrompt(record) && message.trim().startsWith(typedText(get(record, 'message', 'content')).trim().slice(0, 200))), 12000);
+    const seen = await this.waitForRecord(route.file, offset, record => (get(record, 'type') === 'queue-operation' && get(record, 'operation') === 'enqueue') || (isHumanPrompt(record) && promptStarts(message, typedText(get(record, 'message', 'content')), 200)), 12000);
     if (!seen) { drop(); throw Object.assign(new Error('Claude 桌面版没有收到这条插话'), { status: 409 }); }
     return {};
   }

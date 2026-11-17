@@ -14,6 +14,7 @@ import EventEmitter from 'node:events';
 import { CodexLifecycle, resolveCodexTurn } from './services/codex-lifecycle.js';
 import { changesOf, questionCard } from './core/presentation.js';
 import { withAttachments } from './core/attachments.js';
+import { characterReferences, promptStarts } from '../shared/turn-match.js';
 import * as codexDesktop from './codex-desktop.js';
 import type { CodexDesktopIpc, CodexInput, DesktopRequest } from './codex-desktop.js';
 import { DesktopAutomation, type DesktopFlags } from './core/desktop-automation.js';
@@ -75,6 +76,13 @@ function askCard(threadId: string, request: unknown): Approval | null {
 
 // An item from the desktop's record as the events carry it. The record's items are objects with a
 // type and an id; anything else is not an item.
+// Codex's composer keeps a message in its Markdown and the desktop shows it rendered; the console's
+// bubble is plain text, so what rendering takes away goes here too: a line break written as `\` and
+// a newline, a backslash before punctuation, character references. Code keeps its text as written.
+function composerText(markdown: string): string {
+  return markdown.split(/(```[\s\S]*?(?:```|$)|`[^`\n]*`)/).map((part, index) => index % 2 ? part
+    : characterReferences(part.replace(/\\(\n|[!-/:-@[-`{-~])/g, '$1'))).join('');
+}
 const itemOf = (value: unknown): EngineItem | null => isBag(value) ? { ...value, type: text(value['type']), id: text(value['id']) } : null;
 
 /** The run send() and create() hand out: the console's events, plus where its message is. */
@@ -321,7 +329,7 @@ class CodexBridge extends EventEmitter {
       for (const item of items) {
         const type = field(item, 'type'), id = text(field(item, 'id'));
         if (type === 'userMessage') {
-          const said = list(field(item, 'content')).map(c => text(get(c, 'text'))).join('\n');
+          const said = composerText(list(field(item, 'content')).map(c => text(get(c, 'text'))).join('\n'));
           // The first is the turn's prompt; later ones were sent into the running turn (steer).
           if (!sawPrompt) { userPrompt = said; sawPrompt = true; }
           else steps.push(new UnifiedStep({ id, type: 'user_message', title: said, status: 'completed' }));
@@ -574,11 +582,11 @@ class CodexBridge extends EventEmitter {
   }
   // The chat the desktop just made: a thread that was not listed before, opened with this message.
   async newDesktopThread(known: ReadonlySet<unknown>, message: string, timeoutMs = 25000): Promise<unknown> {
-    const until = Date.now() + timeoutMs, start = message.trim().slice(0, 60);
+    const until = Date.now() + timeoutMs;
     while (Date.now() < until) {
       const rows = list(get(await this.send('thread/list', { limit: 50 }).catch(() => null), 'result', 'data'));
       const fresh = rows.filter(thread => !known.has(get(thread, 'id')) && !get(thread, 'parentThreadId'));
-      const hit = fresh.find(thread => text(get(thread, 'preview')).trim().startsWith(start)) || (fresh.length === 1 ? fresh[0] : null);
+      const hit = fresh.find(thread => promptStarts(text(get(thread, 'preview')), message, 60)) || (fresh.length === 1 ? fresh[0] : null);
       if (hit) return hit;
       await new Promise(resolve => setTimeout(resolve, 500));
     }
@@ -624,7 +632,7 @@ class CodexBridge extends EventEmitter {
   // Follows the desktop's record of the thread: the first turn not in `known` that carries this
   // message, item by item, until the record says how it ended.
   follow(threadId: string, { prompt, known, emitter }: { prompt: string; known: ReadonlySet<unknown>; emitter: CodexRun }): void {
-    const seen = new Map<string, string>(), started = Date.now(), wanted = prompt.trim();
+    const seen = new Map<string, string>(), started = Date.now();
     let polling = false, warned = false;
     const asks = this.watchAsks(threadId, emitter);
     const stop = () => { clearInterval(timer); asks.close(); };
@@ -635,8 +643,8 @@ class CodexBridge extends EventEmitter {
         const thread = await this.readThread(threadId, true);
         const turn = list(get(thread, 'turns')).find(candidate => !known.has(get(candidate, 'id')) && list(get(candidate, 'items')).some(item => {
           if (get(item, 'type') !== 'userMessage') return false;
-          const said = list(get(item, 'content')).map(part => text(get(part, 'text'))).join('\n').trim();
-          return said === wanted || said.startsWith(wanted.slice(0, 200));
+          // The desktop writes the message down in its composer's Markdown (shared/turn-match.ts).
+          return promptStarts(list(get(item, 'content')).map(part => text(get(part, 'text'))).join('\n'), prompt, 200);
         }));
         if (!turn) {
           if (!warned && Date.now() - started > 20000) { warned = true; emitter.emit('warning', { message: '消息已排进 Codex 桌面版的队列，正在等桌面版接手', retrying: true }); }
@@ -723,4 +731,4 @@ class CodexBridge extends EventEmitter {
   }
 }
 
-export { CodexBridge, CodexRun, shownSettings, askCard };
+export { CodexBridge, CodexRun, shownSettings, askCard, composerText };

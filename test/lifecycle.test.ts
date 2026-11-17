@@ -148,6 +148,18 @@ test('a console turn and the desktop record of it are one turn, attachments or a
   // An earlier message with the same words is another turn; the engine's own id settles it either way.
   assert.equal(sameTurn({ id: 'n', userPrompt: written, timestamp: '2026-11-16T06:10:00Z' }, run), false);
   assert.equal(sameTurn({ id: 'n', userPrompt: 'else', timestamp: '2026-11-16T06:10:00Z' }, { ...run, nativeTurnId: 'n' }), true);
+  // Codex's composer writes the message down in its Markdown: a line break as `\` and a newline, escapes, references.
+  const { promptStarts } = await import('../src/shared/turn-match.js');
+  const sent = withAttachments('do question 1\n\nthen 2 ~ & more', [{ path: '/tmp/hw2.pdf', originalname: 'hw2.pdf', mimetype: 'application/pdf' }]);
+  const codexWrote = 'do question 1\\\n\\\nthen 2 \\~ &#x26;&#x20;more\\\n\\\n附件 hw2.pdf：/tmp/hw2.pdf\n';
+  assert.equal(promptStarts(codexWrote, sent, 200), true);
+  assert.equal(sameTurn({ id: 'n', userPrompt: codexWrote, timestamp: '2026-11-16T06:11:01Z' }, { ...run, userPrompt: sent }), true);
+  assert.equal(promptStarts(codexWrote, 'do question 2'), false);
+  assert.equal(promptStarts(codexWrote, '  '), false);
+  // The bubble shows it as the desktop renders it: no Markdown escapes, code as written.
+  const { composerText } = await import('../src/server/codex-bridge.js');
+  assert.equal(composerText(codexWrote), 'do question 1\n\nthen 2 ~ & more\n\n附件 hw2.pdf：/tmp/hw2.pdf\n');
+  assert.equal(composerText('run `a\\|b` then\\\n```\nx \\\\\n```\nC:\\\\dir \\q'), 'run `a\\|b` then\n```\nx \\\\\n```\nC:\\dir \\q');
   // The page: the followed turn stays, once, and shows the message as the desktop wrote it.
   const store = createStore();
   store.apply(bridgeEvent('run.started', { turn: fake<RunTurn>({ ...run, status: 'running', messages: [], activities: [], artifacts: [], approvals: [] }) }, { turnId: 'local' }));
