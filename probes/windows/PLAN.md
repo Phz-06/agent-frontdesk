@@ -5,8 +5,9 @@ This is the hand-off for whoever continues the Windows port, in particular a Cla
 ## Status
 
 - **Done:** the analysis below, and the probe (`uia-probe.cs`, `probe.ps1`).
-- **Not done:** the probe has **never been compiled or run**. It was written on a Mac with no C# compiler and no PowerShell, and was only checked by eye for C# 5 syntax and bracket balance. Expect the first run to need small fixes.
-- **Next:** run the probe on Windows (README, steps 1 to 5), fix whatever stops it, and read the results against the open questions below. Port nothing before that.
+- **Step 1 runs:** on Windows 11 (build 26200, PowerShell 5.1, .NET 4.8.1) the helper compiles with `csc.exe` as written, and step 1 (read) runs end to end. The first run needed three fixes in `probe.ps1` and the helper: output paths past 260 characters, a second engine being handed the first engine's window, and a hidden Codex window being picked over its main one.
+- **Not done:** steps 2 to 5 (settle, off screen, act, link) have not been run yet.
+- **Next:** run steps 2 to 5 on Windows (README), fix whatever stops it, and read the results against the open questions below. Port nothing before that.
 
 ## What has to be ported
 

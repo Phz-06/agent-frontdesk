@@ -324,7 +324,17 @@ namespace Frontdesk.Probe
             result["ms"] = (int)clock.ElapsedMilliseconds;
             JavaScriptSerializer json = new JavaScriptSerializer(); json.MaxJsonLength = int.MaxValue; json.RecursionLimit = 200;
             string text = json.Serialize(result);
-            if (outFile != null) File.WriteAllText(outFile, text, new UTF8Encoding(false));
+            if (outFile != null)
+            {
+                // A failed write (a path past MAX_PATH, say) must not throw out of Main: say so on stdout instead.
+                try { File.WriteAllText(outFile, text, new UTF8Encoding(false)); }
+                catch (Exception e)
+                {
+                    Console.WriteLine(json.Serialize(Fail("out-not-written", e.GetType().Name + ": " + e.Message + " (" + outFile.Length + " characters)")));
+                    Console.WriteLine(text);
+                    return 2;
+                }
+            }
             Console.WriteLine(text);
             object ok; return result.TryGetValue("ok", out ok) && ok is bool && !(bool)ok ? 1 : 0;
         }

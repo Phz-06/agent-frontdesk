@@ -5,7 +5,7 @@ Before the desktop driver is ported to Windows, this probe measures, on a real W
 Two files:
 
 - `uia-probe.cs` is the helper. Each command prints one JSON object.
-- `probe.ps1` compiles the helper once per source version into `%LOCALAPPDATA%\agent-frontdesk\probe\`, runs the steps, writes everything to `probes\windows\out\<time>-<step>\` (not committed) and prints a summary (`summary.txt`).
+- `probe.ps1` compiles the helper once per source version into `%LOCALAPPDATA%\agent-frontdesk\probe\`, runs the steps, writes everything to `probes\windows\out\<time>-<step>\` (not committed) and prints a summary (`summary.txt`). Where the checkout is so deep that those paths would pass 260 characters (which neither the helper nor Windows PowerShell can write unless long paths are switched on), it writes to `%LOCALAPPDATA%\agent-frontdesk\probe\out\<time>-<step>\` instead; the last line says which.
 
 ## What it answers
 

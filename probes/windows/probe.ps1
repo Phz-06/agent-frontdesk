@@ -37,7 +37,11 @@ Set-StrictMode -Version 2
 
 $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $profiles = Join-Path $repo 'src\server\native\profiles'
-$outDir = Join-Path $PSScriptRoot ('out\' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + $Step)
+$runName = (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + $Step
+$outDir = Join-Path $PSScriptRoot ('out\' + $runName)
+# The helper (.NET Framework) and Windows PowerShell cannot write past MAX_PATH (260) unless long paths are
+# switched on, so a checkout deep in the tree writes its results under %LOCALAPPDATA% instead.
+if ($outDir.Length + 50 -ge 260) { $outDir = Join-Path $env:LOCALAPPDATA ('agent-frontdesk\probe\out\' + $runName) }
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 $script:counter = 0
 $script:summary = New-Object System.Collections.Generic.List[string]
@@ -85,17 +89,24 @@ function Probe([string]$name, [string[]]$probeArgs) {
     $all = @($probeArgs) + @('--out', $file)
     if ($Names) { $all += '--names' }
     $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    try { & $script:helper @all 2>&1 | Out-Null } finally { $ErrorActionPreference = $old }
-    if (-not (Test-Path -LiteralPath $file)) { throw ('the helper wrote no answer for ' + $name) }
+    try { $printed = & $script:helper @all 2>&1 | Out-String } finally { $ErrorActionPreference = $old }
+    if (-not (Test-Path -LiteralPath $file)) {
+        $first = ($printed -split "`r?`n" | Select-Object -First 1)
+        throw ('the helper wrote no answer for ' + $name + ' (exit ' + $LASTEXITCODE + '): ' + $first)
+    }
     return (Get-Content -LiteralPath $file -Raw -Encoding UTF8 | ConvertFrom-Json)
 }
 
 function Find-Window([string]$engine, $listing) {
-    if ($Hwnd) { return $Hwnd }
+    # $script:, because PowerShell names are case-blind and dynamically scoped: a bare $Hwnd here is the
+    # caller's own $hwnd, still holding the window found for the previous engine.
+    if ($script:Hwnd) { return $script:Hwnd }
     $pattern = $engines[$engine].exe
     $candidates = @($listing.windows | Where-Object { $_.exe -match $pattern -and $_.class -like 'Chrome_WidgetWin*' -and $_.title.length -gt 0 })
     if ($candidates.Count -eq 0) { return $null }
-    return ($candidates | Sort-Object { $_.rect[2] * $_.rect[3] } -Descending | Select-Object -First 1).hwnd
+    # A visible window before a hidden one (Codex keeps a hidden one titled like its main window), then by size;
+    # a minimized window's rect is only its caption, so it is not compared by size.
+    return ($candidates | Sort-Object @{ e = { $_.visible }; d = $true }, @{ e = { -not $_.minimized }; d = $true }, @{ e = { $_.rect[2] * $_.rect[3] }; d = $true } | Select-Object -First 1).hwnd
 }
 function Profile-Of([string]$engine) { return (Join-Path $profiles $engines[$engine].profile) }
 
