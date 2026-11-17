@@ -804,7 +804,7 @@ namespace Frontdesk.Probe
 
         // ---- seq: several act steps in one process, with no fixed pause between them ----
         // seq --hwnd <h> --profile <json> --steps <json file>
-        // Each step: {"label", "args": {act options, e.g. "locator", "do", "text", "role", "prefix", "names": true},
+        // Each step: {"label", "args": {act options, e.g. "locator", "do", "text", "role", "prefix", "names": true} (no "args": only wait),
         //             "until": {"menus": ">=1" | "==0" | ">=2", "found": "<locator>"}, "timeoutMs": 6000, "stopOnFail": true}
         // A step's "until" is polled with back-to-back page reads. Times are milliseconds on the
         // machine-wide performance counter (qpcMs), so other tools' logs line up with them.
@@ -832,7 +832,8 @@ namespace Frontdesk.Probe
                         else opts[kv.Key] = Convert.ToString(kv.Value, CultureInfo.InvariantCulture);
                     }
                 double start = QpcMs();
-                Dictionary<string, object> r = Act();
+                // A step with no "args" acts on nothing: it only waits for its "until".
+                Dictionary<string, object> r = step.ContainsKey("args") ? Act() : new Dictionary<string, object> { { "ok", true } };
                 double acted = QpcMs();
                 Dictionary<string, object> entry = new Dictionary<string, object> {
                     { "label", step.ContainsKey("label") ? step["label"] : "" }, { "startQpcMs", start }, { "actMs", (int)(acted - start) },
@@ -856,7 +857,7 @@ namespace Frontdesk.Probe
                         bool m2 = found == null || FindAll(found, 0).Count == 1;
                         if (m1 && m2) { met = true; break; }
                     }
-                    entry["until"] = until; entry["untilMet"] = met; entry["untilMs"] = (int)(QpcMs() - acted); entry["untilReads"] = reads; entry["menusSeen"] = lastMenus;
+                    entry["until"] = until; entry["untilMet"] = met; entry["untilMs"] = (int)(QpcMs() - acted); entry["untilReads"] = reads; entry["menusSeen"] = lastMenus; entry["nodesSeen"] = nodes.Count;
                     if (!met) ok = false;
                 }
                 entry["endQpcMs"] = QpcMs();

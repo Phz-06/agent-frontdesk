@@ -229,7 +229,21 @@ What this shows:
   - Whether the person sees the corner (40 px at the screen's top-left) and the title bar, which nobody watched in these runs.
   - What changed the taskbar for about 2 s after each restore (perhaps the reply finishing, or the taskbar's own animation).
   - Why the second fill's text vanished in run 2.
-- Whether Claude keeps the off-screen place across a restart: it writes `window-state.json` (in `%LOCALAPPDATA%\Claude-Data\claude_<id>`) on its own schedule. The file was last written hours before these runs, not during them. A quit while parked has not been tried; quitting Claude needs the person, since this session runs inside it.
+- **Claude saves the off-screen place** (measured after a restart of Claude by the person, with a watcher reading `window-state.json` in `%LOCALAPPDATA%\Claude-Data\claude_<id>` every 50 ms):
+  - The file is written about **3.3 s after the window's state settles**, not when Claude quits. The quit left it untouched.
+  - The coordinates are logical (125 %): `x`, `y`, `width`, `height` of the normal bounds, plus `isMaximized`.
+  - Parked for 0.8 s, it was not written. Parked for 20 s, it was written 3.4 s after the move with `x:-2046, y:-1109, isMaximized:false`.
+  - After the window was put back maximized, it was written again with `isMaximized:true` but **the same off-screen x and y**: a maximize does not save the normal bounds.
+  - So after that run, the next start would open maximized, and un-maximizing would put the window off screen.
+  - Repaired by showing it normal at its own `rcNormalPosition` for 5 s, which saved `x:365, y:146` (`SW_SHOWNOACTIVATE`), then maximized again.
+  - So the port must:
+    - keep a park under about 3 s;
+    - or after any longer park, show the window normal at its original bounds for more than 3.3 s before maximizing it, with the window behind the other app;
+    - or accept this risk.
+  - In the earlier runs, the parks of 7 s and 15 s (runs 2 and 4) will have written off-screen bounds too. The normal-window runs and the final maximize happened to overwrite them; the file read `x:365, y:146` before the restart.
+  - The previous version of this note said the file had been written hours before the runs. That was wrong: its time, 07:27, is at UTC−5, so during the runs.
+- **The restart itself:** Claude came back maximized. Its `rcNormalPosition` grew by 7 px each way (448,183,2151,1358 → 448,183,2158,1365), a rounding of the logical bounds it saves.
+- **A page that has not been built does not build while parked.** After the restart, with Claude behind Notepad, its tree was the cold shell of 24 nodes. Parked with the corner up for 20 s (777 reads), it stayed at 24 nodes. Parking keeps a built page live; it does not wake a cold one.
 - **Computer use reshapes Claude's window.** The first computer-use call of a turn turned Claude from maximized into a 669×909 topmost window at the screen's top right, and rewrote its `rcNormalPosition`. When the turn ended Claude was maximized again, but `rcNormalPosition` had moved by 1 to 4 px (448,182,2149,1354 → 448,183,2151,1358). It also cannot act on Claude's window. So computer use cannot be used while Claude's window is measured, nor before a placement is compared.
 
 - **Limit: the console cannot put the app on another desktop itself.** `IVirtualDesktopManager::MoveWindowToDesktop` moves only the calling process's own windows. So moving Claude (or Codex) to another desktop is the person's step; the console can only detect where the window is (`IsWindowOnCurrentVirtualDesktop`, `DWMWA_CLOAKED`) and say what to do.
