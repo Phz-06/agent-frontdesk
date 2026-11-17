@@ -99,7 +99,16 @@ How it was verified:
 - The window reports `cloaked=2` (cloaked by the shell) and not on the current desktop.
 - **Value.SetValue:** the screen stayed on desktop 1, with Notepad drawn on top. The person saw only Claude's taskbar button flash. The foreground did move, to a short-lived Claude window (`0x705d8`, not the main one), until the person clicked Notepad again: until then, typing would not have reached Notepad.
 - **But Send did not appear after the fill, so nothing was sent.** Either the value never reached the page, or Chromium does not update a cloaked window's tree; this run cannot tell which.
-- So another desktop keeps the window from being raised, but still moves the keyboard focus, and the send itself does not go through as measured. Open: whether the text reached the composer (look at the test session after a fill), and whether `Invoke` on Send works there.
+- **Follow-up: the fill had landed.**
+  - A later read found the composer holding exactly that text (37 characters), and the person saw it there.
+  - Send was then in the tree: Chromium had updated the cloaked window's tree late, not at once.
+- **`Invoke` on Send, with Claude still on desktop 2** and the person on desktop 1 with Notepad in front:
+  - **The message was sent.** The record has the turn, completed, with reply "OK".
+  - Notepad stayed drawn on top, and the desktop did not switch.
+  - The foreground again went to the short-lived Claude window `0x705d8`.
+- **So with Claude's window on another virtual desktop, fill + Send works without the window being raised or the screen switching.** What remains is that the keyboard focus leaves the person's app, for a window they cannot see, until they click back. Two other points:
+  - A tree that updates late means a flow must wait for Send to appear, as `ax-driver.swift`'s fill already does.
+  - Nothing yet keeps the focus from moving.
 
 What follows for the port:
 - **Opening any of these menus takes the foreground**, under the conditions Frontdesk runs in, for both apps. So by the rule "never take the foreground", a model, effort or permission change through a menu is not made on Windows: nothing is sent, and the page says why.
