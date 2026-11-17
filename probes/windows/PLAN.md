@@ -42,9 +42,28 @@ How it was verified:
 - Codex's app-server, the bundled `codex.exe`, connects.
 - Nothing was sent.
 
+**Codex sending on Windows, verified in a test chat** (`D:\af\codex-test`, a local Codex chat). The server was started from a shell, and Claude stayed in front throughout. "onTop" means the window drawn over Codex's centre.
+- **Route A** (`thread/queue/add` plus `codex://threads/wake/<id>` through `rundll32 url.dll,FileProtocolHandler`):
+  - The desktop ran the queued message, and the record ended `completed` with `task_complete` evidence. The reply was correct.
+  - The foreground and onTop stayed claude.exe at 2, 5 and 10 s. **The wake link does not bring Codex forward.**
+- **Route B, steer** (`thread-follower-steer-turn` over `\\.\pipe\codex-ipc`, through the console's `mode: "steer"`):
+  - The message joined the running turn, which then followed it (its reply ended with the asked-for line), and the record has the steer.
+  - The foreground did not change.
+- **Route B, settings** (`thread-follower-update-thread-settings`, version 2; `thread-follower-read-model-settings`, version 1):
+  - `{effort: "low"}` with `condition: {ifEffortEquals: "medium"}` answered `{applied: true}`. The owner's read and the console's read of the thread both show `low`.
+  - A condition that does not match answers `{applied: false}` and changes nothing.
+  - The foreground did not change.
+  - Not checked yet: that the next turn runs with the new effort. The bridge does not use this request yet; it still goes through the menus.
+- **Creating the test chat** (step 5's deep link, tried early):
+  - `codex://threads/new?prompt=…` fills the composer of a new chat and sends nothing.
+  - With no `path`, the chat that results is a ChatGPT-space conversation, whose text is not stored locally. That happened twice by mistake, and two "回复 OK" ChatGPT chats were left.
+  - `mode` is not the app mode: the app was already in Codex mode.
+  - With `path=D:\af\codex-test`, Codex first asked "Trust this folder?". The person agreed, and the chat was then local, with that folder as its project.
+  - Send was pressed through UIA (`Invoke` on the profile's `send`), which worked.
+  - Opening the link brought Codex to the front. The shell that opened it was a child of the foreground Claude app, so the inherited-right caveat applies.
+
 Still open from step 1:
-- **Sending through Codex routes A and B**, in a test chat: `thread/queue/add` plus the wake link, `thread-follower-steer-turn`, and `thread-follower-update-thread-settings`. Watch whether the native record lands, and whether the wake link takes the foreground.
-- **Antigravity's `agentapi`** is `~\.gemini\antigravity\bin\agentapi.bat` on Windows. Node starts a `.bat` only through a shell, so Antigravity cannot send yet.
+- **Use `thread-follower-update-thread-settings` in the bridge** for Codex's model and effort, in place of the menus, on both platforms. Then check the next turn runs with it.
 - **The page links only Unix-shaped local paths** (`LOCAL_ROOT` in `src/client/js/renderers.ts`), so `C:\…` in a reply is not a file link yet.
 - **Codex's new-chat options** (`/api/new-options/codex`) answer 409 until the window helper exists.
 
