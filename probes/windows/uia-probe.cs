@@ -192,6 +192,8 @@ namespace Frontdesk.Probe
         [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hwnd);
         [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
         [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+        [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
+        [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
         [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
         [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
         [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr hwnd, int attribute, out int value, int size);
@@ -418,6 +420,19 @@ namespace Frontdesk.Probe
             if (root == IntPtr.Zero) root = fg;
             uint pid; Native.GetWindowThreadProcessId(root, out pid);
             return new Dictionary<string, object> { { "hwnd", Hex(root) }, { "pid", (int)pid }, { "exe", Path.GetFileName(ExePath(pid)) }, { "class", ClassOf(root) } };
+        }
+        // Which top-level window is drawn on top at the centre of the target window: being the foreground
+        // window and being raised over the others are not the same thing, and only the second is seen.
+        static Dictionary<string, object> OnTop(IntPtr target)
+        {
+            Native.RECT r; if (!Native.GetWindowRect(target, out r)) return null;
+            Native.POINT p; p.X = (r.Left + r.Right) / 2; p.Y = (r.Top + r.Bottom) / 2;
+            IntPtr at = Native.WindowFromPoint(p);
+            if (at == IntPtr.Zero) return null;
+            IntPtr root = Native.GetAncestor(at, 2);
+            if (root == IntPtr.Zero) root = at;
+            uint pid; Native.GetWindowThreadProcessId(root, out pid);
+            return new Dictionary<string, object> { { "hwnd", Hex(root) }, { "exe", Path.GetFileName(ExePath(pid)) }, { "isTarget", root == target } };
         }
         static Dictionary<string, object> Windows()
         {
@@ -750,7 +765,7 @@ namespace Frontdesk.Probe
         static Dictionary<string, object> State(IntPtr hwnd, string watch)
         {
             Dictionary<string, object> s = new Dictionary<string, object> {
-                { "foreground", Foreground() }, { "nodes", nodes.Count },
+                { "foreground", Foreground() }, { "onTop", OnTop(hwnd) }, { "nodes", nodes.Count },
                 { "menuItems", nodes.Count(n => n.ControlType == CT_MenuItem) }, { "menus", nodes.Count(n => n.ControlType == CT_Menu || n.AriaRole == "menu") },
                 { "dialogs", nodes.Count(n => n.IsDialog || n.AriaRole == "dialog" || n.AriaRole == "alertdialog") } };
             if (locators.ContainsKey("menuPopup")) s["menuPopup"] = FindAll("menuPopup", 0).Count;

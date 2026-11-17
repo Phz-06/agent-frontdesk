@@ -154,6 +154,8 @@ function Act([string]$engine, [string]$hwnd, [string]$name, [string[]]$actArgs) 
     if ($r.PSObject.Properties['error'] -and $r.error) { $line += ' error=' + $r.error }
     if ($r.PSObject.Properties['after']) {
         $line += ('  menu rows {0}->{1}  foregroundChanged={2} cameForward={3}' -f $r.before.menuItems, $r.after.menuItems, $r.foregroundChanged, $r.targetCameForward)
+        # Being the foreground window is not the same as being drawn on top: say which window covers the target's centre.
+        if ($r.before.PSObject.Properties['onTop'] -and $r.before.onTop -and $r.after.onTop) { $line += ('  on top {0}->{1}' -f $r.before.onTop.exe, $r.after.onTop.exe) }
         if ($r.after.PSObject.Properties['watch']) { $line += ('  {0}: {1}->{2}' -f $r.after.watch.locator, $r.before.watch.found, $r.after.watch.found) }
         if ($r.PSObject.Properties['valueTookExactly']) { $line += '  value took=' + $r.valueTookExactly }
     }
