@@ -1,5 +1,5 @@
 // Claude desktop (Code tab) owns its history: an index of desktop sessions under
-// ~/Library/Application Support/Claude/claude-code-sessions and one transcript per
+// <Claude desktop's data folder>/claude-code-sessions (see services/desktop-places.ts) and one transcript per
 // session under ~/.claude/projects. The console reads both read-only. Every message, a new
 // chat's first one too, is sent by the desktop app itself (src/server/claude-desktop.ts), so the
 // desktop is the one process that runs and writes its sessions. When the desktop cannot take a
@@ -21,6 +21,7 @@ import { promptStarts } from '../shared/turn-match.js';
 import { ClaudeDesktop, type DesktopSession } from './claude-desktop.js';
 import { newControlsOf, type DesktopFlags, type HelperResult } from './core/desktop-automation.js';
 import { globalSocket } from './services/node-websocket.js';
+import { claudeCliIn, claudeDesktopHome, findExecutable } from './services/desktop-places.js';
 import { arr, bag, errorField, get, list, messageOf, num, parseJson, str, text as asText } from '../shared/guards.js';
 import type {
   Approval, CardAction, CardRead, CreateInput, CreateResult, DesktopQueueItem, DesktopSettings, DictationHandlers, DictationReady, DictationStream, EngineEmitter, EngineStatus,
@@ -33,7 +34,8 @@ const NO_CLI = '没有找到 Claude Code 命令行。请先打开一次 Claude �
 // PATH, else the copy the desktop app installed, by its full path. That path holds the person's
 // name and a folder per version, so it is worked out here and never written into a document.
 function loginCommand(bin: string | null, env: NodeJS.ProcessEnv = process.env): string {
-  const onPath = !!bin && (env['PATH'] || '').split(path.delimiter).some(dir => path.join(dir, 'claude') === bin);
+  // `claude` (claude.exe on Windows) in a folder the PATH names.
+  const onPath = !!bin && /^claude(\.exe)?$/i.test(path.basename(bin)) && (env['PATH'] || env['Path'] || '').split(path.delimiter).some(dir => !!dir && path.join(dir, path.basename(bin)) === path.normalize(bin));
   return !bin || onPath ? 'claude auth login' : `"${bin}" auth login`;
 }
 const noSignIn = (bin: string | null): string => `读取不到 Claude Code 的登录信息，请先运行 ${loginCommand(bin)}`;
@@ -91,18 +93,16 @@ type Route = { error: string } | { desktop: true; meta: SessionMeta; file: strin
 // ---------- discovery ----------
 function findClaudeBin(env: NodeJS.ProcessEnv = process.env, home = os.homedir()): string | null {
   if (env['CLAUDE_BIN']) return env['CLAUDE_BIN'];
-  for (const dir of (env['PATH'] || '').split(path.delimiter)) {
-    const file = path.join(dir, 'claude');
-    try { fs.accessSync(file, fs.constants.X_OK); return file; } catch {}
-  }
+  const onPath = findExecutable(['claude'], { env });
+  if (onPath) return onPath;
   // The desktop app installs its own copy, one folder per version.
-  const root = path.join(home, 'Library/Application Support/Claude/claude-code');
+  const root = path.join(env['CLAUDE_DESKTOP_HOME'] || claudeDesktopHome({ env, home }), 'claude-code');
   try {
     const versions = fs.readdirSync(root).filter(name => /^\d+\.\d+\.\d+$/.test(name))
       .sort((a, b) => b.split('.').map(Number).reduce((d, n, i) => d || n - (a.split('.').map(Number)[i] ?? NaN), 0));
     for (const version of versions) {
       for (const build of fs.readdirSync(path.join(root, version))) {
-        const file = path.join(root, version, build, 'claude.app/Contents/MacOS/claude');
+        const file = claudeCliIn(path.join(root, version, build));
         if (fs.existsSync(file)) return file;
       }
     }
@@ -453,7 +453,7 @@ class ClaudeBridge {
   desktop: ClaudeDesktop;
   constructor({ home = os.homedir(), env = process.env, bin, claudeHome, desktopHome, desktop, tmpDir = '/tmp' }: ClaudeBridgeOptions = {}) {
     this.home = home; this.tmpDir = tmpDir;
-    this.appDir = desktopHome || path.join(home, 'Library/Application Support/Claude');
+    this.appDir = desktopHome || claudeDesktopHome({ env, home });
     this.indexDir = path.join(this.appDir, 'claude-code-sessions');
     this.projectsDir = path.join(claudeHome || path.join(home, '.claude'), 'projects');
     this.bin = bin === undefined ? findClaudeBin(env, home) : bin;

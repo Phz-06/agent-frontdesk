@@ -2,7 +2,7 @@
 // every turn run by the Codex desktop app. The app-server's answers are its own JSON-RPC format:
 // they enter as unknown and are read through the guards, so a field that is missing or shaped
 // differently reads as nothing, as optional chaining did.
-import { spawn, execFile, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import readline from 'node:readline';
 import path from 'node:path';
@@ -19,6 +19,7 @@ import * as codexDesktop from './codex-desktop.js';
 import type { CodexDesktopIpc, CodexInput, DesktopRequest } from './codex-desktop.js';
 import { DesktopAutomation, type DesktopFlags } from './core/desktop-automation.js';
 import { CodexProjects } from './services/codex-projects.js';
+import { openLink } from './services/desktop-places.js';
 import { UnifiedSession, UnifiedTurn, UnifiedStep, EngineEvents } from './types.js';
 import { arr, bag, errorField, get, isBag, list, messageOf, num, parseJson, str, strOrNull, text } from '../shared/guards.js';
 import type {
@@ -624,10 +625,10 @@ class CodexBridge extends EventEmitter {
     });
     return emitter;
   }
-  // Asks the desktop to run what the thread has queued. `open -g` keeps it in the background;
-  // a desktop that is not running starts just to do this.
+  // Asks the desktop to run what the thread has queued. On macOS `open -g` keeps it in the
+  // background; a desktop that is not running starts just to do this (see openLink for Windows).
   wake(threadId: string): Promise<void> {
-    return new Promise((resolve, reject) => execFile('/usr/bin/open', ['-g', `codex://threads/wake/${threadId}`], { timeout: 15000 }, err => err ? reject(Object.assign(new Error('没能唤起 Codex 桌面版来处理这条消息'), { cause: err })) : resolve()));
+    return openLink(`codex://threads/wake/${threadId}`).catch((err: unknown) => { throw Object.assign(new Error('没能唤起 Codex 桌面版来处理这条消息'), { cause: err }); });
   }
   // Follows the desktop's record of the thread: the first turn not in `known` that carries this
   // message, item by item, until the record says how it ended.

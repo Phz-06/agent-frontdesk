@@ -4,22 +4,21 @@ import os from 'node:os';
 import { ROOT, HERE } from './paths.js';
 import type { BridgeConfig, Model } from '../shared/contract.js';
 import { bag, list, get, str, parseJson } from '../shared/guards.js';
+import { appAsar, bundledCodexCli, claudeCliName, claudeDesktopHome, findExecutable } from './services/desktop-places.js';
 
-function executable(env: string, candidates: string[]): string | null {
+function executable(env: string, candidates: Array<string | null | undefined>): string | null {
   if (process.env[env]) return process.env[env];
-  const paths = candidates.flatMap(candidate => candidate.includes('/') ? [candidate] :
-    (process.env.PATH || '').split(path.delimiter).map(dir => path.join(dir, candidate)));
-  return paths.find(file => { try { fs.accessSync(file, fs.constants.X_OK); return true; } catch { return false; } }) || null;
+  return findExecutable(candidates);
 }
 function findClaude(root: string): string[] {
   if (!fs.existsSync(root)) return [];
-  const found: string[] = [];
+  const found: string[] = [], name = claudeCliName();
   function walk(dir: string, depth: number) {
     if (depth > 5) return;
     for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
       const file = path.join(dir, item.name);
       if (item.isDirectory()) walk(file, depth + 1);
-      else if (item.name === 'claude') found.push(file);
+      else if (item.name === name) found.push(file);
     }
   }
   walk(root, 0);
@@ -35,6 +34,7 @@ function catalogsOf(value: unknown): Record<string, Model[]> {
 }
 function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
   const home = os.homedir();
+  const claudeDesktop = env.CLAUDE_DESKTOP_HOME || claudeDesktopHome({ env, home });
   const agyHome = env.ANTIGRAVITY_HOME || path.join(home, '.gemini/antigravity');
   let catalogs: Record<string, Model[]> = {};
   if (env.BRIDGE_MODEL_CATALOG) catalogs = catalogsOf(parseJson(fs.readFileSync(env.BRIDGE_MODEL_CATALOG, 'utf8')));
@@ -47,13 +47,13 @@ function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
     uploadsDir: env.BRIDGE_UPLOADS_DIR || path.join(ROOT, 'uploads'),
     pluginDir: env.BRIDGE_PLUGIN_DIR || path.join(HERE, 'plugins'),
     defaultCwd: env.BRIDGE_DEFAULT_CWD || home,
-    codexBin: executable('CODEX_BIN', ['codex', '/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex']),
-    claudeBin: executable('CLAUDE_BIN', ['claude', ...findClaude(path.join(home, 'Library/Application Support/Claude/claude-code'))]),
+    codexBin: executable('CODEX_BIN', ['codex', bundledCodexCli()]),
+    claudeBin: executable('CLAUDE_BIN', ['claude', ...findClaude(path.join(claudeDesktop, 'claude-code'))]),
     codexHome: env.CODEX_HOME || path.join(home, '.codex'),
     claudeHome: env.CLAUDE_HOME || path.join(home, '.claude'),
-    chatgptAppAsar: env.CHATGPT_APP_ASAR || '/Applications/ChatGPT.app/Contents/Resources/app.asar',
-    claudeDesktopHome: env.CLAUDE_DESKTOP_HOME || path.join(home, 'Library/Application Support/Claude'),
-    claudeAppAsar: env.CLAUDE_APP_ASAR || '/Applications/Claude.app/Contents/Resources/app.asar',
+    chatgptAppAsar: env.CHATGPT_APP_ASAR || appAsar('codex'),
+    claudeDesktopHome: claudeDesktop,
+    claudeAppAsar: env.CLAUDE_APP_ASAR || appAsar('claude'),
     // Speech-to-text used by every engine's mic button; falls back to the engine's own.
     dictationEngine: env.BRIDGE_DICTATION_ENGINE || 'claude',
     // What the person chose in the console (which agents are on). Local to this checkout, not committed.

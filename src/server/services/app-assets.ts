@@ -46,13 +46,15 @@ function firstExisting(paths: Array<string | undefined>): PluginPresence {
   const where = paths.find(item => !!item && fs.existsSync(item));
   return where ? { installed: true, where } : { installed: false };
 }
-// An installed app's own icon, read from its .icns file: the file is a list of pictures, each
+// An installed app's own icon, read from its .icns file (or a PNG, as is): the file is a list of pictures, each
 // a 4-letter type and a length, and the modern ones are whole PNG files. The one nearest
 // `size` pixels wide is returned (the page draws it small), or null when the app isn't there.
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
 function readAppIcon(file: string, size = 256): AssetFile | null {
   let data: Buffer;
   try { data = fs.readFileSync(file); } catch { return null; }
+  // On Windows an app's icon is its package's PNG tile logo, served as it is.
+  if (data.length > 24 && data.subarray(0, 4).equals(PNG_MAGIC)) return { type: 'image/png', data };
   if (data.length < 8 || data.toString('latin1', 0, 4) !== 'icns') return null;
   let best: { width: number; png: Buffer } | null = null;
   for (let at = 8; at + 8 <= data.length;) {

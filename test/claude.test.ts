@@ -8,6 +8,8 @@ import type { HelperResult } from '../src/server/core/desktop-automation.js';
 import type { ApprovalRequest, EngineCompleted, EngineEmitter, EngineEventName, UnifiedTurn } from '../src/shared/contract.js';
 // A run the stream handler writes to: its emitter and nothing seen yet.
 const streamRun = (emitter: EngineEmitter, interrupted = false): StreamRun => ({ emitter, interrupted, lastMessage: null, plan: null });
+// The fixtures lay Claude desktop's data out as macOS does; named outright, so they read the same on any platform.
+const macDesktopHome = (home: string): string => path.join(home, 'Library/Application Support/Claude');
 // How a run ended: the completed event, or the error it failed with.
 const completion = (emitter: EngineEmitter) => new Promise<EngineCompleted>((resolve, reject) => { emitter.on('completed', resolve); emitter.on('error', reject); });
 const failure = (emitter: EngineEmitter) => new Promise<Error>(resolve => emitter.on('error', resolve));
@@ -157,7 +159,7 @@ test('Claude: the list reads each transcript once, and a transcript being writte
     fs.writeFileSync(path.join(index, `local_${id}.json`), JSON.stringify({ sessionId: `local_${id}`, cliSessionId: id, cwd: '/work', title: `T-${id}`, lastActivityAt: 1 }));
     fs.writeFileSync(path.join(project, `${id}.jsonl`), [human(`u-${id}`, 'hi'), say(`a-${id}`, 'hello')].map(r => JSON.stringify(r)).join('\n') + '\n');
   }
-  const bridge = new ClaudeBridge({ home, env: {}, bin: null, desktop: fake<ClaudeDesktop>({}) });
+  const bridge = new ClaudeBridge({ home, desktopHome: macDesktopHome(home), env: {}, bin: null, desktop: fake<ClaudeDesktop>({}) });
   const whole: string[] = [], original = fs.readFileSync;
   // The transcripts read from start to end (the index files are read too: only .jsonl counts).
   fs.readFileSync = ((file: fs.PathOrFileDescriptor, ...rest: unknown[]) => { if (String(file).endsWith('.jsonl')) whole.push(path.basename(String(file))); return Reflect.apply(original, fs, [file, ...rest]); }) as typeof fs.readFileSync;
@@ -206,7 +208,7 @@ test('Claude: desktop index drives the list, groups and the reason sending is bl
   for (const id of ['p-1', 'c-1']) fs.writeFileSync(path.join(project, `${id}.jsonl`), [human('u', 'hi'), say('a', 'hello')].map(r => JSON.stringify(r)).join('\n'));
   fs.writeFileSync(path.join(project, 'e-1.jsonl'), '');
   const desktop = fake<ClaudeDesktop>({ check: async () => ({ available: true }) });
-  const bridge = new ClaudeBridge({ home, env: {}, bin: '/bin/claude-test', desktop });
+  const bridge = new ClaudeBridge({ home, desktopHome: macDesktopHome(home), env: {}, bin: '/bin/claude-test', desktop });
   bridge.auth = { at: Date.now(), loggedIn: true, error: '' };
   const sessions = bridge.list();
   assert.deepEqual(sessions.map(s => s.id).sort(), ['c-1', 'p-1'], 'never-used sessions are hidden');
@@ -236,7 +238,7 @@ test('Claude: a worktree chat keeps its project on the checkout it came from, an
   write('tree', 't-1', { cwd: '/work/.claude/worktrees/prep-b116fb', originCwd: '/work', postTurnSummary: { status_category: 'blocked' }, lastFocusedAt: 400 });
   write('seen', 's-1', { postTurnSummary: { status_category: 'review_ready' }, lastFocusedAt: 600 });
   for (const id of ['t-1', 's-1']) fs.writeFileSync(path.join(project, `${id}.jsonl`), [human('u', 'hi'), say('a', 'hello')].map(r => JSON.stringify(r)).join('\n'));
-  const bridge = new ClaudeBridge({ home, env: {}, bin: '/bin/claude-test', desktop: fake<ClaudeDesktop>({ check: async () => ({ available: true }) }) });
+  const bridge = new ClaudeBridge({ home, desktopHome: macDesktopHome(home), env: {}, bin: '/bin/claude-test', desktop: fake<ClaudeDesktop>({ check: async () => ({ available: true }) }) });
   const sessions = bridge.list(), tree = must(sessions.find(s => s.id === 't-1')), seen = must(sessions.find(s => s.id === 's-1'));
   assert.equal(tree.cwd, '/work/.claude/worktrees/prep-b116fb');
   assert.equal(tree.metadata.group?.cwd, '/work', 'a new chat from the project starts in the folder the desktop lists');
@@ -322,7 +324,7 @@ test('Claude: a turn paused mid-step (a steer queued, a permission dialog) does 
       return { ok: true };
     },
   });
-  const bridge = new ClaudeBridge({ home, env: {}, bin: '/bin/claude-test', desktop });
+  const bridge = new ClaudeBridge({ home, desktopHome: macDesktopHome(home), env: {}, bin: '/bin/claude-test', desktop });
   bridge.spawnCli = () => { throw new Error('the CLI must not run'); };
   const emitter = bridge.sendMessage('s-1', { prompt: '查一下', model: 'claude-opus-5-5' });
   const texts: unknown[] = [], cards: unknown[] = [];
@@ -364,7 +366,7 @@ test('Claude: a session the desktop has is sent by the desktop app and followed 
     },
     async stop(meta) { stopped.push(meta.title); return { ok: true }; },
   });
-  const bridge = new ClaudeBridge({ home, env: {}, bin: '/bin/claude-test', desktop });
+  const bridge = new ClaudeBridge({ home, desktopHome: macDesktopHome(home), env: {}, bin: '/bin/claude-test', desktop });
   bridge.spawnCli = () => { throw new Error('the CLI must not run'); };
   const emitter = bridge.sendMessage('d-1', { prompt: '只回复 ok', model: 'claude-opus-5-5' });
   const events: Array<[string, unknown]> = [];
@@ -444,7 +446,7 @@ test('Claude: without the desktop app nothing is sent, and the page is told why;
   fs.writeFileSync(path.join(indexDir, 'local_d1.json'), JSON.stringify({ sessionId: 'local_d1', cliSessionId: 'd-1', cwd: '/work', title: '桌面会话' }));
   fs.writeFileSync(path.join(project, 'd-1.jsonl'), JSON.stringify(human('u0', 'hi')) + '\n');
   const desktop = fake<ClaudeDesktop>({ check: async () => ({ available: false, reason: '没有辅助功能权限' }) });
-  const bridge = new ClaudeBridge({ home, env: {}, bin: '/bin/claude-test', desktop });
+  const bridge = new ClaudeBridge({ home, desktopHome: macDesktopHome(home), env: {}, bin: '/bin/claude-test', desktop });
   bridge.spawnCli = () => { throw new Error('the CLI must not run'); };
   const refused = await failure(bridge.sendMessage('d-1', { prompt: 'hi' }));
   assert.equal(refused.message, '没有辅助功能权限');
@@ -536,7 +538,7 @@ test('Claude: a message sent during a desktop turn goes through the desktop queu
     },
     async sendNow(meta) { nudged.push(meta.title); return { ok: true }; },
   });
-  const bridge = new ClaudeBridge({ home, env: {}, bin: '/bin/claude-test', desktop });
+  const bridge = new ClaudeBridge({ home, desktopHome: macDesktopHome(home), env: {}, bin: '/bin/claude-test', desktop });
   bridge.spawnCli = () => { throw new Error('the CLI must not run'); };
   const emitter = bridge.sendMessage('d-1', { prompt: 'long task' });
   let completed = false; emitter.on('completed', () => { completed = true; });
@@ -633,7 +635,7 @@ test('Claude: model, effort and permissions picked in the console are picked in 
       return result;
     },
   });
-  const bridge = new ClaudeBridge({ home, env: {}, bin: '/bin/claude-test', desktop });
+  const bridge = new ClaudeBridge({ home, desktopHome: macDesktopHome(home), env: {}, bin: '/bin/claude-test', desktop });
   bridge.spawnCli = () => { throw new Error('the CLI must not run'); };
   bridge.modelCache = { at: Date.now(), models: [{ id: 'opus', name: 'Opus 5.5' }, { id: 'fable', name: 'Fable 5.2' }, { id: 'claude-sonnet-4-6', name: 'Sonnet 4.6' }] };
   const run = (input: object) => new Promise<Array<[string, string]>>(resolve => {
@@ -848,7 +850,7 @@ test('while the console is in use the desktop is kept warm, and left alone once 
   const pass = async (ms: number) => { t.mock.timers.tick(ms); for (let turn = 0; turn < 5; turn++) await new Promise(resolve => setImmediate(resolve)); };
   const calls: string[][] = [];
   let release: () => void = () => {};
-  const desktop = new ClaudeDesktop({ warmEveryMs: 10, runner: async (_file, args) => {
+  const desktop = new ClaudeDesktop({ platform: 'darwin', warmEveryMs: 10, runner: async (_file, args) => {
     calls.push(args);
     if (args[0] === 'slow') await new Promise<void>(resolve => { release = resolve; });
     return { ok: true };
@@ -947,7 +949,7 @@ test('about once a minute the warm read checks the profile against the desktop, 
   t.mock.method(console, 'warn', (line: unknown) => { warned.push(String(line)); });
   const calls: string[][] = [];
   let answer: Record<string, unknown> = { checked: true, drift: ['send'], differ: [] };
-  const desktop = new ClaudeDesktop({ warmEveryMs: 10, runner: async (_file, args) => { calls.push(args); return args[1] === 'check' ? { ok: true, ...answer } : { ok: true }; } });
+  const desktop = new ClaudeDesktop({ platform: 'darwin', warmEveryMs: 10, runner: async (_file, args) => { calls.push(args); return args[1] === 'check' ? { ok: true, ...answer } : { ok: true }; } });
   desktop.binary = '/bin/helper';
   // Every sixth read checks; the first read (the page may be half built) never does.
   for (let beat = 0; beat < 12; beat++) { desktop.keepWarm(1000); await pass(beat ? 10 : 0); }
@@ -1262,7 +1264,7 @@ test('Claude\'s question to the person is a card in the chat, answered by pickin
   const pressed: unknown[] = [];
   let answered = () => {};
   const desktop = fake<ClaudeDesktop>({ check: async () => ({ available: true }), answer: async (meta, question, option) => { pressed.push([meta.title, question, option]); answered(); return { ok: true }; } });
-  const bridge = new ClaudeBridge({ home, env: {}, bin: '/bin/claude-test', desktop });
+  const bridge = new ClaudeBridge({ home, desktopHome: macDesktopHome(home), env: {}, bin: '/bin/claude-test', desktop });
   const file = path.join(home, 'session.jsonl'); fs.writeFileSync(file, '');
   bridge.transcriptPath = () => file;
   const emitter = new EngineEvents(), run = fake<DesktopRun>({ ...streamRun(emitter), meta: fake<DesktopRun['meta']>({ title: 'Chat' }) });
@@ -1304,7 +1306,7 @@ test('Claude: a file from the chat is opened in the desktop, in its own session'
   const calls: string[][] = [];
   const desktop = new ClaudeDesktop({ runner: async (file, args) => { calls.push(args); return args[0] === 'check' ? { ok: true, trusted: true, running: true } : { ok: true, pressed: false }; } });
   desktop.binary = '/bin/helper'; desktop.platform = 'darwin';
-  const bridge = new ClaudeBridge({ home, env: {}, bin: null, desktop });
+  const bridge = new ClaudeBridge({ home, desktopHome: macDesktopHome(home), env: {}, bin: null, desktop });
   assert.deepEqual(await bridge.openFile('cli-1', { path: 'lib/a.js:4', absolute: '/work/lib/a.js', relative: 'lib/a.js', label: 'a.js' }), { ok: true, pressed: false });
   assert.deepEqual(at(calls, -1), ['open-file', '修文件链接', 'local_abc', 'lib/a.js:4', '/work/lib/a.js', 'a.js']);
   await assert.rejects(bridge.openFile('missing', { path: 'a.js', absolute: '', relative: '', label: '' }), error => errorField(error, 'status') === 404);
@@ -1321,7 +1323,7 @@ test('Claude: the header button takes the person to the session in the desktop, 
   const calls: string[][] = [];
   const desktop = new ClaudeDesktop({ runner: async (file, args) => { calls.push(args); return args[0] === 'check' ? { ok: true, trusted: true, running: true } : { ok: true }; } });
   desktop.binary = '/bin/helper'; desktop.platform = 'darwin';
-  const bridge = new ClaudeBridge({ home, env: {}, bin: null, desktop });
+  const bridge = new ClaudeBridge({ home, desktopHome: macDesktopHome(home), env: {}, bin: null, desktop });
   await bridge.show('cli-1');
   assert.deepEqual(at(calls, -1), ['show-session', '桌面会话', 'local_abc']);
   await assert.rejects(bridge.show('missing'), error => errorField(error, 'status') === 404);
@@ -1345,7 +1347,7 @@ test('Claude: a wrap-up card\'s buttons are read from the desktop, and a read th
     reads++; return { ok: true, actions: drawn };
   } });
   desktop.binary = '/bin/helper'; desktop.platform = 'darwin';
-  const bridge = new ClaudeBridge({ home, env: {}, bin: null, desktop });
+  const bridge = new ClaudeBridge({ home, desktopHome: macDesktopHome(home), env: {}, bin: null, desktop });
   const card = { ask: 'Commit these changes?', recap: 'Done.', replies: ['先不提交'] };
   // The desktop draws its buttons a moment after the turn ends: none yet is not the answer for good.
   assert.deepEqual(await bridge.readCard('cli-1', card), { actions: [] });
@@ -1410,7 +1412,7 @@ test("a session's own temporary folder (scratchpad, task output) is a folder its
   const project = path.join(home, '.claude', 'projects', '-Users-me-app');
   fs.mkdirSync(project, { recursive: true });
   fs.writeFileSync(path.join(project, 's1.jsonl'), '');
-  const bridge = new ClaudeBridge({ home, env: {}, bin: null, desktop: fake<ClaudeDesktop>({}), tmpDir: '/tmp' });
+  const bridge = new ClaudeBridge({ home, desktopHome: macDesktopHome(home), env: {}, bin: null, desktop: fake<ClaudeDesktop>({}), tmpDir: '/tmp' });
   try {
     if (typeof process.getuid === 'function') assert.deepEqual(bridge.fileRoots('s1'), [`/tmp/claude-${process.getuid()}/-Users-me-app/s1`]);
     assert.deepEqual(bridge.fileRoots('missing'), []);
@@ -1422,19 +1424,22 @@ test('a signed-out Claude Code is told the sign-in command that works on this ma
   const { loginCommand } = await import('../src/server/claude-bridge.js');
   const { english } = await import('../src/client/js/i18n.js');
   // On the PATH: the plain command. Only the desktop app's own copy: its full path, quoted (it has a space in it).
-  assert.equal(loginCommand('/opt/bin/claude', { PATH: '/usr/bin:/opt/bin' }), 'claude auth login');
+  assert.equal(loginCommand('/opt/bin/claude', { PATH: ['/usr/bin', '/opt/bin'].join(path.delimiter) }), 'claude auth login');
   assert.equal(loginCommand(null, { PATH: '/usr/bin' }), 'claude auth login');
   const own = '/Users/me/Library/Application Support/Claude/claude-code/2.1.0/abc/claude.app/Contents/MacOS/claude';
-  assert.equal(loginCommand(own, { PATH: '/usr/bin:/opt/bin' }), `"${own}" auth login`);
+  assert.equal(loginCommand(own, { PATH: ['/usr/bin', '/opt/bin'].join(path.delimiter) }), `"${own}" auth login`);
   // The bridge says it where it reports being signed out, and the page says the same in English.
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'frontdesk-signin-')), bin = path.join(dir, 'claude');
   try {
-    fs.writeFileSync(bin, '#!/bin/sh\necho \'{"loggedIn":false}\'\n', { mode: 0o755 });
-    const bridge = new ClaudeBridge({ home: '/nonexistent', env: {}, bin });
-    const status = bridge.authStatus();
-    assert.equal(status.loggedIn, false);
-    assert.equal(status.error, `Claude Code 命令行还没有登录。请在终端运行一次 "${bin}" auth login，然后刷新工作台。`);
-    assert.equal(english(status.error), `Claude Code is signed out. Run "${bin}" auth login in a terminal, then refresh.`);
+    // The stand-in CLI is a shell script, which Windows does not run (the path cases above cover it there).
+    if (process.platform !== 'win32') {
+      fs.writeFileSync(bin, '#!/bin/sh\necho \'{"loggedIn":false}\'\n', { mode: 0o755 });
+      const bridge = new ClaudeBridge({ home: '/nonexistent', env: {}, bin });
+      const status = bridge.authStatus();
+      assert.equal(status.loggedIn, false);
+      assert.equal(status.error, `Claude Code 命令行还没有登录。请在终端运行一次 "${bin}" auth login，然后刷新工作台。`);
+      assert.equal(english(status.error), `Claude Code is signed out. Run "${bin}" auth login in a terminal, then refresh.`);
+    }
     assert.equal(english('读取不到 Claude Code 的登录信息，请先运行 claude auth login'), 'Claude Code is signed out. Run claude auth login first.');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

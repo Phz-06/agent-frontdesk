@@ -6,8 +6,47 @@ This is the hand-off for whoever continues the Windows port, in particular a Cla
 
 - **Done:** the analysis below, and the probe (`uia-probe.cs`, `probe.ps1`).
 - **Step 1 runs:** on Windows 11 (build 26200, PowerShell 5.1, .NET 4.8.1) the helper compiles with `csc.exe` as written, and step 1 (read) runs end to end. The first run needed three fixes in `probe.ps1` and the helper: output paths past 260 characters, a second engine being handed the first engine's window, and a hidden Codex window being picked over its main one.
-- **Not done:** steps 2 to 5 (settle, off screen, act, link) have not been run yet.
-- **Next:** run steps 2 to 5 on Windows (README), fix whatever stops it, and read the results against the open questions below. Port nothing before that.
+- **Probe phase closed.** Development happens on the `windows` branch, verified step by step against the real apps, in test chats only. The probe's open questions that were not run (settle, off screen) are answered as the port reaches them.
+
+## Development on Windows
+
+Order:
+1. The platform layer;
+2. the C# driver's skeleton, read-only;
+3. Claude sending;
+4. the settings menus;
+5. a Codex new chat by deep link;
+6. CI.
+
+**Step 1, the platform layer.** Status: done for reading; sending not yet tried.
+
+What changed:
+- **`src/server/services/desktop-places.ts`** holds every per-platform place, and the bridges and plugins ask it:
+  - Claude desktop's data folder. On Windows that is `%LOCALAPPDATA%\Claude-Data\claude_<id>`, the one holding `claude-code-sessions`. `%APPDATA%\Claude` now holds only a `.user-data-left` pointer.
+  - Its own CLI, `claude-code\<version>\<build>\claude.exe`.
+  - The apps' `app.asar`, the bundled `codex.exe`, and the app icons (the MSIX tile logo, a PNG). The MSIX install folder is asked of `Get-AppxPackage` once per package.
+  - Codex's router pipe, `\\.\pipe\codex-ipc`.
+  - The helper cache, `%LOCALAPPDATA%\agent-frontdesk`.
+  - Opening a link: `rundll32 url.dll,FileProtocolHandler`, with no cmd.exe, so `&` and quotes need no escaping.
+  - Antigravity's exe for opening a file.
+  - PATH lookups with PATHEXT.
+- **`npm run dev:server`** is a Node script, because cmd.exe has no `PORT=$((…))`.
+- **`.gitattributes`** keeps every checkout LF. Git for Windows' `core.autocrlf=true` had turned the sources CRLF, which broke the tests that read the Swift sources.
+- **File preview.** `relative` is now written with `/` on every platform. On Windows `.git\config` had slipped past the `INTERNAL` check, and nested secrets past `SECRET`.
+- **`DesktopAutomation#check()`** on win32 says the window helper is still being ported. Nothing is pressed there yet.
+
+How it was verified:
+- `npm test` passes, 151 of 151, on Node 26.
+- `npm run check` passes.
+- The server reads history: Claude 13 sessions, Codex 152, Antigravity 4. A session of each opens with its turns, and the page draws.
+- Codex's app-server, the bundled `codex.exe`, connects.
+- Nothing was sent.
+
+Still open from step 1:
+- **Sending through Codex routes A and B**, in a test chat: `thread/queue/add` plus the wake link, `thread-follower-steer-turn`, and `thread-follower-update-thread-settings`. Watch whether the native record lands, and whether the wake link takes the foreground.
+- **Antigravity's `agentapi`** is `~\.gemini\antigravity\bin\agentapi.bat` on Windows. Node starts a `.bat` only through a shell, so Antigravity cannot send yet.
+- **The page links only Unix-shaped local paths** (`LOCAL_ROOT` in `src/client/js/renderers.ts`), so `C:\…` in a reply is not a file link yet.
+- **Codex's new-chat options** (`/api/new-options/codex`) answer 409 until the window helper exists.
 
 ## Findings so far (Windows 11 26200, Claude 5.11492, Codex 26.1111)
 

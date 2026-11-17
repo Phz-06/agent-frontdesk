@@ -24,12 +24,12 @@
 // status (staleControls). A command that held something back says so in its answer (`ambiguous`,
 // `unconfirmed`): that is logged as well.
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 
 import { NATIVE } from '../paths.js';
+import { helperCacheDir } from '../services/desktop-places.js';
 import { arr, bag, bool, get, list, parseJson, str, text } from '../../shared/guards.js';
 import type { NewControl, NewOption, NewPick } from '../../shared/contract.js';
 
@@ -101,7 +101,7 @@ class DesktopAutomation {
   beats = 0; suspects = new Map<string, number>(); stale: string[] = [];
   // engine: the flow and profile name ('claude' → claude-desktop.swift + profiles/claude.json);
   // label: how the person knows the app ("Claude 桌面版").
-  constructor({ engine, label, cacheDir = path.join(os.homedir(), 'Library/Caches/agent-frontdesk'), platform = process.platform, runner = run, parkMs = 45_000, warmEveryMs = 10_000 }: AutomationOptions) {
+  constructor({ engine, label, cacheDir = helperCacheDir(), platform = process.platform, runner = run, parkMs = 45_000, warmEveryMs = 10_000 }: AutomationOptions) {
     this.engine = engine; this.label = label || engine; this.parkMs = parkMs; this.warmEveryMs = warmEveryMs;
     this.flow = path.join(NATIVE, `${engine}-desktop.swift`);
     this.profile = path.join(NATIVE, 'profiles', `${engine}.json`);
@@ -141,6 +141,8 @@ class DesktopAutomation {
   }
   // { available, reason, code }. Cached briefly: permission and the app being open change rarely.
   async check(): Promise<AutomationState> {
+    // Windows: the UI Automation helper (C#) is being ported; until it lands, nothing is pressed there.
+    if (this.platform === 'win32') return { available: false, reason: 'Windows 上的桌面代发还在移植中，暂时不能通过窗口操作发送' };
     if (this.platform !== 'darwin') return { available: false, reason: '桌面代发只支持 macOS' };
     if (this.state && Date.now() - this.checkedAt < 10000) return this.state;
     const file = await this.helper();

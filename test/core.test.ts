@@ -291,7 +291,9 @@ test('a queued message can still be steered in, or taken back to edit', async ()
 
 test('Codex steers a desktop-run turn through the desktop IPC as a thread follower', async t => {
   const net = __node_net, codexDesktop = __codex_desktop;
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ipc-')), sock = path.join(dir, 's.sock');
+  // A stand-in router where the desktop's would be: a socket file, or on Windows a named pipe.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ipc-'));
+  const sock = process.platform === 'win32' ? `\\\\.\\pipe\\frontdesk-test-${path.basename(dir)}` : path.join(dir, 's.sock');
   const seen: unknown[] = [];
   const server = net.createServer(socket => {
     let buffer: Buffer = Buffer.alloc(0); socket.on('error', () => {});

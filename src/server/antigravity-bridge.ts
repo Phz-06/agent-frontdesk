@@ -19,6 +19,7 @@ import { withAttachments } from './core/attachments.js';
 import { loadConfig } from './config.js';
 import { tailJsonl } from './services/jsonl-tail.js';
 import { readSqlite } from './services/sqlite-reader.js';
+import { antigravityApp } from './services/desktop-places.js';
 import { bag, errorField, get, isBag, list, messageOf, parseJson, str, text as asText, type Bag } from '../shared/guards.js';
 import type {
   Approval, BridgeConfig, CreateInput, CreateResult, DictationHandlers, DictationReady, DictationStream, EngineEmitter, EngineStatus,
@@ -86,7 +87,9 @@ function workspaceOf(uris: unknown): string {
   try {
     const first = list(parseJson(String(uris || '[]')))[0];
     if (typeof first !== 'string') return '';
-    return first.startsWith('file://') ? fileURLToPath(first) : first || '';
+    if (!first.startsWith('file://')) return first || '';
+    // A URL without a drive letter is not a path Windows can make; it is then read as written.
+    try { return fileURLToPath(first); } catch { return decodeURIComponent(new URL(first).pathname); }
   } catch { return ''; }
 }
 
@@ -618,8 +621,11 @@ class AntigravityBridge extends EventEmitter {
   // handed in the window whose workspace holds it, which is what its own file links do; there is
   // no accessibility flow for its chat, so the chat itself is not brought up.
   fileRoots(conversationId: string): string[] { return /^[\w-]{1,80}$/.test(String(conversationId)) ? [path.join(this.brainDir, conversationId)] : []; }
-  openFile(_conversationId: string, { absolute }: Pick<FileTarget, 'absolute'>, run: OpenRunner = execFile): Promise<{ ok: true; pressed: true }> {
-    return new Promise((resolve, reject) => run('/usr/bin/open', ['-b', 'com.google.antigravity', absolute], { timeout: 15000 }, err =>
+  openFile(_conversationId: string, { absolute }: Pick<FileTarget, 'absolute'>, run: OpenRunner = execFile, platform: NodeJS.Platform = process.platform): Promise<{ ok: true; pressed: true }> {
+    // macOS hands the file to the app by its bundle id; Windows starts the app's exe with the file,
+    // which (like `code <file>`) opens it in the window whose workspace holds it.
+    const [file, args]: [string, string[]] = platform === 'win32' ? [antigravityApp({ platform }), [absolute]] : ['/usr/bin/open', ['-b', 'com.google.antigravity', absolute]];
+    return new Promise((resolve, reject) => run(file, args, { timeout: 15000 }, err =>
       err ? reject(Object.assign(new Error('没能在 Antigravity 里打开这个文件'), { status: 409, cause: err })) : resolve({ ok: true, pressed: true })));
   }
   async interrupt(conversationId: string): Promise<{ pending: boolean }> {
