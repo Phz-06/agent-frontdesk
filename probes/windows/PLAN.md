@@ -109,6 +109,7 @@ How it was verified:
 - **So with Claude's window on another virtual desktop, fill + Send works without the window being raised or the screen switching.** What remains is that the keyboard focus leaves the person's app, for a window they cannot see, until they click back. Two other points:
   - A tree that updates late means a flow must wait for Send to appear, as `ax-driver.swift`'s fill already does.
   - Nothing yet keeps the focus from moving.
+- **Limit: the console cannot put the app on another desktop itself.** `IVirtualDesktopManager::MoveWindowToDesktop` moves only the calling process's own windows. So moving Claude (or Codex) to another desktop is the person's step; the console can only detect where the window is (`IsWindowOnCurrentVirtualDesktop`, `DWMWA_CLOAKED`) and say what to do.
 
 What follows for the port:
 - **Opening any of these menus takes the foreground**, under the conditions Frontdesk runs in, for both apps. So by the rule "never take the foreground", a model, effort or permission change through a menu is not made on Windows: nothing is sent, and the page says why.
