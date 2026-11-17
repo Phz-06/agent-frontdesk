@@ -95,6 +95,12 @@ How it was verified:
 - The message was sent; the record has the turn, completed.
 - This fits the hypothesis above (focus moving inside the page activates the window). It means **Claude cannot send through its window on Windows without taking the foreground**, whatever launches the helper.
 
+**The same with Claude's window on another virtual desktop** (moved there with Task View; the person on desktop 1 with Notepad in front; node launcher; the guard read the test session's title, so the page could still be read):
+- The window reports `cloaked=2` (cloaked by the shell) and not on the current desktop.
+- **Value.SetValue:** the screen stayed on desktop 1, with Notepad drawn on top. The person saw only Claude's taskbar button flash. The foreground did move, to a short-lived Claude window (`0x705d8`, not the main one), until the person clicked Notepad again: until then, typing would not have reached Notepad.
+- **But Send did not appear after the fill, so nothing was sent.** Either the value never reached the page, or Chromium does not update a cloaked window's tree; this run cannot tell which.
+- So another desktop keeps the window from being raised, but still moves the keyboard focus, and the send itself does not go through as measured. Open: whether the text reached the composer (look at the test session after a fill), and whether `Invoke` on Send works there.
+
 What follows for the port:
 - **Opening any of these menus takes the foreground**, under the conditions Frontdesk runs in, for both apps. So by the rule "never take the foreground", a model, effort or permission change through a menu is not made on Windows: nothing is sent, and the page says why.
 - **Sending through Claude's window takes the foreground too**: filling its composer does (see "Fill and Send from behind"). Under the rule, Claude cannot send on Windows through its window. Whether the rule bends for this, or another channel is found, is the person's decision.
