@@ -84,9 +84,20 @@ How it was verified:
 | Power (effort) | (n/a) | A menuitem with `Invoke`; inside it, groups only, with no `RangeValue`, no `Value`, no tick elements. It says "Use Left and Right arrow keys to adjust power". **No UIA route** |
 | Fill the composer with `Value.SetValue`, then `Invoke` Send | **Works**: Send appears after the fill, and the record has the turn, completed | (step 1: `Invoke` on Send worked on the new-chat page) |
 
+**Hypothesis, not verified:** the grab may not be Claude's or Codex's own doing but Chromium's on Windows.
+- When focus moves inside the page, Chromium activates its window, and it has a way to force the foreground (`ui/base/win/foreground_helper`). Then no launcher could prevent it.
+- Any action that moves DOM focus could then take the foreground: opening a menu, `Collapse`, perhaps also `Value.SetValue` on the composer.
+- That makes the next measurement decisive for whether Claude can send on Windows: fill and Send from behind, as two separately recorded steps.
+
+**Fill and Send from behind, recorded as separate steps** (node launcher, Notepad in front, the Claude test session; guard as above):
+- **`Value.SetValue` on the composer takes the foreground.** Foreground and onTop went from Notepad to claude.exe, and Send then appeared.
+- After that, at a pause of its own, the person put Notepad back in front, and **Claude took the foreground back** before Send was pressed. The person saw it happen. So `Invoke` on Send could not be measured from behind.
+- The message was sent; the record has the turn, completed.
+- This fits the hypothesis above (focus moving inside the page activates the window). It means **Claude cannot send through its window on Windows without taking the foreground**, whatever launches the helper.
+
 What follows for the port:
 - **Opening any of these menus takes the foreground**, under the conditions Frontdesk runs in, for both apps. So by the rule "never take the foreground", a model, effort or permission change through a menu is not made on Windows: nothing is sent, and the page says why.
-- **Sending with the chat's current settings needs no menu.** Claude fills the composer and presses Send, both from behind and without taking the foreground. That is the route Claude's sending on Windows can take, though the foreground has not yet been watched for that step on its own: the window was already in front by then.
+- **Sending through Claude's window takes the foreground too**: filling its composer does (see "Fill and Send from behind"). Under the rule, Claude cannot send on Windows through its window. Whether the rule bends for this, or another channel is found, is the person's decision.
 - **Codex's settings** keep route B (branch `codex-ipc-settings`) as the only way that does not take the foreground. Whether to bring it back is for the person to decide.
 - After the tests, the Codex test chat's effort was put back to medium over route B, and its record says medium. Codex's model button still read "GPT-6 Sol Light", but the window was then showing a chat titled like the test chat, so which chat that button belonged to is not known.
 
