@@ -37,12 +37,49 @@ From step 1 (read) and read-only `act --do inspect` checks. Nothing was pressed.
   - `Claude_pzs8sxrjxfjjc!Claude` (`app\Claude.exe`, protocol `claude`, also registered under Classes).
 - **Both apps are MSIX packages.** Their window exes are `ChatGPT.exe` and `claude.exe`, under `C:\Program Files\WindowsApps`. The shell and both apps run at the same integrity level, High (12288 = 0x3000; Medium is 8192). They do because UAC is off on this machine (`EnableLUA=0`, and this is the built-in Administrator account), so every process runs elevated. That is not the usual setup, where both the person's apps and the server run at Medium.
 
+**Codex, with the window maximized (census and act, in the person's conversation, with their agreement)**
+
+- **Census:** 367 nodes. `ClassName` is set on 319 of 364 web nodes, and 5 of the profile's 9 class tokens are found. The missing ones are `ClearableSelectorTrigger-*`, `ClearableSelectorTriggerClearButton-*`, `ViewToggle-*` and `comboboxList-*`, which live in menus and pickers. haspopup is set on 15 nodes. These locators are found by their first way: `chatComposer`, `composer`, `composerBody`, `composerMain`, `modeSwitch`, `modelMenu`, `newChat`, `permissionsMenu`, `projectChooser`, `sidebar` and `sidebarHeader`. `send` and `stop` were absent: no run was going on, and the composer was not empty enough to show Send. `acceleratorKey` was empty on every node outside menus.
+- **fill:** refused, because the composer already held 12 characters of the person's own text. The probe writes only into an empty box. So `Value.SetValue` is still unmeasured.
+- **menu (`modelMenu`):** the button offers `ExpandCollapse` and `LegacyIAccessible`, but not `Invoke`.
+  - `ExpandCollapse.Expand` opens the menu (menu rows 4 to 7), **and brings Codex to the front**. This happened both times it was tried, with Claude in the foreground beforehand.
+  - Neither `ExpandCollapse.Collapse` nor `LegacyIAccessible.DoDefaultAction` closes it again: the button stays `expanded=true`. Only the person's Esc closed it.
+  - `DoDefaultAction` sent to the closed button, with Codex in the background, fails with `0x80040200` (UIA_E_ELEMENTNOTENABLED). Nothing opens and the foreground does not change.
+- **submenu:**
+  - The Power row (`effortRow`, class `SliderKeyboardControl-*`) is a `menuitem` with `Invoke` only. It has **no `RangeValue`**, and its acceleratorKey is `ArrowLeft ArrowRight`: it is moved by keys alone.
+  - The Select model row has no `ExpandCollapse`, but **`Invoke` opens its model list** in place (the menu stays open, and the rows go from 7 to 4) without changing the foreground.
+- **focus:** `SetFocus` on the composer brings Codex to the front, as agent-desktop found.
+
+**Against the Mac driver and agent-desktop**
+
+The Mac driver posts keys to the app's pid with `CGEvent.postToPid`, which works in the background. The keys are:
+- Escape: closes every Codex menu, and Claude's when off screen;
+- Right: opens Claude's Effort and More models submenus;
+- Left and Right: move Codex's Power slider;
+- Down: opens a Claude menu off screen;
+- Space: ticks a question-card option;
+- Up ×4: pages back through a long chat.
+
+Windows has no counterpart to `postToPid`. `PostMessage` keys do nothing in Chromium, and `SendInput` goes to the foreground. agent-desktop (vercel-labs, Rust on the `uiautomation` crate) keeps every key and SetFocus behind `--headed`. It has no headless way to close a Chromium web menu either: its probes close one with a `SendInput` Esc while the app is in front (`probes/windows/FINDINGS.md`, A26-12). It never measured Invoke or Expand taking the foreground on Chromium. So on Windows, route by route:
+
+| Mac | Windows, as measured here | What the port does |
+| --- | --- | --- |
+| Press a button (`AXPress`) | `Invoke` where offered; untested for the foreground on plain buttons | Use `Invoke` first, then `LegacyIAccessible` (agent-desktop's chain) |
+| Open a menu (press) | Codex: `Expand` works but takes the foreground; `DoDefaultAction` in the background fails | **Breaks the "never take the foreground" rule**: refuse, unless a way is found that keeps the foreground |
+| Close a menu (Escape) | No UIA action closes Codex's menu | Close menus only by pressing a row, which closes them on the Mac too. Otherwise refuse |
+| Claude submenu (focus + Right) | Codex's Select model row opens with `Invoke`; Claude's rows are untested | Use `Invoke` on the row |
+| Codex Power slider (Left/Right) | No `RangeValue`, only `Invoke` | Not possible: refuse the effort change and say why |
+| Focus (`AXFocused`) | `SetFocus` takes the foreground | Do not use |
+| Fill (`AXValue`) | Untested (the box held text) | `Value.SetValue`, to be measured in an empty composer |
+
 **Still open**
 
-- **Codex census:** a census of Codex with its window restored. Open questions 1, 2 and 5 are unanswered for Codex.
+- **Fill:** `Value.SetValue` on Codex's composer, in an empty test conversation.
+- **Opening a Codex menu without the foreground:** whether `Expand` takes the foreground only because the window was behind another one, and whether giving the foreground back afterwards is acceptable.
+- **Closing a menu by pressing its current row:** whether pressing the already chosen row closes a menu with no change.
 - **Settle curves (question 6):** for both apps. Claude's must be run from a standalone PowerShell window, since quitting Claude ends a session that runs inside it.
 - **Off-screen states (question 6):** minimized, covered and other virtual desktop, and whether `ScrollIntoView` refreshes the page.
-- **The act scenarios (questions 3, 4, 5):** fill, menu, submenu, focus and refresh, in a test conversation, only with the person's agreement. Also which of `Invoke` / `SelectionItem.Select` switches the space.
+- **The act scenarios (questions 3, 4, 5):** Claude's scenarios (fill, menu, submenu, focus) and refresh, for both apps. Codex's menu, submenu and focus results are above. Run them in a test conversation, and only with the person's agreement. Also which of `Invoke` / `SelectionItem.Select` switches the space.
 - **Deep link and foreground (question 8):** whether a deep link brings the app to the front.
 - **Integrity levels (UIPI):** when the Frontdesk server runs at a lower level than an app (Medium against High, say), UIPI lets it read the app's UIA tree but not act on it. The port's `check()` should therefore compare the helper's integrity level with the target window's, and say so when they differ, in place of the Mac's `AXIsProcessTrusted` message. Act results from this machine show the same-level case only (High to High). The Medium-against-High case has not been measured.
 
