@@ -71,6 +71,20 @@ function helperResultOf(value: unknown, crashed: () => HelperResult): HelperResu
   return { ...result, ok: get(result, 'ok') === true, ...(typeof code === 'string' ? { code } : {}), ...(error != null ? { error: String(error) } : {}) };
 }
 const DRIVER = path.join(NATIVE, 'ax-driver.swift');
+const WINDOWS_DRIVER = path.join(NATIVE, 'uia-driver.cs');
+// The csc.exe of .NET Framework 4.x (64-bit first), or null.
+function cscPath(windir = process.env['WINDIR'] || 'C:\\Windows'): string | null {
+  for (const dir of ['Framework64', 'Framework']) {
+    const file = path.join(windir, 'Microsoft.NET', dir, 'v4.0.30319', 'csc.exe');
+    if (fs.existsSync(file)) return file;
+  }
+  return null;
+}
+// Windows has no accessibility permission; what can stop the helper is a desktop app that runs at a
+// higher integrity level (as administrator) than the console: UIPI lets it read the window, not act on it.
+const WINDOWS_NOT_TRUSTED = '桌面版以更高的权限运行（例如以管理员身份），工作台能读到它的界面但不能操作：请用相同的权限运行两者';
+// Until the Windows flows land (probes/windows/PLAN.md, development step 3), nothing is pressed there.
+const WINDOWS_NOT_PORTED = 'Windows 上的桌面代发还在移植中，暂时不能通过窗口操作发送';
 // One wording for every engine (the page translates it by this exact text).
 const NOT_TRUSTED = '桌面代发需要辅助功能权限：在「系统设置 → 隐私与安全性 → 辅助功能」里允许运行工作台服务的程序（例如终端），然后重启工作台';
 
@@ -111,6 +125,7 @@ class DesktopAutomation {
   }
   async helper(): Promise<string | null> {
     if (this.binary) return this.binary;
+    if (this.platform === 'win32') return this.windowsHelper();
     if (!this.building) this.building = (async () => {
       const source = Buffer.concat([fs.readFileSync(DRIVER), Buffer.from('\n'), fs.readFileSync(this.flow)]);
       const base = path.join(this.cacheDir, `${this.engine}-desktop-${createHash('sha1').update(source).digest('hex').slice(0, 12)}`);
@@ -120,6 +135,30 @@ class DesktopAutomation {
         fs.writeFileSync(`${base}.swift`, source);
         await new Promise<void>((resolve, reject) => execFile('/usr/bin/xcrun', ['swiftc', '-O', `${base}.swift`, '-o', `${base}.tmp`], { timeout: 300000 }, err => err ? reject(err) : resolve()));
         fs.renameSync(`${base}.tmp`, base); fs.rmSync(`${base}.swift`, { force: true });
+        this.prune(base);
+      }
+      return (this.binary = base);
+    })().catch(() => null).finally(() => { this.building = null; });
+    return this.building;
+  }
+  // Windows: the C# driver (uia-driver.cs) and the engine's flow (<engine>-desktop.cs, once there is
+  // one), compiled with the csc.exe of .NET Framework 4.x that Windows ships: the twin of swiftc,
+  // nothing downloaded or signed. Cached the same way, as <engine>-desktop-<hash>.exe.
+  windowsHelper(): Promise<string | null> {
+    if (!this.building) this.building = (async () => {
+      const flow = path.join(NATIVE, `${this.engine}-desktop.cs`);
+      const sources = [WINDOWS_DRIVER, ...(fs.existsSync(flow) ? [flow] : [])];
+      const hash = createHash('sha1');
+      for (const file of sources) hash.update(fs.readFileSync(file)).update('\n');
+      const base = path.join(this.cacheDir, `${this.engine}-desktop-${hash.digest('hex').slice(0, 12)}.exe`);
+      if (!fs.existsSync(base)) {
+        fs.mkdirSync(this.cacheDir, { recursive: true });
+        const csc = cscPath();
+        if (!csc) throw new Error('no csc.exe');
+        const tmp = `${base}.tmp.exe`;
+        await new Promise<void>((resolve, reject) => execFile(csc, ['/nologo', '/target:exe', '/langversion:5', '/platform:anycpu', '/optimize+', '/codepage:65001', `/out:${tmp}`,
+          '/reference:System.dll', '/reference:System.Core.dll', '/reference:System.Web.Extensions.dll', ...sources], { timeout: 300000, windowsHide: true }, err => err ? reject(err) : resolve()));
+        fs.renameSync(tmp, base);
         this.prune(base);
       }
       return (this.binary = base);
@@ -141,16 +180,20 @@ class DesktopAutomation {
   }
   // { available, reason, code }. Cached briefly: permission and the app being open change rarely.
   async check(): Promise<AutomationState> {
-    // Windows: the UI Automation helper (C#) is being ported; until it lands, nothing is pressed there.
-    if (this.platform === 'win32') return { available: false, reason: 'Windows 上的桌面代发还在移植中，暂时不能通过窗口操作发送' };
-    if (this.platform !== 'darwin') return { available: false, reason: '桌面代发只支持 macOS' };
+    if (this.platform !== 'darwin' && this.platform !== 'win32') return { available: false, reason: '桌面代发只支持 macOS' };
     if (this.state && Date.now() - this.checkedAt < 10000) return this.state;
     const file = await this.helper();
+    const windows = this.platform === 'win32';
     let state: AutomationState;
-    if (!file) state = { available: false, reason: '桌面代发程序编译失败（需要 Xcode 命令行工具：xcode-select --install）' };
+    if (!file) state = { available: false, reason: windows ? '桌面代发程序编译失败（需要 Windows 自带的 .NET Framework 4 的 csc.exe）' : '桌面代发程序编译失败（需要 Xcode 命令行工具：xcode-select --install）' };
     else {
       const result = await this.runner(file, ['check'], { timeout: 5000, env: { AX_PROFILE: this.profile } });
-      state = !result.ok ? { available: false, ...(result.error !== undefined ? { reason: result.error } : {}) } : !result.trusted ? { available: false, reason: NOT_TRUSTED, code: 'not_trusted' } : !result.running ? { available: false, reason: `${this.label}没有在运行`, code: 'not_running' } : { available: true };
+      state = !result.ok ? { available: false, ...(result.error !== undefined ? { reason: result.error } : {}) }
+        : !result.trusted ? { available: false, reason: windows ? WINDOWS_NOT_TRUSTED : NOT_TRUSTED, code: 'not_trusted' }
+        : !result.running ? { available: false, reason: `${this.label}没有在运行`, code: 'not_running' }
+        // Windows: the helper reads the page (warm, probe), but no flow presses anything there yet.
+        : windows ? { available: false, reason: WINDOWS_NOT_PORTED, code: 'not_ported' }
+        : { available: true };
     }
     this.state = state; this.checkedAt = Date.now();
     return state;
@@ -206,7 +249,7 @@ class DesktopAutomation {
   // keeps the desktop's accessibility tree built. Skipped while a command is running or waiting
   // (it reads the page itself), and it stops by itself once the console has gone quiet.
   keepWarm(ms = 3 * 60_000): void {
-    if (this.platform !== 'darwin' || this.warmEveryMs <= 0) return;
+    if ((this.platform !== 'darwin' && this.platform !== 'win32') || this.warmEveryMs <= 0) return;
     const idle = Date.now() > this.warmUntil;
     this.warmUntil = Date.now() + ms;
     const beat = () => {

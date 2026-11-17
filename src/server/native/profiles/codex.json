@@ -1,6 +1,9 @@
 {
   "name": "Codex 桌面版",
   "bundleId": "com.openai.codex",
+  "windows": {
+    "exe": "ChatGPT.exe"
+  },
   "offscreenMenu": "press",
   "accessibilitySwitches": [
     "AXManualAccessibility",

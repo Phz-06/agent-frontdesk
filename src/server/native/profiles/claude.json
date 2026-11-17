@@ -1,6 +1,25 @@
 {
   "name": "Claude 桌面版",
   "bundleId": "com.anthropic.claudefordesktop",
+  "windows": {
+    "exe": "claude.exe",
+    "locators": {
+      "chromeBar": {
+        "role": "AXGroup",
+        "class": "dframe-chrome-bar"
+      },
+      "spaceSwitch": [
+        {
+          "role": "AXRadioGroup",
+          "inside": "chromeBar"
+        },
+        {
+          "role": "AXRadioGroup",
+          "name": "Mode"
+        }
+      ]
+    }
+  },
   "offscreenMenu": "key",
   "titleSuffix": " - Claude Code",
   "sessionLink": "claude://claude.ai/epitaxy/{localId}",
