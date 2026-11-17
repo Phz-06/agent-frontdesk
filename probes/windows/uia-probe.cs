@@ -20,6 +20,9 @@
 //       [--text <t>] [--only-if-current <t>] [--watch <key>] [--wait <ms>]
 //                                      one pattern call on the one control found, and what it changed: the
 //                                      foreground window, the menu rows on the page, the control's state
+//   seq --hwnd <h> --profile <json> --steps <json file>
+//                                      several act steps in one process, each optionally followed by waiting
+//                                      (back-to-back page reads) until the menus or a locator show a change
 //
 // Nothing the person wrote leaves the probe: names and values are compared in here and only counts are
 // printed. (--names adds the names of buttons, menu rows and headings, for a person reading their own
@@ -314,6 +317,7 @@ namespace Frontdesk.Probe
                     case "settle": return Emit(Settle());
                     case "census": return Emit(Census());
                     case "act": return Emit(Act());
+                    case "seq": return Emit(Seq());
                     default: return Emit(Fail("usage", "commands: windows, fg, settle, census, act (see the top of uia-probe.cs)"));
                 }
             }
@@ -796,6 +800,71 @@ namespace Frontdesk.Probe
             if (r == null) return null;
             try { return new Dictionary<string, object> { { "value", r.GetCurrentValue() }, { "min", r.GetCurrentMinimum() }, { "max", r.GetCurrentMaximum() }, { "small", r.GetCurrentSmallChange() }, { "readOnly", r.GetCurrentIsReadOnly() != 0 } }; }
             catch (Exception ex) { return new Dictionary<string, object> { { "error", ex.Message } }; }
+        }
+
+        // ---- seq: several act steps in one process, with no fixed pause between them ----
+        // seq --hwnd <h> --profile <json> --steps <json file>
+        // Each step: {"label", "args": {act options, e.g. "locator", "do", "text", "role", "prefix", "names": true},
+        //             "until": {"menus": ">=1" | "==0" | ">=2", "found": "<locator>"}, "timeoutMs": 6000, "stopOnFail": true}
+        // A step's "until" is polled with back-to-back page reads. Times are milliseconds on the
+        // machine-wide performance counter (qpcMs), so other tools' logs line up with them.
+        static double QpcMs() { return Stopwatch.GetTimestamp() * 1000.0 / Stopwatch.Frequency; }
+        static Dictionary<string, object> Seq()
+        {
+            IntPtr hwnd = TargetWindow();
+            object[] steps = new JavaScriptSerializer().DeserializeObject(File.ReadAllText(Opt("steps", ""), Encoding.UTF8)) as object[];
+            if (steps == null) return Fail("usage", "--steps <json file> holding an array of steps");
+            Dictionary<string, string> baseOpts = new Dictionary<string, string>(opts);
+            HashSet<string> baseFlags = new HashSet<string>(flags);
+            List<object> log = new List<object>();
+            bool allOk = true;
+            foreach (object o in steps)
+            {
+                Dictionary<string, object> step = o as Dictionary<string, object>;
+                if (step == null) continue;
+                opts = new Dictionary<string, string>(baseOpts); flags = new HashSet<string>(baseFlags);
+                opts["wait"] = "0";
+                object a;
+                if (step.TryGetValue("args", out a) && a is Dictionary<string, object>)
+                    foreach (KeyValuePair<string, object> kv in (Dictionary<string, object>)a)
+                    {
+                        if (kv.Value is bool) { if ((bool)kv.Value) flags.Add(kv.Key); }
+                        else opts[kv.Key] = Convert.ToString(kv.Value, CultureInfo.InvariantCulture);
+                    }
+                double start = QpcMs();
+                Dictionary<string, object> r = Act();
+                double acted = QpcMs();
+                Dictionary<string, object> entry = new Dictionary<string, object> {
+                    { "label", step.ContainsKey("label") ? step["label"] : "" }, { "startQpcMs", start }, { "actMs", (int)(acted - start) },
+                    { "ok", r.ContainsKey("ok") ? r["ok"] : false } };
+                foreach (string k in new[] { "used", "refused", "error", "code", "valueTookExactly", "foundAfter", "foregroundChanged", "targetCameForward" }) if (r.ContainsKey(k) && r[k] != null) entry[k] = r[k];
+                object t; if (r.TryGetValue("targetAfter", out t) || r.TryGetValue("target", out t)) { Dictionary<string, object> f = t as Dictionary<string, object>; if (f != null) { if (f.ContainsKey("name")) entry["name"] = f["name"]; entry["valueLength"] = f["valueLength"]; } }
+                object st; if (r.TryGetValue("after", out st) || r.TryGetValue("state", out st)) { Dictionary<string, object> s = st as Dictionary<string, object>; if (s != null) { entry["menus"] = s["menus"]; entry["foreground"] = s["foreground"]; } }
+                bool ok = r.ContainsKey("ok") && r["ok"] is bool && (bool)r["ok"];
+                object u;
+                if (ok && step.TryGetValue("until", out u) && u is Dictionary<string, object>)
+                {
+                    Dictionary<string, object> until = (Dictionary<string, object>)u;
+                    int timeout = step.ContainsKey("timeoutMs") ? Convert.ToInt32(step["timeoutMs"], CultureInfo.InvariantCulture) : 6000;
+                    string menus = until.ContainsKey("menus") ? Convert.ToString(until["menus"]) : null, found = until.ContainsKey("found") ? Convert.ToString(until["found"]) : null;
+                    bool met = false; int reads = 0, lastMenus = -1;
+                    while (QpcMs() - acted < timeout)
+                    {
+                        ReadPage(hwnd); reads++;
+                        lastMenus = nodes.Count(n => n.ControlType == CT_Menu || n.AriaRole == "menu");
+                        bool m1 = menus == null || (menus.StartsWith(">=") ? lastMenus >= int.Parse(menus.Substring(2)) : lastMenus == int.Parse(menus.Substring(2)));
+                        bool m2 = found == null || FindAll(found, 0).Count == 1;
+                        if (m1 && m2) { met = true; break; }
+                    }
+                    entry["until"] = until; entry["untilMet"] = met; entry["untilMs"] = (int)(QpcMs() - acted); entry["untilReads"] = reads; entry["menusSeen"] = lastMenus;
+                    if (!met) ok = false;
+                }
+                entry["endQpcMs"] = QpcMs();
+                log.Add(entry);
+                if (!ok) { allOk = false; object sf; if (!step.TryGetValue("stopOnFail", out sf) || !(sf is bool) || (bool)sf) break; }
+            }
+            opts = baseOpts; flags = baseFlags;
+            return new Dictionary<string, object> { { "ok", allOk }, { "steps", log } };
         }
 
         static Dictionary<string, object> Act()

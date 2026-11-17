@@ -141,11 +141,103 @@ What this shows:
 - With the window behind another app, though, Chromium did not update the tree (or the page) to show Send. On another desktop it showed late; here it did not show at all.
 - While Claude's menu is open, `SetForegroundWindow` to another window fails, attached or not. So a menu change keeps Claude in front for as long as the menus are open, and longer.
 
+**Parked in a corner: Claude moved off the screen but for a few pixels, then put back.** The idea: Chromium stops updating a fully covered window, so leave a few pixels of it uncovered. Do that where the person does not look, by moving the window almost entirely off the virtual screen, act, then put everything back.
+
+Setup:
+- Claude on the person's desktop, showing the test session ("测试", opened with its `claude://claude.ai/epitaxy/<id>` link), behind a maximized Notepad that held the foreground (Chrome sat between them in the z-order from the second run on).
+- Tool: `tools/corner.cs`, run by `tools/corner-run.mts`. One process does every step: it records, parks, runs the steps through `uia-probe seq` (one process, no fixed pause between steps), puts everything back and checks. The watchdog runs in it every 10 ms throughout.
+- Screen: `tools/screencap.cs` records every frame the compositor presents (DXGI Desktop Duplication) and compares each with a baseline taken before anything moves. A GDI capture takes about 22 ms per frame at 2560×1440, too slow for a 16 ms grid.
+- Times below are milliseconds from the run's first step.
+- The frames stay under `probes\windows\out\` (not committed).
+
+What the tool does, after the fixes the first runs called for:
+1. **Record:**
+   - `GetWindowPlacement`;
+   - the window right above Claude (`GW_HWNDPREV`, which is Claude's own hidden IME window);
+   - the nearest visible window above it that is not topmost and not Claude's (the one to put it back under);
+   - the visible z-order;
+   - the foreground.
+2. **Maximized:** `SetWindowPlacement` with `SW_SHOWNOACTIVATE` (not `SW_SHOWNORMAL`, which activates) and `rcNormalPosition` = the maximized rect. The size does not change, so the page does not lay out again. Before this, DWM's transitions are switched off for the window with `DwmSetWindowAttribute(DWMWA_TRANSITIONS_FORCEDISABLED)`. That works across processes (S_OK).
+3. **Move** with `SWP_NOZORDER | SWP_NOACTIVATE`, so the window's visible frame (`DWMWA_EXTENDED_FRAME_BOUNDS`) ends at (4, 4). The window rect is 12×12 on screen, because of its invisible resize borders. Then **wait 400 ms**, and only then raise it.
+4. **Raise:**
+   - `HWND_TOP` + `SWP_NOACTIVATE`. From a background process this usually leaves the window under the foreground window: it raised the corner in 1 of the 9 runs.
+   - So the fallback is `HWND_TOPMOST` then `HWND_NOTOPMOST`, which leaves it at the top of the ordinary windows.
+   - Then `WindowFromPoint(2, 2)` must be claude.exe, and it was in every run.
+5. **While parked:**
+   - Giving the foreground back raises Notepad over the corner again, so the watchdog re-raises Claude whenever the corner point is not Claude. That takes 12 to 123 ms per time.
+   - When the plain give-back fails, the watchdog tries:
+     - attaching to both threads, with `BringWindowToTop`;
+     - then `SwitchToThisWindow`.
+6. **Restore**, in this order:
+   - foreground (if Claude still holds it, `SW_SHOWMAXIMIZED` would put it on top);
+   - z-order under the recorded visible window;
+   - `SetWindowPlacement(original)` (normal shown with `SW_SHOWNOACTIVATE`);
+   - z-order again;
+   - foreground;
+   - `FlashWindowEx(FLASHW_STOP)`.
+
+| Run | Case, watchdog | Result | Foreground | On screen | Put back |
+| --- | --- | --- | --- | --- | --- |
+| 1 | Maximized, fill + Send; first version (`HWND_TOP` only, placement restored before the foreground) | **Sent**, completed ("OK"). The corner had not been raised (`WindowFromPoint` gave Notepad). Send showed 70 ms after the fill, while the fill's grab had raised the corner | Fill: 47 ms. Send: **never undone**, 130 of 131 `SetForegroundWindow` calls returned false | Claude's corner (about 17×12 px with its shadow) from 314 to 564 ms. **Restoring `SW_SHOWMAXIMIZED` while Claude held the foreground put it over Notepad**, seen at the screen's centre from 0.94 s to the end of the run and after | Placement and rect exact; z-order not (Claude above Notepad) |
+| 2 | Maximized, fill + Send; raised right after the move, corner not kept | **Not sent.** Send never showed in 15 s, and the text did not stay in the composer | Fill: 47 ms | **The maximized-to-normal animation was shown**: the whole Claude window slid to the corner, 90 to 330 ms, up to 270k px. The give-back at 375 ms raised Notepad over the corner, so Claude was fully covered again while the steps waited for Send. Claude's taskbar button was left red (attention) | Exact |
+| 3 | Maximized, fill + Send; the tool as described | **Sent**, completed. Send showed 74 ms after the fill | 31 ms (fill), 46 ms (Send, by a short-lived claude.exe window; the plain give-back failed, `SwitchToThisWindow` worked). Corner re-raised 3 times | The corner, 40 px inside a 5×9 box, from 0.49 to 1.38 s. Notepad's title bar inactive while Claude held the foreground. The taskbar (the baseline already had the red button from run 2) | Exact |
+| 4 | Maximized, menu; watchdog on | Model menu opened (seen 101 ms after `Expand`). **Effort's `Expand` did not open the submenu** in 6 s. The model menu was still open after the window was put back | 47 ms (menu), 138 ms (Effort) | Corner, title bar, taskbar | Exact |
+| 5 | Maximized, close that menu: Effort → High (the current one); watchdog paused during the steps | Submenu in 90 ms; menus closed 73 ms after the pick; still "Opus 5.5 High" | Claude held it 0.65 s | Up to 349 px; back to the baseline when the run ended | Exact |
+| 6 | Maximized, menu; **watchdog paused during the steps**, foreground given back after them | **Every step worked**: "Opus 5.5 Medium", then "Opus 5.5 High"; each menu seen in 63 to 89 ms, each pick closed the menus in 75 to 78 ms | Claude held it from 0.77 to 2.41 s (**1.64 s**); given back in one try | Up to 350 px, 0.49 to 2.65 s: the corner, Notepad's title bar inactive, the taskbar's active-app marks | Exact |
+| 7 | Normal window, fill + Send; watchdog on | **Sent**, completed. Send showed 82 ms after the fill | 46 ms, 63 ms; corner re-raised twice | Up to 3.5k px: corner, title bar, then Claude's and Notepad's taskbar buttons until about 3.3 s (gone a little later) | Exact |
+| 8 | Normal window, menu; watchdog on | **The model menu was never seen open** in 6 s; it was closed afterwards | 63 ms | Corner, title bar, taskbar until 9.3 s (2.3 s after the restore) | Exact |
+| 9 | Normal window, menu; watchdog paused during the steps | **Every step worked**: Medium, then High; each menu seen in 80 to 98 ms | Claude held it from 0.76 to 2.54 s (**1.78 s**) | Up to 226 px, 0.47 to 2.83 s. `HWND_TOP` alone raised the corner this time | Exact |
+
+"Exact" means all of these matched before and after:
+- `GetWindowPlacement` (flags, showCmd, rcNormalPosition, every point);
+- the window rect;
+- the window right above;
+- the visible window above;
+- the whole visible z-order;
+- the foreground.
+
+Claude never showed at the screen's centre after run 1. Turning Claude normal for runs 7 to 9, and maximized again after them, used the same `SetWindowPlacement` with transitions off. Neither activated it or showed it.
+
+Step times (from runs 3 and 6 to 9):
+
+| Step | Time |
+| --- | --- |
+| Record | 9 to 14 ms |
+| Maximized to normal | 5 to 12 ms |
+| Move | 1 to 2 ms |
+| The wait for the animation | 400 ms |
+| Raise | 2 to 4 ms |
+| Fill (`SetValue` plus a page read before and after) | 234 to 297 ms, then Send in 74 to 82 ms |
+| Send | 240 to 245 ms |
+| Each menu step | 160 to 250 ms, then 63 to 98 ms until the menus show the change |
+| Restore (z-order, placement, z-order) | 3 to 40 ms |
+| Park to restored | 1.4 s for fill + Send; 2.5 s for the menu change |
+
+What this shows:
+- **Leaving a few pixels uncovered keeps Claude's page live**: Send shows within 82 ms of the fill, and the message is sent. When the corner was covered (run 2), Send did not show, as behind Notepad in the watchdog round.
+- The corner has to be kept up:
+  - every give-back raises the other window over it;
+  - `HWND_TOP` from the background does not reliably raise it;
+  - raising it before DWM's animation is over shows the whole window.
+- **Fill + Send works with the watchdog on**: two grabs of 31 to 63 ms, each undone. That is about two frames each, seen as Notepad's title bar and the taskbar changing, not as Claude.
+- **The menus do not**:
+  - When the foreground is given back, Claude's menus stop responding to `Expand`. Maximized, the Effort submenu did not open; normal, even the model menu was not seen.
+  - With the watchdog paused during the steps, every step works. Claude then holds the keyboard focus for 1.6 to 1.8 s, with nothing of it on screen but the corner. Notepad's title bar shows inactive and the taskbar shows Claude active.
+  - Unlike the watchdog round, the give-back after the menus succeeded at the first try.
+- **Restoring a maximized window activates nothing when Claude does not hold the foreground** (runs 3 to 9). It puts Claude on top when Claude does (run 1). So the foreground must be given back first.
+- Left unmeasured or unclear:
+  - Whether the person sees the corner (40 px at the screen's top-left) and the title bar, which nobody watched in these runs.
+  - What changed the taskbar for about 2 s after each restore (perhaps the reply finishing, or the taskbar's own animation).
+  - Why the second fill's text vanished in run 2.
+- Whether Claude keeps the off-screen place across a restart: it writes `window-state.json` (in `%LOCALAPPDATA%\Claude-Data\claude_<id>`) on its own schedule. The file was last written hours before these runs, not during them. A quit while parked has not been tried; quitting Claude needs the person, since this session runs inside it.
+- **Computer use reshapes Claude's window.** The first computer-use call of a turn turned Claude from maximized into a 669×909 topmost window at the screen's top right, and rewrote its `rcNormalPosition`. When the turn ended Claude was maximized again, but `rcNormalPosition` had moved by 1 to 4 px (448,182,2149,1354 → 448,183,2151,1358). It also cannot act on Claude's window. So computer use cannot be used while Claude's window is measured, nor before a placement is compared.
+
 - **Limit: the console cannot put the app on another desktop itself.** `IVirtualDesktopManager::MoveWindowToDesktop` moves only the calling process's own windows. So moving Claude (or Codex) to another desktop is the person's step; the console can only detect where the window is (`IsWindowOnCurrentVirtualDesktop`, `DWMWA_CLOAKED`) and say what to do.
 
 What follows for the port:
 - **Opening any of these menus takes the foreground**, under the conditions Frontdesk runs in, for both apps. So by the rule "never take the foreground", a model, effort or permission change through a menu is not made on Windows: nothing is sent, and the page says why.
 - **Sending through Claude's window takes the foreground too**: filling its composer does (see "Fill and Send from behind"). Under the rule, Claude cannot send on Windows through its window. Whether the rule bends for this, or another channel is found, is the person's decision.
+- **Parked in a corner** (above), Claude can be sent to with fill + Send from behind another app, with two grabs of under 65 ms each, undone. Nothing of Claude shows but a 5×9 px corner; Notepad's title bar and the taskbar flicker. The window is put back exactly. Its menus work only if Claude keeps the foreground for the 1.6 to 1.8 s they take. Whether either is acceptable under "never take the foreground" is the person's decision.
 - **Codex's settings** keep route B (branch `codex-ipc-settings`) as the only way that does not take the foreground. Whether to bring it back is for the person to decide.
 - After the tests, the Codex test chat's effort was put back to medium over route B, and its record says medium. Codex's model button still read "GPT-6 Sol Light", but the window was then showing a chat titled like the test chat, so which chat that button belonged to is not known.
 

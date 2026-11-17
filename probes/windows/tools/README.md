@@ -8,7 +8,7 @@ The runners behind the "Menus under real conditions", "virtual desktop" and "wat
 powershell -NoProfile -ExecutionPolicy Bypass -File probes\windows\tools\build-tools.ps1
 ```
 
-This builds `uia-probe.exe`, `uia-driver.exe` and `fgtool.exe` into `%LOCALAPPDATA%\agent-frontdesk\tools`. Set `FRONTDESK_TOOLS` to use another folder.
+This builds `uia-probe.exe`, `uia-driver.exe`, `fgtool.exe`, `corner.exe` and `screencap.exe` into `%LOCALAPPDATA%\agent-frontdesk\tools`. Set `FRONTDESK_TOOLS` to use another folder.
 
 ## Run
 
@@ -36,5 +36,9 @@ Each runner beeps, waits so the person can set the scene (Claude showing its tes
 | `menu2-run.mts` | Effort to Medium and back to High through Claude's menus, then gives the foreground back |
 | `guard-run.mts` | Runs fill + Send and the menus while `fgtool guard` gives the foreground back every 10 ms |
 | `settings-test.mts` | Codex's route B: reads the thread's settings, then changes them with a condition, through `thread-follower-update-thread-settings`. Usage: `<repo> <threadId> <effort> [<expected current effort>]` |
+| `corner-run.mts` | `fill`, `menu` or `close` with Claude parked off screen but for a corner (`corner.exe`), with the screen recorded. Reads `FRONTDESK_OWN_TITLE`, `ONLY_IF_CURRENT` (unsent text of an earlier run the fill may replace), `GUARD_STEPS=off` (the watchdog only logs during the steps), `TAIL=<ms>` |
+| `corner-summary.mts` | Prints a `corner-run` result with times relative to its first step |
+| `corner.cs` | `info <hwnd>`; `place <hwnd> <showCmd>` (normal or maximized without activating); `run`: record, park, `uia-probe seq`, put back and check, with the watchdog in a thread. See the top of the file |
+| `screencap.cs` | Every frame DWM presents (DXGI Desktop Duplication; GDI as a fallback), compared with a baseline. The frames show the person's screen: keep them under `probes\windows\out\` |
 | `fgtool.cs` | `fg`; `restore <hwnd>` (`AttachThreadInput` + `SetForegroundWindow`, no input); `watch <ms> <hwnd>`; `guard <ms> <original> <claude>` |
 | `plans/*.json` | The plans the recorded rounds used |

@@ -17,11 +17,13 @@ if (-not (Test-Path -LiteralPath $csc)) { $csc = Join-Path $env:WINDIR 'Microsof
 $builds = @(
     @{ out = 'uia-probe.exe'; src = Join-Path $repo 'probes\windows\uia-probe.cs' },
     @{ out = 'uia-driver.exe'; src = Join-Path $repo 'src\server\native\uia-driver.cs' },
-    @{ out = 'fgtool.exe'; src = Join-Path $PSScriptRoot 'fgtool.cs' }
+    @{ out = 'fgtool.exe'; src = Join-Path $PSScriptRoot 'fgtool.cs' },
+    @{ out = 'corner.exe'; src = Join-Path $PSScriptRoot 'corner.cs' },
+    @{ out = 'screencap.exe'; src = Join-Path $PSScriptRoot 'screencap.cs' }
 )
 foreach ($b in $builds) {
     $out = Join-Path $tools $b.out
-    & $csc /nologo /target:exe /langversion:5 /platform:anycpu /optimize+ /codepage:65001 "/out:$out" /reference:System.dll /reference:System.Core.dll /reference:System.Web.Extensions.dll $b.src
+    & $csc /nologo /target:exe /langversion:5 /platform:anycpu /optimize+ /unsafe /codepage:65001 "/out:$out" /reference:System.dll /reference:System.Core.dll /reference:System.Drawing.dll /reference:System.Web.Extensions.dll $b.src
     if ($LASTEXITCODE -ne 0) { throw "csc failed for $($b.src)" }
     Write-Host "built $out"
 }
