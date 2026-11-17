@@ -189,7 +189,7 @@ const REPORTS: Record<string, string> = {
   '缺少有效的会话 ID': 'Missing a valid chat ID', '缺少有效的会话 ID 或标题': 'Missing a valid chat ID or title',
   '没能按下 Claude 桌面版的停止按钮': "Couldn't press Stop in Claude's desktop app",
   '桌面代发需要辅助功能权限：在「系统设置 → 隐私与安全性 → 辅助功能」里允许运行工作台服务的程序（例如终端），然后重启工作台': "Sending through the desktop app needs Accessibility access. In System Settings → Privacy & Security → Accessibility, allow the app that runs Frontdesk (for example Terminal), then restart Frontdesk.",
-  'Claude 桌面版没有及时响应': "Claude's desktop app didn't respond in time", '桌面代发程序没有正常返回': 'The desktop helper stopped unexpectedly', '桌面代发只支持 macOS': 'Sending through the desktop app only works on macOS', 'Windows 上的桌面代发还在移植中，暂时不能通过窗口操作发送': "Sending through the desktop app's window isn't available on Windows yet: it is still being ported",
+  'Claude 桌面版没有及时响应': "Claude's desktop app didn't respond in time", '桌面代发程序没有正常返回': 'The desktop helper stopped unexpectedly', '桌面代发只支持 macOS': 'Sending through the desktop app only works on macOS', 'Codex 桌面版里这个会话的模型或推理强度刚刚变了，没有发送：请刷新后重新选择': "This chat's model or effort just changed in Codex's desktop app, so nothing was sent. Refresh and pick again.", 'Codex 桌面版现在没有打开这个会话，没法给它换模型或推理强度，没有发送：请先在桌面版里打开这个会话': "Codex's desktop app doesn't have this chat open, so its model or effort can't be changed and nothing was sent. Open the chat in the desktop app first.", 'Windows 上的桌面代发还在移植中，暂时不能通过窗口操作发送': "Sending through the desktop app's window isn't available on Windows yet: it is still being ported",
   '桌面代发程序编译失败（需要 Xcode 命令行工具：xcode-select --install）': "Couldn't build the desktop helper. Install the Xcode command line tools: xcode-select --install", 'Claude 桌面版没有在运行': "Claude's desktop app isn't running",
   '桌面代发程序不可用': 'The desktop helper is unavailable', '工作台没有辅助功能权限': "Frontdesk doesn't have Accessibility access", '缺少会话标题': 'Missing chat title', '消息是空的': 'The message is empty',
   '这个 AI 的桌面版不支持打开会话': "This AI's desktop app can't open chats from here", '没能在桌面版里打开这个会话': "Couldn't open this chat in the desktop app",
@@ -336,6 +336,7 @@ const REPORT_PATTERNS: Array<[RegExp, (match: RegExpExecArray) => string]> = [
   [/^Codex 桌面版的项目菜单里没有「(.*)」$/, match => `Codex's desktop project menu has no "${match[1]}"`],
   [/^在 Codex 桌面版里选了「(.*)」，但项目没有切换过去$/, match => `Picked "${match[1]}" in Codex's desktop app, but the project didn't switch`],
   [/^要换模型或推理强度得在 Codex 桌面版里换，但(.*)，没有发送$/, match => `The model or effort has to be changed in Codex's desktop app, but ${english(match[1])}. Nothing was sent.`],
+  [/^没能在 Codex 桌面版里换模型或推理强度（(.*)），没有发送$/, match => `Couldn't change the model or effort in Codex's desktop app (${english(match[1])}). Nothing was sent.`],
   [/^没能让 Codex 桌面版停下（(.*)），请在桌面端停止$/, match => `Couldn't stop Codex's desktop app (${english(match[1])}). Stop it on desktop.`],
   [/^(.+)，没有发送$/, match => `${english(match[1])}. Nothing was sent.`],
 ];
