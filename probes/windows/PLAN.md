@@ -62,10 +62,47 @@ How it was verified:
   - Send was pressed through UIA (`Invoke` on the profile's `send`), which worked.
   - Opening the link brought Codex to the front. The shell that opened it was a child of the foreground Claude app, so the inherited-right caveat applies.
 
+**Settings over route B, set aside.** Changing Codex's model and effort through `thread-follower-update-thread-settings` was built and verified: the next turn's `turn_context` had the new effort. That change is on the branch `codex-ipc-settings` and reverted on `windows`. The router reaches Codex only; Claude and any agent added later change settings through the desktop's menus, so the menus were measured first (below).
+
+**Menus under real conditions** (the decisive measurement for every agent's settings). Setup:
+- The helper was started by a node process, and in a cross-check by a one-off scheduled task ("interactive only", deleted afterwards), so the launcher was not the foreground process or a child of it.
+- Notepad was put in front 12 s before each run.
+- Each step recorded the foreground window and the window drawn at Codex's and Claude's centres (`ontop`, WindowFromPoint), and the person watched the screen.
+- Only test chats were used:
+  - Claude: a Code session of its own; the runner checked the window showed it, not the session running these tests.
+  - Codex: the local test chat.
+
+| Step | Claude | Codex |
+| --- | --- | --- |
+| Open the model menu with `Invoke` | No `Invoke` on the button | No `Invoke` on the button |
+| Open it with `ExpandCollapse.Expand`, from behind Notepad | Opens. **Claude is raised and takes the foreground** | Opens. **Codex is raised and takes the foreground**, the same from node and from the scheduled task. The person saw it jump forward |
+| `ExpandCollapse.Collapse` on the button | On a closed menu it throws, and still brings Claude forward | Does not close it |
+| `LegacyIAccessible.DoDefaultAction` on the button | Did not open a closed menu | Does not close it |
+| Submenu with `Expand` | Effort and More models both open | Select model is a row with `Invoke` only, which opens the model list in place |
+| Pick the current choice with `Invoke` | Effort High: the menu closes, and the button still reads "Opus 5.5 High" | GPT-6 Sol: the menu goes back to its main page and stays open; the choice is unchanged |
+| Pick with `SelectionItem.Select` | Opus 5.5 under More models: the menu stays open, nothing changes | (rows are radio buttons with `Invoke` and `SelectionItem`) |
+| Power (effort) | (n/a) | A menuitem with `Invoke`; inside it, groups only, with no `RangeValue`, no `Value`, no tick elements. It says "Use Left and Right arrow keys to adjust power". **No UIA route** |
+| Fill the composer with `Value.SetValue`, then `Invoke` Send | **Works**: Send appears after the fill, and the record has the turn, completed | (step 1: `Invoke` on Send worked on the new-chat page) |
+
+What follows for the port:
+- **Opening any of these menus takes the foreground**, under the conditions Frontdesk runs in, for both apps. So by the rule "never take the foreground", a model, effort or permission change through a menu is not made on Windows: nothing is sent, and the page says why.
+- **Sending with the chat's current settings needs no menu.** Claude fills the composer and presses Send, both from behind and without taking the foreground. That is the route Claude's sending on Windows can take, though the foreground has not yet been watched for that step on its own: the window was already in front by then.
+- **Codex's settings** keep route B (branch `codex-ipc-settings`) as the only way that does not take the foreground. Whether to bring it back is for the person to decide.
+- After the tests, the Codex test chat's effort was put back to medium over route B, and its record says medium. Codex's model button still read "GPT-6 Sol Light", but the window was then showing a chat titled like the test chat, so which chat that button belonged to is not known.
+
 Still open from step 1:
-- **Use `thread-follower-update-thread-settings` in the bridge** for Codex's model and effort, in place of the menus, on both platforms. Then check the next turn runs with it.
 - **The page links only Unix-shaped local paths** (`LOCAL_ROOT` in `src/client/js/renderers.ts`), so `C:\…` in a reply is not a file link yet.
 - **Codex's new-chat options** (`/api/new-options/codex`) answer 409 until the window helper exists.
+
+**Step 2, the C# driver's skeleton.** Status: read-only part done.
+- `src/server/native/uia-driver.cs` is the twin of `ax-driver.swift`. It provides `check`, `probe`, `inspect` and `warm [check]`; any other command answers `not_ported`. It holds the three checks every flow gets: Sole, Confirmed (menuSigns) and `via`.
+- Each profile has a `windows` section: the app's exe, plus locators the Windows app draws elsewhere (`chromeBar`, and `spaceSwitch` inside it).
+- `desktop-automation.ts` compiles the driver with Windows' own `csc.exe` into `%LOCALAPPDATA%\agent-frontdesk`, per source hash.
+- Verified on both apps:
+  - `check` reports running, with the same integrity level as the console.
+  - `probe` finds no drift. Claude's `newChat` is now found by its declared keys, read as Control.
+  - `warm check` reads about 700 elements.
+- Sending is still reported as not available on Windows.
 
 ## Findings so far (Windows 11 26200, Claude 5.11492, Codex 26.1111)
 

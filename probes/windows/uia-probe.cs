@@ -8,6 +8,7 @@
 // Commands (each prints one JSON object, and writes it to --out <file> when given):
 //   windows [--match <regex>]          the desktop apps' top-level windows: process, class, state, integrity
 //   fg                                 the foreground window right now
+//   ontop --hwnd <h>                   which top-level window is drawn at the centre of that window, and the foreground one
 //   settle --hwnd <h> [--seconds 20] [--every 500]
 //                                      how the page's tree grows from this first contact until it settles
 //   census --hwnd <h> [--profile <json>] [--names]
@@ -300,7 +301,7 @@ namespace Frontdesk.Probe
             outFile = Opt("out", null);
             try
             {
-                if (command != "windows" && command != "fg")
+                if (command != "windows" && command != "fg" && command != "ontop")
                 {
                     try { uia = (IUIAutomation)Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("e22ad333-b25f-460c-83d0-0581107395c9"), true)); }
                     catch { uia = (IUIAutomation)Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("ff48dba4-60ef-4201-aa87-54103eef594e"), true)); }
@@ -309,6 +310,7 @@ namespace Frontdesk.Probe
                 {
                     case "windows": return Emit(Windows());
                     case "fg": return Emit(new Dictionary<string, object> { { "ok", true }, { "foreground", Foreground() } });
+                    case "ontop": return Emit(new Dictionary<string, object> { { "ok", true }, { "onTop", OnTop(TargetWindow()) }, { "foreground", Foreground() } });
                     case "settle": return Emit(Settle());
                     case "census": return Emit(Census());
                     case "act": return Emit(Act());
@@ -814,6 +816,9 @@ namespace Frontdesk.Probe
                 if (!locators.TryGetValue(key, out ways)) return Fail("usage", "the profile has no locator " + key);
                 int at = ways.FindIndex(l => Matches(l, 0).Count > 0);
                 hits = at >= 0 ? Matches(ways[at], 0) : new List<Node>();
+                // A way that goes by its place ("after" another control) means the first of what follows,
+                // as ax-driver.swift's find() takes it: one control by construction.
+                if (at >= 0 && ways[at].Placed && hits.Count > 1) hits = hits.Take(1).ToList();
                 by = at >= 0 ? key + " way " + at + " (" + ways[at].Kind + ")" : key;
             }
             else
