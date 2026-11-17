@@ -10,6 +10,8 @@ This is the hand-off for whoever continues the Windows port, in particular a Cla
 
 ## Development on Windows
 
+The runners and the foreground tool behind the measurements below are in `probes/windows/tools` (see its README: `build-tools.ps1`, then `node --import tsx probes\windows	ools\<runner>.mts`).
+
 Order:
 1. The platform layer;
 2. the C# driver's skeleton, read-only;
