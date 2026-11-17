@@ -65,7 +65,18 @@ From step 1 (read) and read-only `act --do inspect` checks. Nothing was pressed.
     - **`thread-follower-read-model-settings`.** It returns `{model, reasoningEffort, …}` from the owner.
   - So changing a Codex chat's model or effort goes through route B, like steer and interrupt in `src/server/codex-desktop.ts`. It avoids the menus, the foreground and the Power slider, on both platforms. Only `socketPath()` changes, as planned.
   - Sending one changes a real chat, so it has not been sent here. It is to be tried in a test chat, with the person's agreement.
-  - Codex's new chat (project picker, new-chat button) is still UI-only, so it still meets the menu findings above.
+  - Codex's new chat (project picker, new-chat button) is still UI-only, so it still meets the menu findings above. The deep link below may avoid that.
+- **Codex's new-chat deep link** (read in the Mac's app.asar, not yet tried on Windows): `codex://threads/new?path=<absolute folder>&prompt=<text>`, or `projectId=<id>` in place of `path`.
+  - `path` must stat as an existing folder. It becomes the new chat's working folder or project. `prompt` is filled into the composer.
+  - So a new Codex chat may need no project menu at all.
+  - Codex counts only a link with no parameters, or with `prompt` alone, as safe. A link with `path` may therefore raise a confirmation dialog: to be measured.
+  - Whether opening it brings Codex to the front is open question 8.
+- **Hypothesis, not yet tested: the foreground right may come from the launcher.** Windows lets a process bring a window forward only if it holds the foreground right. Every run so far started the helper from a terminal the person had just used. The helper may have inherited the right from it, or passed it to the app through the UIA call.
+  - This is not the "started from inside Claude" hypothesis ruled out above.
+  - In real use, a background Node server starts the helper, which then may hold no such right. Codex would then only flash in the taskbar.
+  - Tests:
+    - wait 10 s before pressing, with the foreground moved to an unrelated window meanwhile;
+    - in development step 3, the Node server itself starts the helper, which answers it directly.
 
 **Against the Mac driver and agent-desktop**
 
