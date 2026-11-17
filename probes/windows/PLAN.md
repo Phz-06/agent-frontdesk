@@ -35,7 +35,7 @@ From step 1 (read) and read-only `act --do inspect` checks. Nothing was pressed.
 - **Deep links:** `codex://` is declared only in the MSIX manifest, not under `Software\Classes`. The read step now lists manifest protocols. The two AUMIDs:
   - `OpenAI.Codex_2p2nqsd0c76g0!App` (`app/ChatGPT.exe`, protocol `codex`);
   - `Claude_pzs8sxrjxfjjc!Claude` (`app\Claude.exe`, protocol `claude`, also registered under Classes).
-- **Both apps are MSIX packages.** Their window exes are `ChatGPT.exe` and `claude.exe`, under `C:\Program Files\WindowsApps`. The shell and both apps run at the same integrity level (medium, 12288).
+- **Both apps are MSIX packages.** Their window exes are `ChatGPT.exe` and `claude.exe`, under `C:\Program Files\WindowsApps`. The shell and both apps run at the same integrity level, High (12288 = 0x3000; Medium is 8192). They do because UAC is off on this machine (`EnableLUA=0`, and this is the built-in Administrator account), so every process runs elevated. That is not the usual setup, where both the person's apps and the server run at Medium.
 
 **Still open**
 
@@ -44,6 +44,7 @@ From step 1 (read) and read-only `act --do inspect` checks. Nothing was pressed.
 - **Off-screen states (question 6):** minimized, covered and other virtual desktop, and whether `ScrollIntoView` refreshes the page.
 - **The act scenarios (questions 3, 4, 5):** fill, menu, submenu, focus and refresh, in a test conversation, only with the person's agreement. Also which of `Invoke` / `SelectionItem.Select` switches the space.
 - **Deep link and foreground (question 8):** whether a deep link brings the app to the front.
+- **Integrity levels (UIPI):** when the Frontdesk server runs at a lower level than an app (Medium against High, say), UIPI lets it read the app's UIA tree but not act on it. The port's `check()` should therefore compare the helper's integrity level with the target window's, and say so when they differ, in place of the Mac's `AXIsProcessTrusted` message. Act results from this machine show the same-level case only (High to High). The Medium-against-High case has not been measured.
 
 ## What has to be ported
 
