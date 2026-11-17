@@ -825,6 +825,47 @@ test('the desktop stays on its new-chat page while the person chooses, and goes 
   desktop.unpark();
 });
 
+test('a page parked in another mode than the person\'s keeps that mode until the choosing is over, then both come back', async t => {
+  const { ClaudeDesktop } = __claude_desktop;
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: 1_000_000 });
+  const pass = async (ms: number) => { t.mock.timers.tick(ms); for (let turn = 0; turn < 5; turn++) await new Promise(resolve => setImmediate(resolve)); };
+  const calls: string[][] = [];
+  // The helper's side of it: the person was in the chat mode; the first visit switches to the
+  // page's mode and says so (previousSpace), later ones find the desktop already there.
+  let mode = 'chat';
+  const desktop = new ClaudeDesktop({ parkMs: 30, warmEveryMs: 0, runner: async (_file, args) => {
+    calls.push(args);
+    if (args[0] === 'new-controls' || args[0] === 'new-pick') {
+      const was = mode; mode = 'code';
+      return { ok: true, controls: [], previous: '', stayed: true, ...(was === 'chat' ? { previousSpace: 'chat' } : {}) };
+    }
+    return { ok: true };
+  } });
+  desktop.binary = process.execPath;
+  const made = (): string[][] => calls, parkedIn = () => desktop.parked?.space ?? null;
+
+  // The page was already on screen in its own mode (previous ""), but the mode was the person's
+  // to have back: the desktop is parked all the same.
+  await desktop.newControls([]);
+  assert.equal(parkedIn(), 'chat');
+  // The next step is told the mode to keep for the person; it does not switch back and forth.
+  await desktop.newPick('Environment', 'This computer');
+  assert.deepEqual(made().at(-1), ['new-pick', 'Environment', 'This computer', '--stay', '--previous', '', '--previous-space', 'chat']);
+  assert.equal(parkedIn(), 'chat', 'a later step that found the mode borrowed keeps what the first one learned');
+  // Once the choosing has gone quiet, new-leave is told both.
+  await pass(31);
+  assert.deepEqual(made().at(-1), ['new-leave', '--previous', '', '--previous-space', 'chat']);
+  assert.equal(parkedIn(), null);
+  // A message sent meanwhile ends the parking and takes the mode back itself.
+  mode = 'chat'; calls.length = 0;
+  await desktop.newControls([], { fresh: true });
+  await desktop.send({ title: '别的会话', localId: 'x1' }, 'hi');
+  assert.deepEqual(made().at(-1), ['send', '别的会话', 'local_x1', '--previous', '', '--previous-space', 'chat']);
+  assert.equal(parkedIn(), null);
+  await pass(60);
+  assert.equal(made().length, 2, 'nothing is left to undo');
+});
+
 test('a server whose helper was cleaned out of the cache builds it again and runs the command once more', async () => {
   const { ClaudeDesktop } = __claude_desktop;
   const ran: string[] = [];

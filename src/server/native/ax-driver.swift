@@ -39,8 +39,11 @@ import Cocoa
 import ApplicationServices
 
 // Runs once, just before the answer is printed (the desktop put back in the mode it was in);
-// what it could not do is reported with the answer ("restore").
+// what it could not do is reported with the answer ("restore"). A command that parks the desktop
+// on its new-chat page (`--stay`, answering `stayed`) keeps the mode as well: the answer names the
+// person's own (`previousSpace`) and new-leave puts it back with their conversation.
 var beforeExit: (() -> String?)?
+var personSpace = ""
 let startedAt = Date()
 // Round trips to the desktop's process: what a command's time is mostly made of.
 var reads = 0
@@ -59,7 +62,8 @@ var refused: [String: Int] = [:], unconfirmed: [String] = [], soleNow: Set<AXUIE
 var annotate: (inout [String: Any]) -> Void = { _ in }
 func out(_ input: [String: Any]) -> Never {
   var object = input
-  if let undo = beforeExit { beforeExit = nil; if let problem = undo() { object["restore"] = problem } }
+  if staying, input["stayed"] as? Bool == true, !personSpace.isEmpty { object["previousSpace"] = personSpace }
+  else if let undo = beforeExit { beforeExit = nil; if let problem = undo() { object["restore"] = problem } }
   annotate(&object)
   object["ms"] = elapsed(); object["reads"] = reads
   trace("done \(object["ok"] as? Bool == false ? "failed: \(object["code"] ?? "")" : "ok")")
@@ -71,14 +75,16 @@ func fail(_ code: String, _ message: String) -> Never { out(["ok": false, "code"
 
 // `--previous <title>`: the conversation the person had on screen before the console parked the
 // desktop on its new-chat page (`--stay`, see "a new chat's page"); a command that finds the
-// desktop still on that page goes back to this conversation when it is done.
-var args: [String] = [], wanted: [String: String] = [:], parkedPrevious = "", staying = false
+// desktop still on that page goes back to this conversation when it is done. `--previous-space
+// <id>`: the mode they had then (the page is parked in the command's own mode, see "modes").
+var args: [String] = [], wanted: [String: String] = [:], parkedPrevious = "", parkedSpace = "", staying = false
 do {
   let raw = Array(CommandLine.arguments.dropFirst())
   var index = 0
   while index < raw.count {
     if ["--model", "--effort", "--mode", "--space"].contains(raw[index]), index + 1 < raw.count { wanted[String(raw[index].dropFirst(2))] = raw[index + 1]; index += 2 }
     else if raw[index] == "--previous", index + 1 < raw.count { parkedPrevious = raw[index + 1]; index += 2 }
+    else if raw[index] == "--previous-space", index + 1 < raw.count { parkedSpace = raw[index + 1]; index += 2 }
     else if raw[index] == "--stay" { staying = true; index += 1 }
     else { args.append(raw[index]); index += 1 }
   }
@@ -726,6 +732,11 @@ func heldBack() -> Bool { !refused.isEmpty }
 let spaceSpec = profile["spaces"] as? [String: Any] ?? [:]
 let spaceNames = spaceSpec["names"] as? [String: String] ?? [:]
 let spaceControl = spaceSpec["control"] as? String ?? "", spaceMenu = (spaceSpec["kind"] as? String) == "menu"
+// A radio's name is the mode's word, followed by what the mode is up to while a chat in it waits
+// on the person ("Code, awaiting your input"): the word is what comes before the first comma.
+func spaceWord(_ text: String) -> String {
+  String(text[..<(text.firstIndex { $0 == "," || $0 == "，" } ?? text.endIndex)]).trimmingCharacters(in: .whitespaces)
+}
 // The mode on screen, as a space id; nil when the switch is not there, "" for a word not in the profile.
 func shownSpace() -> String? {
   guard let control = find(spaceControl) else { return nil }
@@ -733,7 +744,7 @@ func shownSpace() -> String? {
   // The menu's button ends in the mode it shows: after the profile's "currentPrefix", or, named
   // another way (another language), after its colon.
   if spaceMenu { let prefix = spaceSpec["currentPrefix"] as? String ?? "", own = name(control); word = !prefix.isEmpty && own.hasPrefix(prefix) ? String(own.dropFirst(prefix.count)) : labelled(own)?.value ?? "" }
-  else { word = within(control) { role($0) == "AXRadioButton" && checked($0) }.first.map(name) ?? "" }
+  else { word = within(control) { role($0) == "AXRadioButton" && checked($0) }.first.map { spaceWord(name($0)) } ?? "" }
   return spaceNames.first { $0.value == word }?.key ?? ""
 }
 func switchSpace(_ id: String) -> StepError? {
@@ -745,7 +756,7 @@ func switchSpace(_ id: String) -> StepError? {
     guard let entry = item(word) else { close({ find(spaceControl) }); return StepError(code: "no_space_switch", message: "\(appName)切换模式的菜单里没有「\(word)」") }
     press(entry); anchor = nil
   } else {
-    guard let control = find(spaceControl), let option = within(control, { role($0) == "AXRadioButton" && name($0) == word }).first else { return StepError(code: "no_space_switch", message: "\(appName)的模式切换里没有「\(word)」") }
+    guard let control = find(spaceControl), let option = within(control, { role($0) == "AXRadioButton" && spaceWord(name($0)) == word }).first else { return StepError(code: "no_space_switch", message: "\(appName)的模式切换里没有「\(word)」") }
     press(option)
   }
   for _ in 0..<16 {
@@ -764,13 +775,23 @@ func modeDrawn(_ id: String) -> Bool {
 }
 if args.first == "space" { refresh(); let shown = shownSpace(); out(["ok": true, "found": shown != nil, "space": shown ?? ""]) }
 // The person's mode comes back when the command ends, as their chat does; open-file is the
-// exception: it is asked for so the person sees that chat.
+// exception: it is asked for so the person sees that chat. While the console has the desktop
+// parked on its new-chat page the mode stays borrowed too (see out()): choosing a new chat's
+// settings is several commands, and switching modes there and back for each one cost a second or
+// two each way, more with the window off screen. The mode on screen is then the console's, so the
+// person's is the one it was parked from (`--previous-space`).
 if !spaceSpec.isEmpty, let command = args.first {
   let target = wanted["space"] ?? (spaceSpec["home"] as? String ?? "")
   // No switch on screen (an older desktop, a page without it): carry on as before modes existed.
-  if command != "chat-status", !target.isEmpty, let before = shownSpace(), before != target {
-    if let error = switchSpace(target) { fail(error.code, error.message) }
-    if !["open-file", "show-session"].contains(command), !before.isEmpty { beforeExit = { switchSpace(before).map { $0.message } } }
+  if command != "chat-status", !target.isEmpty, let before = shownSpace() {
+    // new-leave never switches: the desktop in another mode is where the person took it since.
+    if command == "new-leave", before != target { out(["ok": true, "left": false, "moved": true]) }
+    let own = before != target ? before : parkedSpace
+    if before != target, let error = switchSpace(target) { fail(error.code, error.message) }
+    if !["open-file", "show-session"].contains(command), !own.isEmpty, own != target {
+      personSpace = own
+      beforeExit = { switchSpace(own).map { $0.message } }
+    }
   }
   if !target.isEmpty, let suffix = (spaceSpec["titleSuffix"] as? [String: String])?[target] { modeTitleSuffix = suffix }
 }
@@ -1403,14 +1424,18 @@ func pickOnPage(_ label: String, _ option: String) -> StepError? {
   return took ? nil : StepError(code: "not_set", message: "在 \(appName)里选了「\(shownName)」，但「\(label)」没有变")
 }
 // new-leave, for any flow that parks its desktop on a new-chat page (`--stay`): the conversation
-// `--previous` names comes back, but only from the page itself (a conversation on screen is where
-// the person, or a command, went since) and only while nobody is writing on it. `inUse`: the
-// page's message box holds text. The person may have come to the desktop meanwhile and started a
-// chat of their own there: that page is theirs now and is left alone (`inUse` in the answer).
+// `--previous` names comes back, and the mode `--previous-space` names, but only from the page
+// itself (a conversation on screen, or another mode, is where the person, or a command, went
+// since), only while nobody is writing on it, and only while the person is not in the desktop app.
+// `inUse`: the page's message box holds text. The person may have come to the desktop meanwhile
+// and be starting a chat of their own there: that page is theirs now and is left alone, in the
+// mode it is in (`front` / `inUse` in the answer).
 func leaveNewPage(inUse: () -> Bool) {
   guard args.first == "new-leave" else { return }
+  if app.isActive { beforeExit = nil; out(["ok": true, "left": false, "front": true]) }
   let onPage = current().isEmpty
-  if onPage, inUse() { out(["ok": true, "left": false, "inUse": true]) }
+  if onPage, inUse() { beforeExit = nil; out(["ok": true, "left": false, "inUse": true]) }
+  if !onPage { beforeExit = nil }
   if onPage, !parkedPrevious.isEmpty { _ = show(parkedPrevious) }
   out(["ok": true, "left": onPage])
 }
@@ -1423,9 +1448,11 @@ func leaveNewPage(inUse: () -> Bool) {
 //                                                (one pick can bring up the next; no menu is opened
 //                                                to read its options); answers `picked`
 //   new-leave                                    the page is left for the conversation `--previous`
-//                                                names, if the desktop is still on it (leaveNewPage)
+//                                                names (and the mode `--previous-space` names), if
+//                                                the desktop is still on it (leaveNewPage)
 // Afterwards the conversation that was on screen comes back, unless `--stay` asks for the page to
-// be kept; either way the answer names it (`previous`, "" when the page was already on screen).
+// be kept; either way the answer names it (`previous`, "" when the page was already on screen),
+// and a page kept in a mode the person was not in names theirs (`previousSpace`).
 func newPageCommands(open: () -> StepError?) {
   leaveNewPage(inUse: newPageInUse)
   guard let command = args.first, ["new-controls", "new-pick"].contains(command) else { return }

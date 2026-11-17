@@ -94,7 +94,8 @@ class DesktopAutomation {
   binary: string | null; building: Promise<string | null> | null; state: AutomationState | null; checkedAt: number;
   queue: Promise<unknown>; waiting = 0;
   // The conversation the person had on screen before the desktop was left on its new-chat page.
-  parked: { previous: string; timer: ReturnType<typeof setTimeout> | null } | null = null;
+  // `space`: the mode the person had, when the page was parked in another (the helper's previousSpace).
+  parked: { previous: string; space: string; timer: ReturnType<typeof setTimeout> | null } | null = null;
   parkMs: number; warmEveryMs: number; warmUntil = 0; warmTimer: ReturnType<typeof setInterval> | null = null;
   view: PageView | null = null; options = new Map<string, { options: NewOption[]; at: number }>();
   // The profile's locators the last checks named (how many checks in a row), and the ones reported.
@@ -185,17 +186,20 @@ class DesktopAutomation {
     });
   }
   // With the desktop parked on its new-chat page, a command is told which conversation the person
-  // had before (`--previous`). A new-page command stays parked; any other one goes back there
-  // itself when it is done, so the parking ends with it. A command in another of the desktop's
-  // modes leaves the page as it is: its own mode has no such conversation to return to.
+  // had before (`--previous`) and, when the page is in another mode than theirs, which mode
+  // (`--previous-space`). A new-page command stays parked; any other one goes back there itself
+  // when it is done, so the parking ends with it. A command in another of the desktop's modes
+  // leaves the page as it is: its own mode has no such conversation to return to.
   returning(args: string[], settings: DesktopFlags = {}): string[] {
     const parked = this.parked, command = args[0] || '';
     if (!parked || command === 'warm' || command === 'check') return [];
-    if (NEW_PAGE.has(command)) return ['--previous', parked.previous];
+    const back = this.backTo(parked);
+    if (NEW_PAGE.has(command)) return back;
     if (settings.space) return [];
     this.unpark(); this.view = null;
-    return ['--previous', parked.previous];
+    return back;
   }
+  backTo(parked: { previous: string; space: string }): string[] { return ['--previous', parked.previous, ...(parked.space ? ['--previous-space', parked.space] : [])]; }
   unpark(): void { if (this.parked?.timer) clearTimeout(this.parked.timer); this.parked = null; }
 
   // ---- keeping warm ----
@@ -237,17 +241,18 @@ class DesktopAutomation {
 
   // ---- the new-chat page ----
   // One of the helper's new-page commands, with the desktop left on the page afterwards (`--stay`).
-  // The first one remembers the conversation it left; `parkMs` after the last one the desktop is
-  // sent back to it (leaveNewPage), unless another command has gone back there already.
+  // The first one remembers the conversation it left, and the mode when it had to switch to reach
+  // the page; `parkMs` after the last one the desktop is sent back to both (leaveNewPage), unless
+  // another command has gone back there already.
   async newPage(args: string[]): Promise<HelperResult> {
     const result = await this.run([...args, '--stay']);
-    const previous = str(result['previous']);
-    if (result['stayed'] === true && (previous || this.parked)) {
+    const previous = str(result['previous']), space = str(result['previousSpace']);
+    if (result['stayed'] === true && (previous || space || this.parked)) {
       const timer = setTimeout(() => { void this.leaveNewPage(); }, this.parkMs);
       timer.unref?.();
-      const kept = previous || this.parked?.previous || '';
+      const kept = previous || this.parked?.previous || '', keptSpace = space || this.parked?.space || '';
       this.unpark();
-      this.parked = { previous: kept, timer };
+      this.parked = { previous: kept, space: keptSpace, timer };
     }
     // Every answer describes the page as it is now.
     if (result['controls'] !== undefined) this.see(newControlsOf(result['controls']), result['shown']);
@@ -257,14 +262,15 @@ class DesktopAutomation {
     if (!result.ok && result['stayed'] === undefined && this.parked) void this.leaveNewPage();
     return result;
   }
-  // The desktop goes back to the person's conversation, if it is still on the page and nobody is
-  // writing there (the helper's new-leave decides: somebody who started a chat of their own on
-  // that page keeps it). Either way the parking is over.
+  // The desktop goes back to the person's conversation and mode, if it is still on the page, nobody
+  // is writing there and the person is not in the desktop app (the helper's new-leave decides:
+  // somebody who has come to the desktop, or started a chat of their own on that page, keeps it).
+  // Either way the parking is over.
   async leaveNewPage(): Promise<void> {
     const parked = this.parked;
     if (!parked) return;
     this.unpark();
-    await this.run(['new-leave', '--previous', parked.previous], { timeout: 20000 }).catch(() => {});
+    await this.run(['new-leave', ...this.backTo(parked)], { timeout: 20000 }).catch(() => {});
   }
   // A menu's options belong to the page they were read on: the same menu lists other things once
   // another control has changed (a folder menu under another environment), and marks another row.
