@@ -109,6 +109,20 @@ How it was verified:
 - **So with Claude's window on another virtual desktop, fill + Send works without the window being raised or the screen switching.** What remains is that the keyboard focus leaves the person's app, for a window they cannot see, until they click back. Two other points:
   - A tree that updates late means a flow must wait for Send to appear, as `ax-driver.swift`'s fill already does.
   - Nothing yet keeps the focus from moving.
+**Next round on desktop 2** (same setup; a foreground tool sampled the foreground every 50 ms on one clock; "switched" means Notepad was no longer on the current desktop, i.e. the screen went to desktop 2):
+
+| Run | What was done | Foreground and desktop | Result |
+| --- | --- | --- | --- |
+| 1 | `SetValue`; Send not in the tree after 2.4 s, so `ScrollIntoView` on the composer; Send seen at 3.2 s; `Invoke` Send; foreground given back | At 0.2 s the foreground went to a short-lived Claude window, with no switch. At 3.4 s, after `ScrollIntoView`, the Claude main window took it **and the screen switched to desktop 2**. Given back at 3.7 s (in 19 ms), and the screen came back to desktop 1. Nothing moved for the next 16 s | Sent, completed. The person saw desktop 2 flash |
+| 2 | The same, without `ScrollIntoView` (waiting up to 30 s) | At 0.2 s **the fill itself switched the screen to desktop 2** (Claude main window). Send was in the tree at once. Given back at 1.0 s (13 ms). (At about 10 s the screen went to desktop 2 again, by way of the shell; most likely the person, but not confirmed) | Sent, completed. The person saw desktop 2 flash |
+| 3 | Model menu: `Expand`, Effort `Expand`, `Invoke` Medium; read the button; the same again to High; foreground given back | At 0.4 s, on opening the menu, the Claude main window took the foreground **and the screen switched to desktop 2**, until the foreground was given back at 5.8 s | **Every step worked.** The button read "Opus 5.5 Medium", then "Opus 5.5 High" again, and each pick closed the menus |
+
+What this shows:
+- **Giving the foreground back works** (`AttachThreadInput` to the foreground thread, then `SetForegroundWindow`, in 13 to 19 ms, with no input sent). It brings the screen back to the person's desktop, and Claude did not take it again afterwards.
+- **Another desktop does not reliably stop the screen from switching.** The same fill was seen to move only the keyboard focus (twice) and to switch the screen (once). `ScrollIntoView` and opening a menu switched it every time they were tried.
+- **Send can be late** in the tree when the screen does not switch (more than 2.4 s). The only nudge tried (`ScrollIntoView`) switches the screen, so a flow should rather wait.
+- **On desktop 2, Claude's menus do change the settings**, as their button shows. So settings through menus work there, at the cost of the screen going to desktop 2 for as long as the change takes (about 5 s here), then coming back.
+
 - **Limit: the console cannot put the app on another desktop itself.** `IVirtualDesktopManager::MoveWindowToDesktop` moves only the calling process's own windows. So moving Claude (or Codex) to another desktop is the person's step; the console can only detect where the window is (`IsWindowOnCurrentVirtualDesktop`, `DWMWA_CLOAKED`) and say what to do.
 
 What follows for the port:
