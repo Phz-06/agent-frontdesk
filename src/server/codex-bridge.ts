@@ -16,7 +16,7 @@ import { changesOf, questionCard } from './core/presentation.js';
 import { withAttachments } from './core/attachments.js';
 import { characterReferences, promptStarts } from '../shared/turn-match.js';
 import * as codexDesktop from './codex-desktop.js';
-import type { CodexDesktopIpc, CodexInput, DesktopRequest, ThreadSettingsChange } from './codex-desktop.js';
+import type { CodexDesktopIpc, CodexInput, DesktopRequest } from './codex-desktop.js';
 import { DesktopAutomation, type DesktopFlags } from './core/desktop-automation.js';
 import { CodexProjects } from './services/codex-projects.js';
 import { openLink } from './services/desktop-places.js';
@@ -100,8 +100,6 @@ class CodexBridge extends EventEmitter {
   desktop: CodexDesktopIpc;
   asks: Map<string, Ask>;
   ui: DesktopAutomation;
-  // Which way a settings change falls back when no desktop window has the chat (see applySettings).
-  platform: NodeJS.Platform = process.platform;
   starts: Map<string, CodexRun>;
   config: Partial<BridgeConfig>;
   lifecycle: CodexLifecycle;
@@ -603,46 +601,19 @@ class CodexBridge extends EventEmitter {
     return emitter;
   }
 
-  // The model and effort the console picked, made in the desktop before the message goes, so the
-  // desktop runs the turn with them and keeps them. First the way that needs no window: the
-  // window that owns the chat is asked over the router (thread-follower-update-thread-settings),
-  // on condition that the chat still has the settings just read, so a change made in the desktop
-  // meanwhile is not overwritten. When no window has the chat, macOS picks them in the desktop's
-  // menus (Accessibility); Windows does not send (its window driver is not there yet).
-  // Throws, with `terminal`, whenever the change was not made: nothing is sent then.
-  async applySettings(threadId: string, thread: unknown, { model, reasoningEffort }: { model?: string | undefined; reasoningEffort?: string | undefined }): Promise<void> {
-    const current = { model: get(thread, 'model'), reasoningEffort: get(thread, 'reasoningEffort') };
-    const wanted = await this.desktopSettings({ model, reasoningEffort }, current);
-    if (!Object.keys(wanted).length) return;
-    const stop = (message: string): never => { throw Object.assign(new Error(message), { terminal: true }); };
-    const change: ThreadSettingsChange = { ...(wanted.model ? { model } : {}), ...(wanted.effort ? { effort: reasoningEffort } : {}) };
-    const condition = { model: typeof current.model === 'string' ? current.model : null, effort: typeof current.reasoningEffort === 'string' ? current.reasoningEffort : null };
-    let reached = false;
-    if (this.desktop.updateSettings) {
-      try {
-        const { applied } = await this.desktop.updateSettings({ threadId, settings: change, condition });
-        reached = true;
-        if (!applied) stop('Codex 桌面版里这个会话的模型或推理强度刚刚变了，没有发送：请刷新后重新选择');
-        return;
-      } catch (err) {
-        if (reached || errorField(err, 'terminal')) throw err;
-        if (!codexDesktop.unreached(err)) stop(`没能在 Codex 桌面版里换模型或推理强度（${messageOf(err)}），没有发送`);
-      }
-    }
-    if (this.platform !== 'darwin') stop('Codex 桌面版现在没有打开这个会话，没法给它换模型或推理强度，没有发送：请先在桌面版里打开这个会话');
-    const state = await this.ui.check();
-    if (!state.available) stop(`要换模型或推理强度得在 Codex 桌面版里换，但${state.reason}，没有发送`);
-    const result = await this.ui.run(['settings', this.titleOf(thread)], { settings: wanted });
-    if (!result.ok) stop(`${result.error || '没能在 Codex 桌面版里换模型'}，没有发送`);
-  }
-
   startTurn({ threadId, prompt, model, reasoningEffort, attachments }: Partial<SendInput> & { threadId: string; prompt: string }): CodexRun {
     const emitter = new CodexRun();
     (async () => {
       const thread = await this.readThread(threadId, true);
       const known = new Set(list(get(thread, 'turns')).map(turn => get(turn, 'id')));
-      // A different model or effort is made in the desktop first (applySettings).
-      await this.applySettings(threadId, thread, { model, reasoningEffort });
+      // A different model or effort is picked in the desktop first.
+      const wanted = await this.desktopSettings({ model, reasoningEffort }, { model: get(thread, 'model'), reasoningEffort: get(thread, 'reasoningEffort') });
+      if (Object.keys(wanted).length) {
+        const state = await this.ui.check();
+        if (!state.available) throw Object.assign(new Error(`要换模型或推理强度得在 Codex 桌面版里换，但${state.reason}，没有发送`), { terminal: true });
+        const result = await this.ui.run(['settings', this.titleOf(thread)], { settings: wanted });
+        if (!result.ok) throw Object.assign(new Error(`${result.error || '没能在 Codex 桌面版里换模型'}，没有发送`), { terminal: true });
+      }
       const inputs = this.buildCodexInputs(prompt, attachments);
       const queued = await this.send('thread/queue/add', { threadId, clientUserMessageId: randomUUID(), input: inputs });
       emitter.queuedId = get(queued, 'result', 'queuedSubmission', 'id');

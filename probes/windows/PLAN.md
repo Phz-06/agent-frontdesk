@@ -62,22 +62,8 @@ How it was verified:
   - Send was pressed through UIA (`Invoke` on the profile's `send`), which worked.
   - Opening the link brought Codex to the front. The shell that opened it was a child of the foreground Claude app, so the inherited-right caveat applies.
 
-**Codex's model and effort now go through route B** (`CodexBridge#applySettings`, both platforms). Before a message is queued:
-- **Only what differs.** Only a model or effort the person picked that differs from the chat's is sent, as `thread-follower-update-thread-settings`. The `condition` is the settings just read from the chat's record, with both fields always given.
-- **`applied: false`.** Nothing is sent, and the page says the settings just changed and to pick again.
-- **Another router error** (a timeout, say). Nothing is sent, and no menu is tried, since the change may have been made.
-- **No window has the chat** (`no-client-found`, or the pipe is not there). macOS falls back to the Accessibility menus. Windows does not send, and says to open the chat in the desktop first.
-- **Verified in the test chat:**
-  - The console sent `reasoningEffort: low`; the change was applied, and the turn then queued and ran.
-  - The rollout's `turn_context` for that turn says `effort: low`; every earlier turn says `medium`.
-  - The foreground did not change.
-- **The deep link and "Trust this folder?"** For step 5:
-  - A folder Codex already trusts opens the new chat straight on that project, with no dialog.
-  - A folder it does not trust raises the dialog first. The console must stop there and tell the person to trust the folder in Codex: pressing Trust is an authorization, which is the person's to give.
-
 Still open from step 1:
-- **Does a deep link take the foreground on its own?** Test this from the server: open the link after a 10 s delay, with Notepad put in front meanwhile.
-- **Windows with no window owning the chat**, for a settings change: covered by the unit tests only; not yet seen live.
+- **Use `thread-follower-update-thread-settings` in the bridge** for Codex's model and effort, in place of the menus, on both platforms. Then check the next turn runs with it.
 - **The page links only Unix-shaped local paths** (`LOCAL_ROOT` in `src/client/js/renderers.ts`), so `C:\…` in a reply is not a file link yet.
 - **Codex's new-chat options** (`/api/new-options/codex`) answer 409 until the window helper exists.
 
