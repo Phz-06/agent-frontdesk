@@ -53,10 +53,18 @@ From step 1 (read) and read-only `act --do inspect` checks. Nothing was pressed.
   - The foreground lock is on, and stricter than the default (`SPI_GETFOREGROUNDLOCKTIMEOUT` is 2147483647 ms), so a loose setting did not let Codex in.
   - Whatever grants the right, UI Automation's call into Chromium or the page's own focus code, it would grant it to a background Frontdesk server just the same.
   - Caveat: on this machine everything runs at High integrity with UAC off. The Medium case has not been seen.
-- **Codex's app-server has no request that changes settings alone.** This was a read-only look at the app-server bundled with Codex 26.1111 (`codex.exe` 0.169.0-alpha.11.1, `app-server generate-json-schema`).
-  - No client request sets a thread's model or effort on its own. `effort` exists only on `turn/start` ("for this turn and subsequent turns"). `model` exists on `thread/start`, on `thread/resume` (with no effort there) and on `turn/start`. `thread/metadata/update` patches Git metadata only.
-  - `thread/settings/updated` is a server notification. It carries `model`, `effort`, `approvalPolicy`, `collaborationMode` and the active permission profile, so it can be read but not written.
-  - This schema has no `thread/queue/add`, only the `thread/queue/changed` notification. Check that against route A in `channels.md` before porting the queue.
+- **Codex's app-server** (bundled with Codex 26.1111 as `app\resources\codex.exe` 0.169.0-alpha.11.1, read-only look). `generate-json-schema` leaves experimental methods out unless it is given `--experimental`, and the bridge connects with `capabilities: { experimentalApi: true }`. With `--experimental`, the schema has:
+  - `thread/queue/add`, `delete`, `list`, `reorder`, `start` and `update`. So route A's queue exists on Windows.
+  - `thread/settings/update` (`ThreadSettingsUpdateParams`: `model` and `effort` "for subsequent turns", plus `approvalPolicy`, `collaborationMode`, `permissions`, `sandboxPolicy`, `serviceTier` and others).
+  - Without `--experimental`, the only places to set the model and effort are `thread/start`, `thread/resume` and `turn/start`. `thread/settings/updated` is the server's notification of the result.
+- **Codex's model and effort need no menus: route B.** The Windows desktop bundle (`app.asar` in the OpenAI.Codex package) carries the same window-to-window router as the Mac.
+  - On win32 its endpoint is the named pipe `\\.\pipe\codex-ipc` (`path.join("\\\\.\\pipe", "codex-ipc")`). Elsewhere it is `<codex home>/ipc/ipc.sock`. Messages are framed as a 4-byte little-endian length followed by UTF-8 JSON.
+  - The bundle has 18 `thread-follower-*` requests: steer-turn, interrupt-turn, start-turn, the queue ones, and the two that matter here:
+    - **`thread-follower-update-thread-settings`.** A window that does not own the thread sends `{conversationId, threadSettings, activeTurnId?, condition?}`, where `condition` is `{ifModelEquals?, ifEffortEquals?}`. The owner calls its own app-server `thread/settings/update {threadId, ...threadSettings}`, updates its own state so its composer shows the change, and answers `{applied}`.
+    - **`thread-follower-read-model-settings`.** It returns `{model, reasoningEffort, …}` from the owner.
+  - So changing a Codex chat's model or effort goes through route B, like steer and interrupt in `src/server/codex-desktop.ts`. It avoids the menus, the foreground and the Power slider, on both platforms. Only `socketPath()` changes, as planned.
+  - Sending one changes a real chat, so it has not been sent here. It is to be tried in a test chat, with the person's agreement.
+  - Codex's new chat (project picker, new-chat button) is still UI-only, so it still meets the menu findings above.
 
 **Against the Mac driver and agent-desktop**
 
@@ -76,7 +84,7 @@ Windows has no counterpart to `postToPid`. `PostMessage` keys do nothing in Chro
 | Open a menu (press) | Codex: `Expand` works but takes the foreground; `DoDefaultAction` in the background fails | **Breaks the "never take the foreground" rule**: refuse, unless a way is found that keeps the foreground |
 | Close a menu (Escape) | No UIA action closes Codex's menu | Close menus only by pressing a row, which closes them on the Mac too. Otherwise refuse |
 | Claude submenu (focus + Right) | Codex's Select model row opens with `Invoke`; Claude's rows are untested | Use `Invoke` on the row |
-| Codex Power slider (Left/Right) | No `RangeValue`, only `Invoke` | Not possible: refuse the effort change and say why |
+| Codex Power slider (Left/Right) | No `RangeValue`, only `Invoke` | Not through the UI. Use route B instead: `thread-follower-update-thread-settings` over `\\.\pipe\codex-ipc` (see above). Codex's model choice goes the same way, so its menus are not needed for settings |
 | Focus (`AXFocused`) | `SetFocus` takes the foreground | Do not use |
 | Fill (`AXValue`) | Untested (the box held text) | `Value.SetValue`, to be measured in an empty composer |
 
