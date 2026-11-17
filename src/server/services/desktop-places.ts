@@ -114,6 +114,23 @@ export function antigravityApp(options: PlaceOptions = {}): string {
   return '';
 }
 
+/**
+ * How Antigravity's agentapi is run, as [program, arguments before the command], or null.
+ * macOS: the `agentapi` it installs under ~/.gemini/antigravity/bin, or one on PATH. Windows: that
+ * file is agentapi.bat, which only runs `<app>\resources\bin\language_server.exe agentapi %*`; the
+ * exe is started directly, as Node cannot start a .bat without a shell and its quoting.
+ */
+export function agentapiCommand(agyHome: string, options: PlaceOptions = {}): [string, string[]] | null {
+  const { platform, env, home } = opts(options);
+  if (platform === 'win32') {
+    // A real file looked for on disk: joined the way this machine joins paths.
+    const server = path.join(env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'), 'Programs', 'Antigravity', 'resources', 'bin', 'language_server.exe');
+    return fs.existsSync(server) ? [server, ['agentapi']] : null;
+  }
+  const found = findExecutable([path.join(agyHome, 'bin', 'agentapi'), 'agentapi'], options);
+  return found ? [found, []] : null;
+}
+
 /** Antigravity's icon file (its .icns on macOS); '' where the app ships none the console can read. */
 export function antigravityIconFile(options: PlaceOptions = {}): string {
   return opts(options).platform === 'darwin' ? '/Applications/Antigravity.app/Contents/Resources/icon.icns' : '';

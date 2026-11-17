@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  antigravityApp, appAsar, appIconFile, bundledCodexCli, claudeCliIn, claudeDesktopHome, findExecutable,
+  agentapiCommand, antigravityApp, appAsar, appIconFile, bundledCodexCli, claudeCliIn, claudeDesktopHome, findExecutable,
   helperCacheDir, linkCommand, openLink, packageRoot, setPackageLookup, PACKAGES,
 } from '../src/server/services/desktop-places.js';
 import { readAppIcon } from '../src/server/services/app-assets.js';
@@ -80,6 +80,18 @@ test('a deep link goes to the app in the background on macOS, and to the shell\'
   await openLink(link, { platform: 'win32', run: (file, args, _options, done) => { ran.push([file, args]); done(null); } });
   assert.deepEqual(ran, [['rundll32.exe', ['url.dll,FileProtocolHandler', link]]]);
   await assert.rejects(openLink(link, { platform: 'win32', run: (_file, _args, _options, done) => done(new Error('no handler')) }), /no handler/);
+});
+
+test('Antigravity\'s agentapi: its own file on macOS; on Windows the language server the .bat runs, started directly', () => {
+  const local = temp(), bin = path.join(local, 'Programs', 'Antigravity', 'resources', 'bin');
+  // Not installed: nothing to run (and no shell to fall back on).
+  assert.equal(agentapiCommand('/nowhere', { platform: 'win32', home: '/h', env: { LOCALAPPDATA: local } }), null);
+  fs.mkdirSync(bin, { recursive: true }); fs.writeFileSync(path.join(bin, 'language_server.exe'), '');
+  assert.deepEqual(agentapiCommand('/nowhere', { platform: 'win32', home: '/h', env: { LOCALAPPDATA: local } }), [path.join(bin, 'language_server.exe'), ['agentapi']]);
+  if (process.platform !== 'win32') {
+    const agy = temp(); fs.mkdirSync(path.join(agy, 'bin')); fs.writeFileSync(path.join(agy, 'bin', 'agentapi'), '', { mode: 0o755 });
+    assert.deepEqual(agentapiCommand(agy, { platform: process.platform, env: { PATH: '' } }), [path.join(agy, 'bin', 'agentapi'), []]);
+  }
 });
 
 test('finding a program: PATH with PATHEXT on Windows, where any existing file runs', () => {

@@ -4,7 +4,7 @@ import os from 'node:os';
 import { ROOT, HERE } from './paths.js';
 import type { BridgeConfig, Model } from '../shared/contract.js';
 import { bag, list, get, str, parseJson } from '../shared/guards.js';
-import { appAsar, bundledCodexCli, claudeCliName, claudeDesktopHome, findExecutable } from './services/desktop-places.js';
+import { agentapiCommand, appAsar, bundledCodexCli, claudeCliName, claudeDesktopHome, findExecutable } from './services/desktop-places.js';
 
 function executable(env: string, candidates: Array<string | null | undefined>): string | null {
   if (process.env[env]) return process.env[env];
@@ -35,6 +35,7 @@ function catalogsOf(value: unknown): Record<string, Model[]> {
 function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
   const home = os.homedir();
   const claudeDesktop = env.CLAUDE_DESKTOP_HOME || claudeDesktopHome({ env, home });
+  const agentapi = env.AGENTAPI_BIN ? null : agentapiCommand(env.ANTIGRAVITY_HOME || path.join(home, '.gemini/antigravity'), { env, home });
   const agyHome = env.ANTIGRAVITY_HOME || path.join(home, '.gemini/antigravity');
   let catalogs: Record<string, Model[]> = {};
   if (env.BRIDGE_MODEL_CATALOG) catalogs = catalogsOf(parseJson(fs.readFileSync(env.BRIDGE_MODEL_CATALOG, 'utf8')));
@@ -58,7 +59,7 @@ function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
     dictationEngine: env.BRIDGE_DICTATION_ENGINE || 'claude',
     // What the person chose in the console (which agents are on). Local to this checkout, not committed.
     settingsFile: env.BRIDGE_SETTINGS_FILE || path.join(ROOT, '.frontdesk.json'),
-    agyHome, agentapiBin: executable('AGENTAPI_BIN', [path.join(agyHome, 'bin/agentapi'), 'agentapi']),
+    agyHome, agentapiBin: env.AGENTAPI_BIN || agentapi?.[0] || null, agentapiArgs: env.AGENTAPI_BIN ? [] : agentapi?.[1] || [],
     catalogs,
   };
 }
