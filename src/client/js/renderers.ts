@@ -328,7 +328,11 @@ function drawMarkdown(text: string): string {
       const target = filePathOf(lineAnchor(decoded(href)), { link: true });
       if (target) { link.replaceWith(fileLink(target, link.textContent)); continue; }
       const code = document.createElement('code'); code.textContent = link.textContent; code.title = href; link.replaceWith(code);
-    } else { link.target = '_blank'; link.rel = 'noopener noreferrer'; }
+    } else {
+      link.target = '_blank'; link.rel = 'noopener noreferrer';
+      // A source the reply cites (a desktop chat read from its page: [site](url "citation")) is the desktop's chip.
+      if (link.title === 'citation') { link.className = 'md-cite'; link.title = href; }
+    }
   }
   // Inline code that is a file path opens the file too (code blocks stay as they are).
   for (const code of template.content.querySelectorAll('code')) {

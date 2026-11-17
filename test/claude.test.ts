@@ -1236,6 +1236,17 @@ test('controls are found by what the desktop\'s language does not change, their 
   assert.match(driver, /if let has = l\.has \{/);
   assert.match(driver, /assistantIn\.contains \{ fits\(up, \$0\) \} \} == true \? "assistant" : "user"/);
   assert.match(driver, /if found\.count == 2, let low = found\.min\(\), let high = found\.max\(\), low >= 1 \{ numbers = \(low, high\) \}/);
+  // A reply is read with what the page marks in it (seen in Claude's chat mode with web sources):
+  // its links by where they point, a cited source's chip marked "citation" by the profile's
+  // wordless locator, bold and italic text, and a numbered list's own numbers. A chip wrapped onto
+  // the next line stays in its sentence's paragraph; a paragraph that opens in bold is still one.
+  assert.deepEqual(claudeRead.citation, { role: 'AXLink', class: 'group/tag' });
+  assert.match(driver, /let url = attr\(e, "AXURL"\)[^\n]+\n[^\n]+\n[^\n]+\n[^\n]+\n\s+return "\[\\\(shown\)\]\(\\\(target\)\\\(citation\.contains \{ fits\(e, \$0\) \} \? " \\"citation\\"" : ""\)\)"/);
+  assert.match(driver, /sub == "AXStrongStyleGroup" \? "\*\*" : sub == "AXEmphasisStyleGroup" \? "\*" : ""/);
+  assert.match(driver, /drawn\.range\(of: #"\^\\d\{1,9\}\[\.\)\]\$"#, options: \.regularExpression\) != nil \? drawn \+ " " : "- "/);
+  assert.match(driver, /!\(inline && lastBlock != nil && block != nil && CFEqual\(lastBlock!, block!\)\)/);
+  const renderers = fs.readFileSync(path.join(__dirname, '../src/client/js/renderers.ts'), 'utf8');
+  assert.match(renderers, /if \(link\.title === 'citation'\) \{ link\.className = 'md-cite'; link\.title = href; \}/);
   // Claude keeps a closed menu's rows on the page, still declaring their numbers (the models' "1"
   // next to the modes' "1"): a row taken by its place is taken from the menu that was opened, the
   // box the page names after its button, and from nowhere when that box is not found.

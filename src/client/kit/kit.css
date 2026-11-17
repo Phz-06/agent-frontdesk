@@ -79,6 +79,9 @@ html[data-ui="kit"] .kit-text code { font-family: var(--kit-mono); font-size: 13
 html[data-ui="kit"] .kit-text pre { background: transparent; border: 1px solid var(--kit-card-line); border-radius: 8px; padding: 10px 14px; overflow-x: auto; margin: 0 0 12px; }
 html[data-ui="kit"] .kit-text pre code { background: none; padding: 0; font-size: 13px; line-height: 1.55; }
 html[data-ui="kit"] .kit-text a { color: var(--kit-blue); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--kit-blue) 45%, transparent); }
+/* a source the reply cites, drawn as the desktop's chip after the sentence (renderers.ts: a link titled "citation") */
+html[data-ui="kit"] .kit-text a.md-cite { display: inline-flex; align-items: center; height: 18px; margin: 0 2px; padding: 0 7px; border: 1px solid var(--kit-card-line); border-radius: 999px; font-size: 12px; line-height: 1; color: var(--kit-muted); text-decoration: none; white-space: nowrap; vertical-align: 1px; }
+html[data-ui="kit"] .kit-text a.md-cite:hover { color: var(--kit-text); background: var(--kit-code); }
 html[data-ui="kit"] .kit-text table { border-collapse: collapse; margin: 0 0 12px; font-size: 14px; }
 html[data-ui="kit"] .kit-text th, html[data-ui="kit"] .kit-text td { border-bottom: 1px solid var(--kit-card-line); padding: 6px 12px 6px 0; text-align: left; }
 html[data-ui="kit"] .kit-text th { font-weight: 600; }

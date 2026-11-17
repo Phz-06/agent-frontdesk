@@ -863,13 +863,61 @@ func chatMessages() -> ([[String: Any]], Int, Int) {
     if !speaker.isEmpty, !body.isEmpty { if number > 0 { numbered[number] = ["role": speaker, "text": body] } else { messages.append(["role": speaker, "text": body]) } }
     text = ""
   }
-  func add(_ piece: String, _ e: AXUIElement) {
+  // The block a piece of text is in: a text's parent; for an inline piece (a link, bold text), its
+  // parent past the wrappers drawn exactly around it alone (a source chip's).
+  var lastBlock: AXUIElement?
+  func blockOf(_ e: AXUIElement, inline: Bool) -> AXUIElement? {
+    var up = parent(e)
+    guard inline else { return up }
     let box = frame(e)
-    if lastBottom >= 0, box.height > 0, box.minY > lastBottom + 1, !text.hasSuffix("\n") { text += "\n\n" }
+    for _ in 0..<3 {
+      guard let wrapper = up, (attr(wrapper, "AXChildren") as? [AXUIElement])?.count == 1 else { break }
+      let around = frame(wrapper)
+      guard abs(around.minX - box.minX) <= 1, abs(around.minY - box.minY) <= 1, abs(around.width - box.width) <= 1, abs(around.height - box.height) <= 1 else { break }
+      up = parent(wrapper)
+    }
+    return up
+  }
+  // A piece below what was read last starts a new paragraph, unless it is an inline piece of the
+  // block that text is in: a chip wrapped onto the next line is below the sentence it follows.
+  func add(_ piece: String, _ e: AXUIElement, inline: Bool = false) {
+    let box = frame(e), block = blockOf(e, inline: inline)
+    if lastBottom >= 0, box.height > 0, box.minY > lastBottom + 1, !text.hasSuffix("\n"), !(inline && lastBlock != nil && block != nil && CFEqual(lastBlock!, block!)) { text += "\n\n" }
     text += piece
     if box.height > 0 { lastBottom = max(lastBottom, box.maxY) }
+    lastBlock = block
   }
   let skip: Set<String> = ["AXButton", "AXToolbar", "AXCheckBox", "AXPopUpButton", "AXMenuButton", "AXTextArea", "AXTextField"]
+  // A link as the page has it, in Markdown: [its text](where it points). A source the reply cites
+  // (the profile's "citation": Claude draws it as a small chip after the sentence) is marked with
+  // the title "citation", which the page draws as that chip.
+  let citation = locatorList("citation", chatSpec["citation"])
+  func link(_ e: AXUIElement) -> String {
+    var label = ""
+    _ = walk(e) { if role($0) == "AXStaticText" { label += value($0) }; return false }
+    label = label.trimmingCharacters(in: .whitespacesAndNewlines)
+    if label.isEmpty { label = name(e) }
+    let url = attr(e, "AXURL").map { "\($0)" } ?? ""
+    if url.isEmpty || label.isEmpty { return label }
+    let shown = label.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "[", with: "\\[").replacingOccurrences(of: "]", with: "\\]")
+    let target = url.contains(where: { " ()<>".contains($0) }) ? "<" + url.replacingOccurrences(of: "<", with: "%3C").replacingOccurrences(of: ">", with: "%3E").replacingOccurrences(of: " ", with: "%20") + ">" : url
+    return "[\(shown)](\(target)\(citation.contains { fits(e, $0) } ? " \"citation\"" : ""))"
+  }
+  // Bold and italic text (Chromium's AXStrongStyleGroup / AXEmphasisStyleGroup), with what is
+  // inside it (links too), as one Markdown piece; the spaces at its ends stay outside the marks.
+  func styled(_ e: AXUIElement) -> String {
+    let r = role(e), sub = attr(e, "AXSubrole") as? String ?? ""
+    if r == "AXStaticText" { return value(e) }
+    if r == "AXLink" { return link(e) }
+    if skip.contains(r) { return "" }
+    let inner = (attr(e, "AXChildren") as? [AXUIElement] ?? []).map(styled).joined()
+    let mark = sub == "AXStrongStyleGroup" ? "**" : sub == "AXEmphasisStyleGroup" ? "*" : ""
+    let body = inner.trimmingCharacters(in: .whitespaces)
+    if mark.isEmpty || body.isEmpty || body.contains("\n") { return inner }
+    return String(inner.prefix(while: { $0 == " " })) + mark + body + mark + String(inner.reversed().prefix(while: { $0 == " " }))
+  }
+  // How far each list the reading is inside indents its items' text (its marker's width), outermost first.
+  var lists: [Int] = []
   func visit(_ e: AXUIElement) {
     let r = role(e), n = name(e), sub = attr(e, "AXSubrole") as? String ?? ""
     var numbers: (k: Int, of: Int)?
@@ -940,7 +988,22 @@ func chatMessages() -> ([[String: Any]], Int, Int) {
       }
       return
     }
-    if r == "AXListMarker" { text += (text.hasSuffix("\n") || text.isEmpty ? "" : "\n") + "- "; lastBottom = -1; return }
+    // A list's marker as the page draws it: a number ("1. ") stays that number, anything else is a
+    // bullet; an item of a list inside another is indented under the outer item's text.
+    if r == "AXList" { lists.append(2); for child in attr(e, "AXChildren") as? [AXUIElement] ?? [] { visit(child) }; lists.removeLast(); return }
+    if r == "AXListMarker" {
+      let drawn = value(e).trimmingCharacters(in: .whitespaces)
+      let marker = drawn.range(of: #"^\d{1,9}[.)]$"#, options: .regularExpression) != nil ? drawn + " " : "- "
+      if !lists.isEmpty { lists[lists.count - 1] = marker.count }
+      text += (text.hasSuffix("\n") || text.isEmpty ? "" : "\n") + String(repeating: " ", count: lists.dropLast().reduce(0, +)) + marker
+      lastBottom = -1; return
+    }
+    // A link, and bold or italic text: one piece of the line it is in.
+    if !speaker.isEmpty, r == "AXLink" || sub == "AXStrongStyleGroup" || sub == "AXEmphasisStyleGroup" {
+      let piece = styled(e)
+      if !piece.isEmpty { add(piece, e, inline: true) }
+      return
+    }
     if r == "AXImage", !speaker.isEmpty, !n.isEmpty { text += (text.isEmpty || text.hasSuffix("\n") ? "" : "\n") + "[\(n)]\n"; lastBottom = frame(e).maxY; return }
     if r == "AXStaticText", !speaker.isEmpty { let v = value(e); if !v.isEmpty, !speakers.keys.contains(where: { v.hasPrefix($0) }) { add(v, e) }; return }
     for child in attr(e, "AXChildren") as? [AXUIElement] ?? [] { visit(child) }
