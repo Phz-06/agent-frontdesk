@@ -49,6 +49,14 @@ From step 1 (read) and read-only `act --do inspect` checks. Nothing was pressed.
   - The Power row (`effortRow`, class `SliderKeyboardControl-*`) is a `menuitem` with `Invoke` only. It has **no `RangeValue`**, and its acceleratorKey is `ArrowLeft ArrowRight`: it is moved by keys alone.
   - The Select model row has no `ExpandCollapse`, but **`Invoke` opens its model list** in place (the menu stays open, and the rows go from 7 to 4) without changing the foreground.
 - **focus:** `SetFocus` on the composer brings Codex to the front, as agent-desktop found.
+- **The foreground grab is not an artifact of the setup.** The first runs were started from inside the Claude app, which was in front, and it could have handed Codex the right to take the foreground. So the menu run was repeated with the probe started from a standalone PowerShell window (Win+R) and an unrelated app (Chrome) in front. The foreground still went from chrome.exe to ChatGPT.exe the moment `Expand` opened the menu.
+  - The foreground lock is on, and stricter than the default (`SPI_GETFOREGROUNDLOCKTIMEOUT` is 2147483647 ms), so a loose setting did not let Codex in.
+  - Whatever grants the right, UI Automation's call into Chromium or the page's own focus code, it would grant it to a background Frontdesk server just the same.
+  - Caveat: on this machine everything runs at High integrity with UAC off. The Medium case has not been seen.
+- **Codex's app-server has no request that changes settings alone.** This was a read-only look at the app-server bundled with Codex 26.1111 (`codex.exe` 0.169.0-alpha.11.1, `app-server generate-json-schema`).
+  - No client request sets a thread's model or effort on its own. `effort` exists only on `turn/start` ("for this turn and subsequent turns"). `model` exists on `thread/start`, on `thread/resume` (with no effort there) and on `turn/start`. `thread/metadata/update` patches Git metadata only.
+  - `thread/settings/updated` is a server notification. It carries `model`, `effort`, `approvalPolicy`, `collaborationMode` and the active permission profile, so it can be read but not written.
+  - This schema has no `thread/queue/add`, only the `thread/queue/changed` notification. Check that against route A in `channels.md` before porting the queue.
 
 **Against the Mac driver and agent-desktop**
 
@@ -75,7 +83,7 @@ Windows has no counterpart to `postToPid`. `PostMessage` keys do nothing in Chro
 **Still open**
 
 - **Fill:** `Value.SetValue` on Codex's composer, in an empty test conversation.
-- **Opening a Codex menu without the foreground:** whether `Expand` takes the foreground only because the window was behind another one, and whether giving the foreground back afterwards is acceptable.
+- **Opening a Codex menu without the foreground:** no way has been found yet (the setup was ruled out, see above). It is open whether giving the foreground back right afterwards is acceptable, and whether a server at Medium integrity behaves differently.
 - **Closing a menu by pressing its current row:** whether pressing the already chosen row closes a menu with no change.
 - **Settle curves (question 6):** for both apps. Claude's must be run from a standalone PowerShell window, since quitting Claude ends a session that runs inside it.
 - **Off-screen states (question 6):** minimized, covered and other virtual desktop, and whether `ScrollIntoView` refreshes the page.
