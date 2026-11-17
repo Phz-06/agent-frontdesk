@@ -204,8 +204,27 @@ function Step-Read {
         }
         $links[$scheme] = (Hide-Home $command)
     }
-    Save 'links' $links
-    Say ('Deep-link handlers: ' + (@($links.Keys | ForEach-Object { $_ + '=' + $(if ($links[$_]) { 'yes' } else { 'no' }) }) -join '  '))
+    # A packaged (MSIX) app declares its schemes in its manifest, not under Classes: list them per app, with
+    # the AppUserModelID (family!app id) that starts it.
+    $declared = @()
+    foreach ($pkg in @(Get-AppxPackage -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'claude|anthropic|codex|openai|chatgpt|antigravity' })) {
+        $manifest = $null
+        try { $manifest = $pkg | Get-AppxPackageManifest -ErrorAction Stop } catch { continue }
+        if (-not $manifest -or -not $manifest.Package.PSObject.Properties['Applications']) { continue }
+        foreach ($app in @($manifest.Package.Applications.Application)) {
+            if (-not $app) { continue }
+            $schemes = @()
+            if ($app.PSObject.Properties['Extensions'] -and $app.Extensions) {
+                $schemes = @(@($app.Extensions.Extension) | Where-Object { $_ -and $_.Category -eq 'windows.protocol' } | ForEach-Object { $_.Protocol.Name })
+            }
+            $declared += [ordered]@{ aumid = ($pkg.PackageFamilyName + '!' + $app.Id); exe = $app.Executable; protocols = $schemes }
+        }
+    }
+    Save 'links' ([ordered]@{ registry = $links; packaged = $declared })
+    Say ('Deep-link handlers: ' + (@($links.Keys | ForEach-Object {
+                    $s = $_; $inManifest = @($declared | Where-Object { $_.protocols -contains $s }).Count -gt 0
+                    $s + '=' + $(if ($links[$s]) { 'yes' } elseif ($inManifest) { 'yes(manifest)' } else { 'no' }) }) -join '  '))
+    Say ('Packaged apps and their protocols: ' + (@($declared | ForEach-Object { $_.aumid + ' [' + ($_.protocols -join ',') + ']' }) -join ', '))
 
     # Codex's window-to-window router is ~/.codex/ipc/ipc.sock on the Mac; on Windows a named pipe.
     $pipes = @([System.IO.Directory]::GetFiles('\\.\pipe\') | ForEach-Object { $_.Substring(9) })
