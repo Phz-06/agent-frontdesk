@@ -123,6 +123,22 @@ What this shows:
 - **Send can be late** in the tree when the screen does not switch (more than 2.4 s). The only nudge tried (`ScrollIntoView`) switches the screen, so a flow should rather wait.
 - **On desktop 2, Claude's menus do change the settings**, as their button shows. So settings through menus work there, at the cost of the screen going to desktop 2 for as long as the change takes (about 5 s here), then coming back.
 
+**A watchdog instead of another desktop.** Setup:
+- Claude was back on the person's desktop, behind a maximized Notepad, showing its test session.
+- A watchdog checked every 10 ms and, whenever a claude.exe window held the foreground, gave it straight back to Notepad (`AttachThreadInput` + `SetForegroundWindow`, no input). It also timed how long Claude's window was drawn on top at its centre.
+- The run had two phases: A, fill + Send; B, the Effort menu to Medium and back to High.
+
+| Phase | What happened | Numbers | What the person saw |
+| --- | --- | --- | --- |
+| A: fill | Claude took the foreground and was given it back | 1 grab, **47 ms** | "One frame" |
+| A: Send | **Send never appeared in the tree in 15 s**, so nothing was sent. The text stays unsent in the test session's composer | (none) | (nothing) |
+| B: menus | Every step worked: the button read "Opus 5.5 Medium", then "Opus 5.5 High". But the grab when the menu opened **could not be undone**: 389 of 390 give-backs failed while the menus were up | Claude on top from 18.1 s to the end, **about 6 s**, and still in front after the watchdog stopped | "Stayed a few seconds; still in front" |
+
+What this shows:
+- A fill's grab can be undone fast enough to be one frame.
+- With the window behind another app, though, Chromium did not update the tree (or the page) to show Send. On another desktop it showed late; here it did not show at all.
+- While Claude's menu is open, `SetForegroundWindow` to another window fails, attached or not. So a menu change keeps Claude in front for as long as the menus are open, and longer.
+
 - **Limit: the console cannot put the app on another desktop itself.** `IVirtualDesktopManager::MoveWindowToDesktop` moves only the calling process's own windows. So moving Claude (or Codex) to another desktop is the person's step; the console can only detect where the window is (`IsWindowOnCurrentVirtualDesktop`, `DWMWA_CLOAKED`) and say what to do.
 
 What follows for the port:
