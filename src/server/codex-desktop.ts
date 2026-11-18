@@ -201,13 +201,34 @@ function watch(conversationId: string, onRequests: (requests: DesktopRequest[]) 
 const answerUserInput = ({ threadId, requestId, response }: { threadId: string; requestId: unknown; response: unknown }, options?: RequestOptions): Promise<unknown> => request('thread-follower-submit-user-input', { conversationId: threadId, requestId, response }, { version: 1, timeoutMs: 15000, ...options });
 const decideApproval = ({ threadId, requestId, kind, decision }: { threadId: string; requestId: unknown; kind: 'fileChange' | 'commandExecution'; decision: 'accept' | 'decline' }, options?: RequestOptions): Promise<unknown> => request(kind === 'fileChange' ? 'thread-follower-file-approval-decision' : 'thread-follower-command-approval-decision', { conversationId: threadId, requestId, decision }, { version: 1, timeoutMs: 15000, ...options });
 
+// ---- the chat's model and reasoning effort, changed by the window that owns it ----
+// The owner applies them with its own app-server (thread/settings/update) and shows them in its
+// composer, so the desktop keeps the change; it answers { applied }. `condition` is a guard: the
+// owner applies only while its current settings are the ones given (both are passed, as the
+// desktop compares the effort whenever a condition is present).
+const SETTINGS_VERSION = 2, READ_SETTINGS_VERSION = 1;
+export interface ThreadSettingsChange { model?: string; effort?: string }
+function updateSettings({ threadId, settings, condition }: { threadId: string; settings: ThreadSettingsChange; condition: { model: string | null; effort: string | null } }, options?: RequestOptions): Promise<{ applied: boolean }> {
+  return request('thread-follower-update-thread-settings', { conversationId: threadId, threadSettings: settings, condition: { ifModelEquals: condition.model, ifEffortEquals: condition.effort } }, { version: SETTINGS_VERSION, timeoutMs: 15000, ...options })
+    .then(result => ({ applied: get(result, 'applied') === true }));
+}
+/** What the owning window says the chat's settings are: { model, reasoningEffort, … }. */
+function readSettings({ threadId }: { threadId: string }, options?: RequestOptions): Promise<unknown> {
+  return request('thread-follower-read-model-settings', { conversationId: threadId }, { version: READ_SETTINGS_VERSION, timeoutMs: 15000, ...options }).then(result => get(result, 'settings'));
+}
+/** Router errors that mean no window of the desktop has this chat (or the desktop is not there): nothing was asked of it. */
+const NOT_REACHED = new Set(['no-client-found', 'ENOENT', 'ECONNREFUSED', 'EPIPE', 'unavailable', 'closed']);
+const unreached = (err: unknown): boolean => NOT_REACHED.has(String(get(err, 'code') || ''));
+
 /** What the bridge uses of the desktop's IPC; a stand-in replaces it in tests. */
 export interface CodexDesktopIpc {
   steer: typeof steer;
   interrupt: typeof interrupt;
+  updateSettings?: typeof updateSettings;
+  readSettings?: typeof readSettings;
   watch?: typeof watch;
   answerUserInput: typeof answerUserInput;
   decideApproval: typeof decideApproval;
 }
 
-export { socketPath, frame, request, steer, interrupt, applyPatches, watch, answerUserInput, decideApproval };
+export { socketPath, frame, request, steer, interrupt, updateSettings, readSettings, unreached, applyPatches, watch, answerUserInput, decideApproval };

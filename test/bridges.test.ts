@@ -42,6 +42,10 @@ function fakeCodex({ model = 'gpt-a', effort = 'medium' } = {}) {
     return { result: {} };
   };
   bridge.wake = async id => { calls.push(['wake', id]); };
+  // No desktop window has the chat (the real router is never reached from a test), on macOS, so a
+  // settings change falls back to the desktop's menus unless a test says otherwise.
+  bridge.desktop = fake<CodexDesktopIpc>({ updateSettings: async () => { throw Object.assign(new Error('no-client-found'), { code: 'no-client-found' }); } });
+  bridge.platform = 'darwin';
   // The desktop takes the queued message: a new turn appears in the thread's record.
   const take = (text: string) => thread.turns.push({ id: 't2', status: 'completed', completedAt: 9, items: [{ id: 'u', type: 'userMessage', content: [{ type: 'text', text }] }, { id: 'a', type: 'agentMessage', text: 'done' }] });
   return { bridge, calls, thread, take };
@@ -88,6 +92,42 @@ test('Codex: a different model is picked in the desktop first; when it cannot be
   const same = bridge.startTurn({ threadId: 'th', prompt: 'more', model: 'gpt-a', reasoningEffort: 'medium' });
   await new Promise(resolve => setTimeout(resolve, 20)); same.emit('interrupt');
   assert.deepEqual(touched, []);
+});
+
+test('Codex: a different model or effort is made by the window that owns the chat, on condition it still has the settings just read; no menu is opened', async () => {
+  const { bridge, calls, take } = fakeCodex();
+  const asked: unknown[] = [];
+  let answer: { applied: boolean } | Error = { applied: true };
+  bridge.desktop = fake<CodexDesktopIpc>({ updateSettings: async request => { asked.push(request); if (answer instanceof Error) throw answer; return answer; } });
+  const touched: unknown[] = [];
+  bridge.ui = fake<DesktopAutomation>({ check: async () => ({ available: true }), run: async args => { touched.push(args); return { ok: true }; } });
+  const emitter = bridge.startTurn({ threadId: 'th', prompt: 'go', model: 'gpt-b', reasoningEffort: 'high' });
+  const done = settle(emitter);
+  await new Promise(resolve => setTimeout(resolve, 20)); take('go'); await done; emitter.emit('interrupt');
+  // The app-server's ids, and the guard is what the record said the chat has.
+  assert.deepEqual(asked, [{ threadId: 'th', settings: { model: 'gpt-b', effort: 'high' }, condition: { model: 'gpt-a', effort: 'medium' } }]);
+  assert.deepEqual(touched, [], 'the menus are not touched');
+  assert.deepEqual(calls.map(([method]) => method).filter(method => method !== 'thread/read'), ['thread/queue/add', 'wake']);
+  // Only what differs is changed.
+  asked.length = 0;
+  const effortOnly = bridge.startTurn({ threadId: 'th', prompt: 'more', model: 'gpt-a', reasoningEffort: 'low' });
+  await new Promise(resolve => setTimeout(resolve, 20)); effortOnly.emit('interrupt');
+  assert.deepEqual(dig(asked, 0, 'settings'), { effort: 'low' });
+  // The desktop changed them meanwhile: not applied, nothing queued, and the page is told to pick again.
+  calls.length = 0; answer = { applied: false };
+  const stale: unknown = await settle(bridge.startTurn({ threadId: 'th', prompt: 'stale', reasoningEffort: 'low' })).catch((err: unknown) => err);
+  assert.match(String(errorField(stale, 'message')), /刚刚变了，没有发送/); assert.equal(errorField(stale, 'terminal'), true);
+  assert.ok(!calls.some(([method]) => method === 'thread/queue/add'));
+  // The router answered with an error of its own (not "no window has it"): not sent, no menu either.
+  answer = Object.assign(new Error('Codex 桌面版没有响应'), { code: 'timeout' });
+  const silent: unknown = await settle(bridge.startTurn({ threadId: 'th', prompt: 'silent', reasoningEffort: 'low' })).catch((err: unknown) => err);
+  assert.match(String(errorField(silent, 'message')), /^没能在 Codex 桌面版里换模型或推理强度（Codex 桌面版没有响应），没有发送$/);
+  assert.deepEqual(touched, []);
+  // No window has the chat on Windows: nothing is sent, and the page says to open it in the desktop.
+  answer = Object.assign(new Error('no-client-found'), { code: 'no-client-found' }); bridge.platform = 'win32';
+  const closed: unknown = await settle(bridge.startTurn({ threadId: 'th', prompt: 'closed', reasoningEffort: 'low' })).catch((err: unknown) => err);
+  assert.match(String(errorField(closed, 'message')), /没有打开这个会话.*没有发送/);
+  assert.deepEqual(touched, []); assert.ok(!calls.some(([method]) => method === 'thread/queue/add'));
 });
 
 test('Codex: stopping takes back a message the desktop has not started, and stops a running turn through the desktop', async () => {
