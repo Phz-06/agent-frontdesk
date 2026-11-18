@@ -142,6 +142,11 @@ test('Windows: no flow sends input or moves a window itself; only the driver\'s 
   assert.match(body('FailIfHidden'), /IsWindowVisible\(window\)[\s\S]*Fail\("hidden"/);
   // The park lock's own code: a flow's "busy" means the chat is running, and the Claude bridge then steers.
   assert.doesNotMatch(body('Park'), /Fail\("busy"/);
+  // Codex's bridge opens a chat no window owns with `settings` (pickInDesktop), on Windows too; there
+  // it only brings the chat up: a model or effort for the menus is refused (the slider takes keys).
+  const codex = fs.readFileSync(path.join(native, 'codex-desktop.cs'), 'utf8');
+  assert.match(codex, /new\[\] \{[^}]*"settings"[^}]*\}\) flowCommands\.Add/);
+  assert.match(codex, /command == "settings"[\s\S]*?wanted\.ContainsKey\("model"\) \|\| wanted\.ContainsKey\("effort"\)\) Fail\("menu_keys"/);
 });
 
 test('Windows: a helper stopped mid-park is followed by `restore`, and a park that left something out is reported', async () => {

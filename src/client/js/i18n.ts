@@ -233,6 +233,7 @@ const REPORTS: Record<string, string> = {
   '没能在 Codex 桌面版里新建聊天': "Couldn't start a new chat in Codex's desktop app", '没能在 Codex 桌面版里换模型': "Couldn't change the model in Codex's desktop app",
   '消息已在 Codex 桌面版里发出，但还没在它的聊天列表里看到这个新聊天，请到桌面版里查看': "Your message was sent in Codex's desktop app, but the new chat hasn't shown up yet. Check the desktop app.",
   '没能唤起 Codex 桌面版来处理这条消息': "Couldn't get Codex's desktop app to pick up this message", '消息已排进 Codex 桌面版的队列，正在等桌面版接手': "Your message is in Codex's desktop queue, waiting for the desktop app to pick it up",
+  'Windows 上不用 Codex 桌面版的菜单换模型或推理强度（推理强度只能用方向键调，工作台不向桌面版发按键）': "On Windows the console doesn't change Codex's model or effort through its menus (the effort slider takes only arrow keys, and the console sends the desktop app no keys)",
   '消息已排进 Codex 桌面版的队列，但上一轮是被停止的，桌面版会先暂停它：在桌面版里打开这个会话把它发出去，或在这里停止撤回': "Your message is in Codex's desktop queue, but the last turn was stopped, so the desktop app holds it. Open this chat in the desktop app to send it, or stop here to take it back.",
   'Codex 桌面版没有确认开始这一轮，请在桌面版里看一下这条消息有没有发出': "Codex's desktop app didn't confirm it started this turn. Check in the desktop app whether the message went out.",
   'Codex 桌面版没有确认收到这条消息，请在桌面版看一下是否已插入': "Codex's desktop app didn't confirm it got this message. Check the desktop app to see whether it was added.",

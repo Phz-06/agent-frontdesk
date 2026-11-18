@@ -6,13 +6,16 @@
 //   new-shown               (what the New chat page's model button shows now, e.g. "GPT-6 Sol Medium":
 //                            a new chat runs with it; nothing is picked)
 //   new-leave               (the shared driver's: back to the person's chat, unless they write there)
+//   settings <title>        (brings the chat up in the sidebar, then back to the person's chat: a window
+//                            then owns it, and its model and effort are changed over the router)
 // new takes --model / --effort as the console names them ("GPT-6-Sol", "high").
 //
 // Everything else Codex does from the console needs no window: sending, steering and stopping go
 // through its app-server and its windows' router (codex-bridge.ts, codex-desktop.ts), and so does an
-// existing chat's model and effort (thread-follower-update-thread-settings). A new chat is the
-// exception: it has to be started by the desktop itself, so its own app-server owns the thread from
-// the first turn on.
+// existing chat's model and effort (thread-follower-update-thread-settings), once a window owns the
+// chat: only a chat the desktop has loaded since it started has an owner, so `settings` loads it
+// (codex-bridge.ts pickInDesktop). A new chat is the exception: it has to be started by the desktop
+// itself, so its own app-server owns the thread from the first turn on.
 //
 // On Windows the window is parked for these as for Claude's (uia-driver.cs, "the window"): off the
 // screen but for a corner, the foreground given straight back, held only while a menu is open. Two
@@ -22,8 +25,9 @@
 //   started; the page is told why, before anything on the page was touched.
 // - A Codex menu is not closed by Collapse (measured); a pick closes it. One left open is reported,
 //   and nothing is sent.
-// Not tried on the real app yet (probes/windows/PLAN.md, step 5): the project menu and a model pick
-// from behind.
+// - `settings` only brings the chat up: the Mac's fallback of picking in the model menu and the Power
+//   slider (when the router cannot) is refused here, as the slider takes only arrow keys.
+// Tried on the real app: probes/windows/PLAN.md, "The round of real-app tests".
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -34,7 +38,7 @@ namespace Frontdesk.Driver
     {
         static partial void DeclareFlow()
         {
-            foreach (string c in new[] { "new", "new-shown", "new-leave" }) flowCommands.Add(c);
+            foreach (string c in new[] { "new", "new-shown", "new-leave", "settings" }) flowCommands.Add(c);
         }
 
         // ---- Codex's own controls, named in profiles/codex.json ----
@@ -142,6 +146,22 @@ namespace Frontdesk.Driver
 
         static partial void RunFlow()
         {
+            // settings <title>: the chat brought up in the sidebar and the person's chat back, so that a
+            // window owns it (codex-bridge.ts pickInDesktop changes its settings over the router then).
+            if (command == "settings")
+            {
+                string chat = args.Count > 1 ? args[1] : "";
+                if (chat.Length == 0) Fail("usage", "缺少会话标题");
+                if (wanted.ContainsKey("model") || wanted.ContainsKey("effort")) Fail("menu_keys", "Windows 上不用 Codex 桌面版的菜单换模型或推理强度（推理强度只能用方向键调，工作台不向桌面版发按键）");
+                Begin(true);
+                string was = StartedOn();
+                Action goBack = () => { if (was.Length > 0 && was != chat) Show(was, ""); };
+                if (!Show(chat, "")) { goBack(); Fail("not_found", "没能在 Codex 桌面版的侧栏里找到这个聊天"); }
+                Until(2, () => CodexModelMenu() != null);
+                string shown = ShownLabel();
+                goBack();
+                Out(new Dictionary<string, object> { { "ok", true }, { "changed", new List<object>() }, { "shown", shown } });
+            }
             if (command == "new-leave")
             {
                 newPageInUse = () => OnNewPage() && (Find("send") != null || HoldsText(Find("composer")));
