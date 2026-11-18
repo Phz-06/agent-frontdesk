@@ -9,7 +9,7 @@ To add a new one, send it a prompt and it connects itself.
 
 [![CI](https://github.com/Phz-06/agent-frontdesk/actions/workflows/ci.yml/badge.svg)](https://github.com/Phz-06/agent-frontdesk/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)
+![Platform: macOS · Windows 11](https://img.shields.io/badge/platform-macOS%20%C2%B7%20Windows%2011-lightgrey.svg)
 ![Node 22.16+](https://img.shields.io/badge/node-%E2%89%A5%2022.16-brightgreen.svg)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-orange.svg)](CONTRIBUTING.md)
 
@@ -53,17 +53,19 @@ Agent Frontdesk puts those desktop apps into one web page. The apps still do the
 - Change the model, reasoning effort and permissions, attach images and files, dictate
 - Answer the AI's questions and approval requests right in the page
 - Replies look the way each desktop app shows them, with code, maths, diagrams, tool steps and plans
-- A file mentioned in a reply opens in a preview on the right with one click, or shows in Finder
+- A file mentioned in a reply opens in a preview on the right with one click, or shows in Finder / File Explorer
 - Any chat opens in its desktop app with one click, on the same session
 - Switch AIs on and off, rename them, reorder them, change their avatars. Light and dark, English and Chinese
 
 ## Quick start
 
-You need macOS and [Node.js](https://nodejs.org) 22.16 or later.
+You need macOS or Windows 11 and [Node.js](https://nodejs.org) 22.16 or later (sending through Claude/Codex on Windows builds a local .NET 8 SDK helper).
 
 ```sh
 git clone https://github.com/Phz-06/agent-frontdesk.git
 cd agent-frontdesk
+# On Windows, disable CRLF auto-conversion so source-matching tests see LF:
+git config core.autocrlf false
 npm ci
 npm start
 ```
@@ -72,11 +74,11 @@ Open <http://127.0.0.1:4100>. Every AI whose desktop app is installed shows up i
 
 Codex, Claude and Antigravity are connected so far. Open the desktop app and sign in before you use one.
 
-Sending to Codex and Claude needs the Accessibility permission. In System Settings → Privacy & Security → Accessibility, allow the terminal app you run `npm start` in, then start Frontdesk again. For now, keep the desktop apps' interface in English.
+On macOS, sending to Codex and Claude needs the Accessibility permission. In System Settings → Privacy & Security → Accessibility, allow the terminal app you run `npm start` in, then start Frontdesk again. On Windows 11, no Accessibility permission is required (Frontdesk compiles a local .NET UIA helper automatically). For now, keep the desktop apps' interface in English.
 
 Claude's model list, quota and voice input also need Claude Code signed in once, with the account the desktop app uses. When it is not, the page shows the command to run in a terminal.
 
-If the port is taken, run `PORT=4200 npm start`.
+If the port is taken, run `PORT=4200 npm start` (or in Windows PowerShell: `$env:PORT=4200; npm start`).
 
 ## Add an AI
 
@@ -86,7 +88,7 @@ It does not build any pages. The sidebar, conversation, composer, cards, file pr
 
 ## How it works
 
-Frontdesk is a small server on your computer. It reads the records each desktop app keeps locally to show history and progress. To send, it uses the app's own channel: an interface where the app has one, and otherwise the macOS Accessibility API, which fills in the message and presses Send in the app's window in the background, without bringing it to the front.
+Frontdesk is a small server on your computer. It reads the records each desktop app keeps locally to show history and progress. To send, it uses the app's own channel: an interface where the app has one, and otherwise macOS Accessibility (or Windows UI Automation on Windows 11), which fills in the message and presses Send in the app's window in the background, without bringing it to the front.
 
 ```
  Browser ──▶ Frontdesk server ──▶ a plugin per AI ──▶ the desktop app
@@ -95,8 +97,8 @@ Frontdesk is a small server on your computer. It reads the records each desktop 
 
 | AI | Reads history from | Sends through |
 | --- | --- | --- |
-| Codex | Codex's local app-server | Codex's own message queue and its window-to-window channel, with macOS Accessibility for new chats and model changes |
-| Claude | Claude Code's session transcripts | macOS Accessibility |
+| Codex | Codex's local app-server | Codex's own message queue and its window-to-window channel, with macOS Accessibility / Windows UIA for desktop actions |
+| Claude | Claude Code's session transcripts | macOS Accessibility / Windows UIA |
 | Antigravity | Its local database and transcripts | Its local language server |
 
 Whether a turn has finished is decided by the desktop app's own record. These channels can change when a desktop app updates, and we update with them.
@@ -120,11 +122,11 @@ All optional. Frontdesk finds standard install locations by itself.
 | `BRIDGE_PLUGIN_DIR` | Folder the plugins are loaded from | `dist/server/plugins` |
 | `BRIDGE_MODEL_CATALOG` | JSON file of model IDs for AIs that cannot list their own | none |
 | `BRIDGE_DICTATION_ENGINE` | Which AI's speech-to-text voice input tries first; it falls back to another AI's or the browser's | `claude` |
-| `CODEX_BIN` / `CODEX_HOME` | Codex executable and data folder | found on `PATH` or in ChatGPT.app / `~/.codex` |
+| `CODEX_BIN` / `CODEX_HOME` | Codex executable and data folder | found on `PATH`, ChatGPT.app / MSIX package / `~/.codex` |
 | `CLAUDE_BIN` / `CLAUDE_HOME` | Claude Code executable and session folder | found on `PATH` or in Claude's app data / `~/.claude` |
-| `CLAUDE_DESKTOP_HOME` | Claude desktop app's data folder | `~/Library/Application Support/Claude` |
+| `CLAUDE_DESKTOP_HOME` | Claude desktop app's data folder | `~/Library/Application Support/Claude` (Windows: `%APPDATA%\Claude`) |
 | `AGENTAPI_BIN` / `ANTIGRAVITY_HOME` | Antigravity's CLI and data folder | `~/.gemini/antigravity` |
-| `CHATGPT_APP_ASAR` / `CLAUDE_APP_ASAR` / `ANTIGRAVITY_APP_ICON` | Installed apps that icons, characters and fonts are read from | under `/Applications` |
+| `CHATGPT_APP_ASAR` / `CLAUDE_APP_ASAR` / `ANTIGRAVITY_APP_ICON` | Installed apps that icons, characters and fonts are read from | `/Applications` on macOS, `%LOCALAPPDATA%\Programs` or MSIX on Windows |
 
 </details>
 
@@ -133,13 +135,12 @@ All optional. Frontdesk finds standard install locations by itself.
 - The server listens on your own machine only and has no login, so do not expose it to the internet
 - Chats stay on your computer. There is no telemetry and no server of ours
 - Voice input and quota use Claude Code's own sign-in, read on the server only
-- The Accessibility permission goes to the terminal that runs Frontdesk
+- On macOS, the Accessibility permission goes to the terminal that runs Frontdesk (Windows uses UI Automation with no system-wide Accessibility grant)
 
 To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## Roadmap
 
-- Windows support
 - More desktop AIs
 - Full support for desktop apps set to Chinese and other interface languages
 - A login, so you can check in and send from your phone
@@ -147,7 +148,7 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
 ## Development
 
 ```sh
-npm run dev      # page with hot reload on PORT, server on PORT+1
+npm run dev      # page with hot reload on PORT, server on PORT+1 (POSIX shell; on Windows run in Git Bash)
 npm test
 npm run check    # type check and build
 ```

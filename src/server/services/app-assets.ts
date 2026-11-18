@@ -38,6 +38,13 @@ function readAsarFile(archive: string, pattern: RegExp): { path: string; data: B
 // For a plugin's `detect` (is its desktop app on this machine?). Nothing is opened or started.
 /** Where the app an app.asar belongs to may be installed: its bundle ("/Applications/X.app"), and the same bundle in the person's own Applications folder. */
 function appPlaces(asar: string): string[] {
+  if (process.platform === 'win32') {
+    // Windows Electron layout (<AppDir>\resources\app.asar): the app is its install folder.
+    const norm = path.normalize(asar);
+    const at = norm.toLowerCase().lastIndexOf(`${path.sep}resources${path.sep}`);
+    const app = at < 0 ? norm : norm.slice(0, at);
+    return [app];
+  }
   const at = asar.indexOf('.app/'), app = at < 0 ? asar : asar.slice(0, at + 4);
   return [app, path.join(os.homedir(), 'Applications', path.basename(app))];
 }
@@ -46,13 +53,18 @@ function firstExisting(paths: Array<string | undefined>): PluginPresence {
   const where = paths.find(item => !!item && fs.existsSync(item));
   return where ? { installed: true, where } : { installed: false };
 }
-// An installed app's own icon, read from its .icns file: the file is a list of pictures, each
-// a 4-letter type and a length, and the modern ones are whole PNG files. The one nearest
-// `size` pixels wide is returned (the page draws it small), or null when the app isn't there.
+// An installed app's own icon, from where the platform keeps it: an .icns file (macOS; a list
+// of pictures, each a 4-letter type and a length, the modern ones whole PNG files — the one
+// nearest `size` pixels wide is returned), a plain .png, or the /icon.png inside an Electron
+// app.asar (Windows). Null when the app isn't there or the file is neither.
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
 function readAppIcon(file: string, size = 256): AssetFile | null {
+  if (file.toLowerCase().endsWith('.asar')) {
+    try { const found = readAsarFile(file, /\/icon\.png$/); return found && found.data.length >= 4 && found.data.subarray(0, 4).equals(PNG_MAGIC) ? { type: 'image/png', data: found.data } : null; } catch { return null; }
+  }
   let data: Buffer;
   try { data = fs.readFileSync(file); } catch { return null; }
+  if (data.length >= 8 && data.subarray(0, 4).equals(PNG_MAGIC)) return { type: 'image/png', data };
   if (data.length < 8 || data.toString('latin1', 0, 4) !== 'icns') return null;
   let best: { width: number; png: Buffer } | null = null;
   for (let at = 8; at + 8 <= data.length;) {

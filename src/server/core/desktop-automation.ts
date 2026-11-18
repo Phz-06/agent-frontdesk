@@ -71,6 +71,28 @@ function helperResultOf(value: unknown, crashed: () => HelperResult): HelperResu
   return { ...result, ok: get(result, 'ok') === true, ...(typeof code === 'string' ? { code } : {}), ...(error != null ? { error: String(error) } : {}) };
 }
 const DRIVER = path.join(NATIVE, 'ax-driver.swift');
+// On Windows the shared driver is a C# project (native/win32/uia-driver), published with dotnet;
+// its source hash covers the whole project folder, and the build lands in the same cache.
+const UIA_PROJECT = path.join(NATIVE, 'win32', 'uia-driver');
+// macOS keeps its helpers in ~/Library/Caches; Windows uses %LOCALAPPDATA%\agent-frontdesk.
+const defaultCacheDir = (): string => process.platform === 'win32'
+  ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'agent-frontdesk')
+  : path.join(os.homedir(), 'Library/Caches/agent-frontdesk');
+
+function hashTree(dir: string): string {
+  const hash = createHash('sha1');
+  const walk = (at: string): void => {
+    const items = fs.readdirSync(at, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+    for (const item of items) {
+      if (item.isDirectory() && (item.name === 'bin' || item.name === 'obj')) continue;
+      const file = path.join(at, item.name);
+      if (item.isDirectory()) walk(file);
+      else { hash.update(item.name); hash.update(fs.readFileSync(file)); }
+    }
+  };
+  walk(dir);
+  return hash.digest('hex').slice(0, 12);
+}
 // One wording for every engine (the page translates it by this exact text).
 const NOT_TRUSTED = '桌面代发需要辅助功能权限：在「系统设置 → 隐私与安全性 → 辅助功能」里允许运行工作台服务的程序（例如终端），然后重启工作台';
 
@@ -102,7 +124,7 @@ class DesktopAutomation {
   beats = 0; suspects = new Map<string, number>(); stale: string[] = [];
   // engine: the flow and profile name ('claude' → claude-desktop.swift + profiles/claude.json);
   // label: how the person knows the app ("Claude 桌面版").
-  constructor({ engine, label, cacheDir = path.join(os.homedir(), 'Library/Caches/agent-frontdesk'), platform = process.platform, runner = run, parkMs = 45_000, warmEveryMs = 10_000 }: AutomationOptions) {
+  constructor({ engine, label, cacheDir = defaultCacheDir(), platform = process.platform, runner = run, parkMs = 45_000, warmEveryMs = 10_000 }: AutomationOptions) {
     this.engine = engine; this.label = label || engine; this.parkMs = parkMs; this.warmEveryMs = warmEveryMs;
     this.flow = path.join(NATIVE, `${engine}-desktop.swift`);
     this.profile = path.join(NATIVE, 'profiles', `${engine}.json`);
@@ -112,20 +134,47 @@ class DesktopAutomation {
   }
   async helper(): Promise<string | null> {
     if (this.binary) return this.binary;
-    if (!this.building) this.building = (async () => {
-      const source = Buffer.concat([fs.readFileSync(DRIVER), Buffer.from('\n'), fs.readFileSync(this.flow)]);
-      const base = path.join(this.cacheDir, `${this.engine}-desktop-${createHash('sha1').update(source).digest('hex').slice(0, 12)}`);
-      if (!fs.existsSync(base)) {
-        fs.mkdirSync(this.cacheDir, { recursive: true });
-        // swiftc runs top-level code only from one file, so the driver and the flow become one.
-        fs.writeFileSync(`${base}.swift`, source);
-        await new Promise<void>((resolve, reject) => execFile('/usr/bin/xcrun', ['swiftc', '-O', `${base}.swift`, '-o', `${base}.tmp`], { timeout: 300000 }, err => err ? reject(err) : resolve()));
-        fs.renameSync(`${base}.tmp`, base); fs.rmSync(`${base}.swift`, { force: true });
-        this.prune(base);
-      }
-      return (this.binary = base);
-    })().catch(() => null).finally(() => { this.building = null; });
+    if (!this.building) this.building = (this.platform === 'win32' ? this.buildWin32() : this.buildSwift())
+      .catch(() => null).finally(() => { this.building = null; });
     return this.building;
+  }
+  // Windows: dotnet publish of the uia-driver project, one exe per source version. The flow file
+  // does not take part (the C# driver carries the whole flow); the profile is still passed at run.
+  async buildWin32(): Promise<string | null> {
+    const base = path.join(this.cacheDir, `${this.engine}-desktop-${hashTree(UIA_PROJECT)}.exe`);
+    if (!fs.existsSync(base)) {
+      fs.mkdirSync(this.cacheDir, { recursive: true });
+      const rid = process.arch === 'arm64' ? 'win-arm64' : 'win-x64';
+      const objDir = path.join(this.cacheDir, `obj-${process.pid}-${this.engine}`);
+      try {
+        await new Promise<void>((resolve, reject) => execFile(
+          'dotnet',
+          ['publish', UIA_PROJECT, '-c', 'Release', '-r', rid, '--self-contained', 'false', `-p:BaseIntermediateOutputPath=${objDir}${path.sep}`, '-o', `${base}.tmp`],
+          { timeout: 300000 },
+          err => err ? reject(err) : resolve(),
+        ));
+        fs.renameSync(path.join(`${base}.tmp`, 'uia-driver.exe'), base);
+      } finally {
+        fs.rmSync(`${base}.tmp`, { recursive: true, force: true });
+        fs.rmSync(objDir, { recursive: true, force: true });
+      }
+      this.prune(base);
+    }
+    return (this.binary = base);
+  }
+  // macOS: swiftc compiles driver + flow into one helper, as before.
+  async buildSwift(): Promise<string | null> {
+    const source = Buffer.concat([fs.readFileSync(DRIVER), Buffer.from('\n'), fs.readFileSync(this.flow)]);
+    const base = path.join(this.cacheDir, `${this.engine}-desktop-${createHash('sha1').update(source).digest('hex').slice(0, 12)}`);
+    if (!fs.existsSync(base)) {
+      fs.mkdirSync(this.cacheDir, { recursive: true });
+      // swiftc runs top-level code only from one file, so the driver and the flow become one.
+      fs.writeFileSync(`${base}.swift`, source);
+      await new Promise<void>((resolve, reject) => execFile('/usr/bin/xcrun', ['swiftc', '-O', `${base}.swift`, '-o', `${base}.tmp`], { timeout: 300000 }, err => err ? reject(err) : resolve()));
+      fs.renameSync(`${base}.tmp`, base); fs.rmSync(`${base}.swift`, { force: true });
+      this.prune(base);
+    }
+    return (this.binary = base);
   }
   // Every source version leaves a helper behind; the ones not built or run for a month are removed.
   // Another checkout's server may still be running an old one: a server that finds its helper gone
@@ -136,17 +185,17 @@ class DesktopAutomation {
         const file = path.join(this.cacheDir, name);
         if (!name.startsWith(`${this.engine}-desktop-`) || file === current) continue;
         const { mtimeMs, atimeMs } = fs.statSync(file);
-        if (Date.now() - Math.max(mtimeMs, atimeMs) > 30 * 24 * 3600_000) fs.rmSync(file, { force: true });
+        if (Date.now() - Math.max(mtimeMs, atimeMs) > 30 * 24 * 3600_000) fs.rmSync(file, { recursive: true, force: true });
       }
     } catch {}
   }
   // { available, reason, code }. Cached briefly: permission and the app being open change rarely.
   async check(): Promise<AutomationState> {
-    if (this.platform !== 'darwin') return { available: false, reason: '桌面代发只支持 macOS' };
+    if (this.platform !== 'darwin' && this.platform !== 'win32') return { available: false, reason: '桌面代发只支持 macOS 和 Windows' };
     if (this.state && Date.now() - this.checkedAt < 10000) return this.state;
     const file = await this.helper();
     let state: AutomationState;
-    if (!file) state = { available: false, reason: '桌面代发程序编译失败（需要 Xcode 命令行工具：xcode-select --install）' };
+    if (!file) state = { available: false, reason: this.platform === 'win32' ? '桌面代发程序编译失败（需要 .NET SDK 8）' : '桌面代发程序编译失败（需要 Xcode 命令行工具：xcode-select --install）' };
     else {
       const result = await this.runner(file, ['check'], { timeout: 5000, env: { AX_PROFILE: this.profile } });
       state = !result.ok ? { available: false, ...(result.error !== undefined ? { reason: result.error } : {}) } : !result.trusted ? { available: false, reason: NOT_TRUSTED, code: 'not_trusted' } : !result.running ? { available: false, reason: `${this.label}没有在运行`, code: 'not_running' } : { available: true };
@@ -208,7 +257,7 @@ class DesktopAutomation {
   // keeps the desktop's accessibility tree built. Skipped while a command is running or waiting
   // (it reads the page itself), and it stops by itself once the console has gone quiet.
   keepWarm(ms = 3 * 60_000): void {
-    if (this.platform !== 'darwin' || this.warmEveryMs <= 0) return;
+    if ((this.platform !== 'darwin' && this.platform !== 'win32') || this.warmEveryMs <= 0) return;
     const idle = Date.now() > this.warmUntil;
     this.warmUntil = Date.now() + ms;
     const beat = () => {

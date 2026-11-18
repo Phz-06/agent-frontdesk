@@ -189,8 +189,8 @@ const REPORTS: Record<string, string> = {
   '缺少有效的会话 ID': 'Missing a valid chat ID', '缺少有效的会话 ID 或标题': 'Missing a valid chat ID or title',
   '没能按下 Claude 桌面版的停止按钮': "Couldn't press Stop in Claude's desktop app",
   '桌面代发需要辅助功能权限：在「系统设置 → 隐私与安全性 → 辅助功能」里允许运行工作台服务的程序（例如终端），然后重启工作台': "Sending through the desktop app needs Accessibility access. In System Settings → Privacy & Security → Accessibility, allow the app that runs Frontdesk (for example Terminal), then restart Frontdesk.",
-  'Claude 桌面版没有及时响应': "Claude's desktop app didn't respond in time", '桌面代发程序没有正常返回': 'The desktop helper stopped unexpectedly', '桌面代发只支持 macOS': 'Sending through the desktop app only works on macOS',
-  '桌面代发程序编译失败（需要 Xcode 命令行工具：xcode-select --install）': "Couldn't build the desktop helper. Install the Xcode command line tools: xcode-select --install", 'Claude 桌面版没有在运行': "Claude's desktop app isn't running",
+  'Claude 桌面版没有及时响应': "Claude's desktop app didn't respond in time", '桌面代发程序没有正常返回': 'The desktop helper stopped unexpectedly', '桌面代发只支持 macOS': 'Sending through the desktop app only works on macOS', '桌面代发只支持 macOS 和 Windows': 'Sending through the desktop app works on macOS and Windows',
+  '桌面代发程序编译失败（需要 Xcode 命令行工具：xcode-select --install）': "Couldn't build the desktop helper. Install the Xcode command line tools: xcode-select --install", '桌面代发程序编译失败（需要 .NET SDK 8）': "Couldn't build the desktop helper. Install .NET SDK 8.", 'Claude 桌面版没有在运行': "Claude's desktop app isn't running",
   '桌面代发程序不可用': 'The desktop helper is unavailable', '工作台没有辅助功能权限': "Frontdesk doesn't have Accessibility access", '缺少会话标题': 'Missing chat title', '消息是空的': 'The message is empty',
   '这个 AI 的桌面版不支持打开会话': "This AI's desktop app can't open chats from here", '没能在桌面版里打开这个会话': "Couldn't open this chat in the desktop app",
   '这个 AI 的桌面版不支持打开文件': "This AI's desktop app can't open files from here", '没能打开这个文件': "Couldn't open this file", '没能在文件管理器里显示这个文件': "Couldn't show this file in the file manager",
@@ -240,6 +240,11 @@ const REPORTS: Record<string, string> = {
   'ChatGPT 对话在回复时不能插话，消息已排队，等这条回复结束再发': "A ChatGPT conversation can't take a message while it's replying. Your message is queued for when the reply ends.",
   '缺少会话标题或消息': 'The chat title or the message is missing',
   '没能在 Codex 桌面版的侧栏里找到这个聊天': "Couldn't find this chat in Codex's desktop sidebar", '在 Codex 桌面版里选了不在项目里，但项目没有切换过去': "Picked no project in Codex's desktop app, but it didn't switch",
+  // Win32 UIA driver (src/server/native/win32/uia-driver/Program.cs)
+  '应用没有在运行': 'The app is not running',
+  '没有找到输入框（profile 的 composer）': 'Could not find the message box (composer in profile)',
+  '输入框填不进文字': 'Could not enter text into the message box',
+  '没有找到停止控件，也按不到 Esc': 'Could not find the stop button or press Esc',
 };
 const REPORT_PATTERNS: Array<[RegExp, (match: RegExpExecArray) => string]> = [
   // The sign-in command is the one that works on that machine (claude-bridge.ts, loginCommand).
@@ -338,6 +343,9 @@ const REPORT_PATTERNS: Array<[RegExp, (match: RegExpExecArray) => string]> = [
   [/^要换模型或推理强度得在 Codex 桌面版里换，但(.*)，没有发送$/, match => `The model or effort has to be changed in Codex's desktop app, but ${english(match[1])}. Nothing was sent.`],
   [/^没能让 Codex 桌面版停下（(.*)），请在桌面端停止$/, match => `Couldn't stop Codex's desktop app (${english(match[1])}). Stop it on desktop.`],
   [/^(.+)，没有发送$/, match => `${english(match[1])}. Nothing was sent.`],
+  [/^profile 里没有 (.+) 的认法$/, match => `No selector for ${match[1] ?? ''} in the profile`],
+  [/^这个动作（(.+)）的 Windows 支持还没写好$/, match => `Windows support for "${match[1] ?? ''}" is not implemented yet`],
+  [/^(.+?)没有在运行$/, match => { const app = match[1] ?? ''; return /\s*桌面版$/.test(app) ? `${owner(app)} desktop app isn't running` : `${app} is not running`; }],
 ];
 // A text from the server, in the interface language. Unknown texts are shown as they came.
 // "Claude 桌面版" → "Claude's"; the bare "桌面版" → "the desktop app's".

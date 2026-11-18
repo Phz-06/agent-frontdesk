@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import { EngineEvents } from '../src/server/types.js';
 import { at, dig, fake, must, noRuns, required } from './support.js';
 import { errorField, get } from '../src/shared/guards.js';
@@ -140,10 +140,11 @@ test('native history observer publishes changes and releases its subscription', 
   assert.equal(at(received, -1).type, 'session.snapshot'); assert.equal(dig(at(received, -1).data, 'turns', 0, 'messages', 0, 'text'), 'second');
   assert.equal(observer.observers.size, 0); observer.dispose();
 });
-test('SQLite reader reads with bound parameters and rejects writes', () => {
+test('SQLite reader reads with bound parameters and rejects writes', (t) => {
   const Database = __node_sqlite.DatabaseSync;
   const { readSqlite } = __services_sqlite_reader;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-sqlite-')), file = path.join(dir, 'history.db');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const database = new Database(file); database.exec("CREATE TABLE sessions (id TEXT); INSERT INTO sessions VALUES ('session');"); database.close();
   assert.equal(get(at(readSqlite(file, 'SELECT id FROM sessions WHERE id = ?', ['session']), 0), 'id'), 'session');
   assert.equal(readSqlite(file, 'SELECT id FROM sessions WHERE id = ?', ["' OR 1=1 --"]).length, 0);
@@ -157,9 +158,10 @@ test('Codex usage maps real windows without exposing account or reset-credit ide
   assert.equal(usage.available, true); assert.doesNotMatch(JSON.stringify(usage), /PRIVATE/);
 });
 
-test('Antigravity decodes JSON-encoded tool arguments, pairs results in order and explains a missing agent environment', async () => {
+test('Antigravity decodes JSON-encoded tool arguments, pairs results in order and explains a missing agent environment', async t => {
   const { AntigravityBridge } = __antigravity_bridge;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-')), logs = path.join(dir, 'brain', 'c1', '.system_generated', 'logs');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   fs.mkdirSync(logs, { recursive: true });
   const records = [
     { step_index: 0, type: 'USER_INPUT', created_at: '2026-01-01T00:00:00Z', content: '<USER_REQUEST>\nList files\n</USER_REQUEST>\n<ADDITIONAL_METADATA>time</ADDITIONAL_METADATA>' },
@@ -189,9 +191,10 @@ test('Antigravity decodes JSON-encoded tool arguments, pairs results in order an
   fs.rmSync(dir, { recursive: true });
 });
 
-test('Antigravity sends the person\'s messages as the desktop composer does, never as agentapi system messages', async () => {
+test('Antigravity sends the person\'s messages as the desktop composer does, never as agentapi system messages', async t => {
   const { AntigravityBridge } = __antigravity_bridge;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-send-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const bridge = new AntigravityBridge({ agyHome: dir, agentapiBin: '/bin/false', catalogs: {} }, { ANTIGRAVITY_LS_ADDRESS: '127.0.0.1:9', ANTIGRAVITY_CSRF_TOKEN: 'csrf' });
   const sent: Array<{ url: string; token: unknown; body: unknown }> = [];
   bridge.fetch = async (url, options) => { sent.push({ url: String(url), token: get(options?.headers, 'x-codeium-csrf-token'), body: bodyOf(options) }); return answer({}); };
@@ -208,15 +211,17 @@ test('Antigravity sends the person\'s messages as the desktop composer does, nev
 });
 
 // A conversation the desktop keeps without a transcript file, and the language server's record of it.
-function antigravityFixture(steps: object[], { idle = 1, inputIndex = 0 } = {}) {
+function antigravityFixture(steps: object[], { idle = 1, inputIndex = 0, t }: { idle?: number; inputIndex?: number; t?: TestContext } = {}) {
   const { AntigravityBridge } = __antigravity_bridge;
   const Database = __node_sqlite.DatabaseSync;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-ls-'));
+  t?.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const db = new Database(path.join(dir, 'conversation_summaries.db'));
   db.exec('CREATE TABLE conversation_summaries (conversation_id text, title text, preview text, last_modified_time text, workspace_uris text, not_fully_idle numeric, killed numeric, status text, step_count integer, last_user_input_time text, last_user_input_step_index integer, nesting_depth integer)');
   db.prepare('INSERT INTO conversation_summaries VALUES (?,?,?,?,?,?,?,?,?,?,?,0)').run('c1', 'Old chat', '', '2026-11-11T17:02:07Z', '["file:///w/app"]', idle ? 0 : 1, 0, '', steps.length, '2026-11-11T17:02:07Z', inputIndex);
   db.close();
   const bridge = new AntigravityBridge({ agyHome: dir, agentapiBin: '/bin/false', catalogs: {} }, { ANTIGRAVITY_LS_ADDRESS: '127.0.0.1:9', ANTIGRAVITY_CSRF_TOKEN: 'csrf' });
+  t?.after(() => bridge.dispose());
   const calls: Array<{ method: string; body: unknown }> = [];
   bridge.fetch = async (url, options) => {
     const method = String(url).split('/').at(-1) || '', body = bodyOf(options); calls.push({ method, body });
@@ -230,7 +235,7 @@ function antigravityFixture(steps: object[], { idle = 1, inputIndex = 0 } = {}) 
 const agyStep = (type: string, status: string, body: object = {}, meta: object = {}) => ({ type: `CORTEX_STEP_TYPE_${type}`, status: `CORTEX_STEP_STATUS_${status}`, metadata: { createdAt: '2026-11-11T17:02:07Z', ...meta }, ...body });
 const agyFatal = agyStep('ERROR_MESSAGE', 'DONE', { errorMessage: { shouldShowUser: true, error: { userErrorMessage: 'Agent execution terminated due to error.', shortError: 'unknown model key M8' } } });
 
-test('Antigravity reads a conversation without a transcript from the language server, and shows a turn an error ended as failed', async () => {
+test('Antigravity reads a conversation without a transcript from the language server, and shows a turn an error ended as failed', async t => {
   const { bridge, dir } = antigravityFixture([
     agyStep('USER_INPUT', 'DONE', { userInput: { userResponse: 'build it' } }),
     agyStep('PLANNER_RESPONSE', 'DONE', { plannerResponse: { thinking: 'x', toolCalls: [{ id: 't1', name: 'run_command', argumentsJson: '{"CommandLine":"ls"}' }, { id: 't2', name: 'notify_user', argumentsJson: '{}' }] } }, { requestedModel: { model: 'MODEL_A' } }),
@@ -239,7 +244,7 @@ test('Antigravity reads a conversation without a transcript from the language se
     agyStep('RUN_COMMAND', 'ERROR', { runCommand: { combinedOutput: { full: 'a.txt' } } }, { toolCall: { id: 't1' } }),
     agyStep('USER_INPUT', 'DONE', { userInput: { userResponse: 'now logos' } }),
     agyFatal,
-  ]);
+  ], { t });
   await bridge.getModels();
   const { turns, session } = await bridge.getConversationHistory('c1');
   assert.deepEqual(turns.map(turn => [turn.userPrompt, turn.status, turn.statusEvidence]), [['build it', 'completed', null], ['now logos', 'failed', 'error_message']]);
@@ -252,9 +257,48 @@ test('Antigravity reads a conversation without a transcript from the language se
   fs.rmSync(dir, { recursive: true });
 });
 
-test('an Antigravity turn that ends with an error and no reply ends the run as failed instead of leaving it thinking', async () => {
+test('Antigravity excludes CLI/subagent rows and groups worktrees under their main checkout', async t => {
+  const { AntigravityBridge } = __antigravity_bridge;
+  const Database = __node_sqlite.DatabaseSync;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-sub-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const repo = path.join(dir, 'main-repo'), gitDir = path.join(repo, '.git', 'worktrees', 'feat'), wt = path.join(dir, 'wt', 'feat');
+  fs.mkdirSync(gitDir, { recursive: true }); fs.mkdirSync(wt, { recursive: true });
+  fs.writeFileSync(path.join(gitDir, 'commondir'), '../..\n');
+  fs.writeFileSync(path.join(wt, '.git'), `gitdir: ${gitDir}\n`);
+
+  const db = new Database(path.join(dir, 'conversation_summaries.db'));
+  db.exec('CREATE TABLE conversation_summaries (conversation_id text, title text, preview text, last_modified_time text, workspace_uris text, not_fully_idle numeric, killed numeric, status text, step_count integer, last_user_input_time text, last_user_input_step_index integer, nesting_depth integer, source text, project_id text, parent_conversation_id text, agent_name text)');
+  db.exec('CREATE TABLE conversations_fts (conversation_id text, chunk_index integer, archived integer)');
+  const ins = db.prepare('INSERT INTO conversation_summaries VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+  const insFts = db.prepare('INSERT INTO conversations_fts VALUES (?,?,?)');
+  const uri = (p: string) => JSON.stringify([__node_url.pathToFileURL(p).href]);
+  ins.run('main-1', 'Worktree task', '', '2026-11-18T01:00:00Z', uri(wt), 0, 0, '', 5, '2026-11-18T01:00:00Z', 1, 0, '', 'proj-1', '', '');
+  insFts.run('main-1', -1, 0);
+  ins.run('cli-1', 'CLI subagent', '', '2026-11-18T02:00:00Z', uri(repo), 0, 0, '', 2, '', -1, 0, 'CORTEX_TRAJECTORY_SOURCE_CLI', 'default-cli-project', '', '');
+  ins.run('sub-1', 'Nested agent', '', '2026-11-18T02:00:00Z', uri(repo), 0, 0, '', 2, '', -1, 0, '', 'proj-1', 'main-1', 'reviewer');
+  ins.run('probe-1', 'Unindexed probe', '', '2026-11-18T02:00:00Z', uri(repo), 0, 0, '', 0, '', -1, 0, '', '', '', '');
+  ins.run('arch-1', 'Archived review', '', '2026-11-18T02:00:00Z', uri(repo), 0, 0, '', 5, '2026-11-18T02:00:00Z', 1, 0, '', 'proj-1', '', '');
+  insFts.run('arch-1', 0, 0);
+  insFts.run('arch-1', -1, 1);
+  ins.run('zero-1', 'Zero timestamp ghost', '', '0001-01-01 00:00:00+00:00', uri(repo), 0, 0, '', 5, '0001-01-01 00:00:00+00:00', 1, 0, '', 'proj-1', '', '');
+  db.close();
+
+  const bridge = new AntigravityBridge({ agyHome: dir, agentapiBin: '/bin/false', catalogs: {} }, { ANTIGRAVITY_LS_ADDRESS: '127.0.0.1:9', ANTIGRAVITY_CSRF_TOKEN: 'csrf' });
+  t.after(() => bridge.dispose());
+  const list = await bridge.listConversations();
+  assert.deepEqual(list.map(item => item.id), ['main-1']);
+  assert.deepEqual(list[0]?.metadata.group, {
+    id: `repo:${repo.replace(/\\/g, '/').replace(/^([A-Z]):/, (_, d: string) => `${d.toLowerCase()}:`)}`,
+    name: 'main-repo',
+    cwd: repo,
+  });
+  assert.ok(bridge.fileRoots('main-1').includes(repo));
+});
+
+test('an Antigravity turn that ends with an error and no reply ends the run as failed instead of leaving it thinking', async t => {
   const steps = [agyStep('USER_INPUT', 'DONE', { userInput: { userResponse: 'old' } }), agyStep('PLANNER_RESPONSE', 'DONE', { plannerResponse: { response: 'old answer' } })];
-  const { bridge, calls, dir } = antigravityFixture(steps, { inputIndex: 0 });
+  const { bridge, calls, dir } = antigravityFixture(steps, { inputIndex: 0, t });
   const ended = (emitter: EngineEmitter) => new Promise<EngineCompleted & { error?: string }>(resolve => { emitter.on('completed', data => resolve(data)); emitter.on('error', err => resolve({ error: err.message })); });
   // Nothing recorded after the message: the run waits, then says so instead of hanging.
   assert.match(String((await ended(bridge.sendMessage({ conversationId: 'c1', prompt: 'hi', model: 'MODEL_A' }))).error), /没有开始这一轮/);
@@ -278,10 +322,10 @@ test('an Antigravity turn that ends with an error and no reply ends the run as f
   bridge.dispose(); fs.rmSync(dir, { recursive: true });
 });
 
-test('what an Antigravity step waits on the person for becomes a card in the chat, answered the way the desktop answers it', async () => {
+test('what an Antigravity step waits on the person for becomes a card in the chat, answered the way the desktop answers it', async t => {
   const waitingOn = (spec: object, body: object = {}) => agyStep('RUN_COMMAND', 'WAITING', { requestedInteraction: spec, ...body }, { sourceTrajectoryStepInfo: { trajectoryId: 'traj' } });
   const steps = [agyStep('USER_INPUT', 'DONE', { userInput: { userResponse: 'go' } }), waitingOn({ runCommand: {} }, { runCommand: { proposedCommandLine: 'rm -rf build' } })];
-  const { bridge, calls, dir } = antigravityFixture(steps, { idle: 0 });
+  const { bridge, calls, dir } = antigravityFixture(steps, { idle: 0, t });
   const cards: ApprovalRequest[] = [], gone: string[] = [], emitter = new EngineEvents();
   emitter.on('approval', card => cards.push(card)); emitter.on('approval_resolved', data => gone.push(data.id));
   bridge.watchTurn('c1', emitter, { next: 0 });
@@ -315,13 +359,14 @@ test('what an Antigravity step waits on the person for becomes a card in the cha
   emitter.emit('interrupt'); bridge.dispose(); fs.rmSync(dir, { recursive: true });
 });
 
-test('Antigravity starts a new chat in a folder through the language server, and serves the pictures a person attached', async () => {
-  const { bridge, calls, dir } = antigravityFixture([]);
+test('Antigravity starts a new chat in a folder through the language server, and serves the pictures a person attached', async t => {
+  const { bridge, calls, dir } = antigravityFixture([], { t });
   const real = bridge.fetch;
   bridge.fetch = async (url, options) => String(url).endsWith('/StartCascade') ? (calls.push({ method: 'StartCascade', body: bodyOf(options) }), answer({ cascadeId: 'new1' })) : real(url, options);
   bridge.agentapi = async () => { throw new Error('agentapi cannot name a folder'); };
   assert.deepEqual(await bridge.newConversation({ prompt: 'hello', cwd: dir, model: 'MODEL_A' }), { id: 'new1', engine: 'antigravity', started: true, cwd: dir });
-  assert.deepEqual(at(calls, 0).body, { source: 'CORTEX_TRAJECTORY_SOURCE_CASCADE_CLIENT', trajectoryType: 'CORTEX_TRAJECTORY_TYPE_CASCADE', workspaceUris: [__node_url.pathToFileURL(dir).href] });
+  // The executor refuses to start without a model, so StartCascade carries the pick explicitly.
+  assert.deepEqual(at(calls, 0).body, { source: 'CORTEX_TRAJECTORY_SOURCE_CASCADE_CLIENT', trajectoryType: 'CORTEX_TRAJECTORY_TYPE_CASCADE', workspaceUris: [__node_url.pathToFileURL(dir).href], config: { plannerConfig: { requestedModel: { model: 'MODEL_A' } } } });
   assert.deepEqual([at(calls, 1).method, dig(at(calls, 1).body, 'cascadeId'), dig(at(calls, 1).body, 'items', 0, 'text'), dig(at(calls, 1).body, 'cascadeConfig', 'plannerConfig', 'requestedModel', 'model')], ['SendUserCascadeMessage', 'new1', 'hello', 'MODEL_A']);
   await assert.rejects(bridge.newConversation({ prompt: 'x', cwd: path.join(dir, 'missing') }), /文件夹不存在/);
   // Pictures live in the conversation's own upload folder; anything else is only counted.
@@ -448,16 +493,19 @@ test('dictation tries the pick, the default, the current agent and the others, a
   service.dispose();
 });
 
-test('antigravity says its speech service needs the desktop app running', () => {
+test('antigravity says its speech service needs the desktop app running', (t) => {
   const { AntigravityBridge } = __antigravity_bridge;
-  const bridge = new AntigravityBridge({ agyHome: fs.mkdtempSync(path.join(os.tmpdir(), 'agy-voice-')), agentapiBin: '/bin/false', catalogs: {} }, {});
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-voice-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const bridge = new AntigravityBridge({ agyHome: dir, agentapiBin: '/bin/false', catalogs: {} }, {});
   bridge.lsEnv = () => null;
   assert.deepEqual(bridge.dictationReady(), { ready: false, reason: '未找到正在运行的 Antigravity。请打开 Antigravity 桌面端后重试。' });
 });
 
-test('antigravity shows a mid-turn system message and times the work after it', async () => {
+test('antigravity shows a mid-turn system message and times the work after it', async t => {
   const { AntigravityBridge } = __antigravity_bridge;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-sys-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'transcript.jsonl');
   const line = (record: object) => JSON.stringify(record);
   fs.writeFileSync(file, [
@@ -475,9 +523,10 @@ test('antigravity shows a mid-turn system message and times the work after it', 
   assert.deepEqual(at(turns, 0).timeline?.map(entry => entry.kind), ['message', 'activity', 'message']);
 });
 
-test('Antigravity reads the full transcript when the short one cut messages down', async () => {
+test('Antigravity reads the full transcript when the short one cut messages down', async t => {
   const { AntigravityBridge } = __antigravity_bridge;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-full-')), logs = path.join(dir, 'brain/c1/.system_generated/logs');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   fs.mkdirSync(logs, { recursive: true });
   const record = (content: string) => JSON.stringify({ step_index: 0, type: 'USER_INPUT', created_at: '2026-01-01T00:00:00Z', content: '<USER_REQUEST>\nq\n</USER_REQUEST>' }) + '\n' + JSON.stringify({ step_index: 1, type: 'PLANNER_RESPONSE', content }) + '\n';
   const whole = 'Before\n```mermaid\ngraph TD\n  A --> B\n```\nAfter';
@@ -528,8 +577,10 @@ test('a link to a folder or an extensionless file is a file link; bare inline co
   assert.equal(filePathOf('/home/me/q6-demo/'), '/home/me/q6-demo/');
   assert.equal(filePathOf('4130.log'), '4130.log');
   assert.equal(filePathOf('~/.claude/', { link: true }), '~/.claude/');
+  assert.equal(filePathOf('file:///d:/%E5%B7%A5%E4%BD%9C%E5%8C%BA/Agent%20Frontdesk/README.md:10', { link: true }), 'd:/工作区/Agent Frontdesk/README.md:10');
+  assert.equal(filePathOf('C:\\Users\\me\\app.ts:12'), 'C:/Users/me/app.ts:12');
   // Still code: a command, a branch, an API route, a method call, a version, a fraction.
-  for (const code of ['npm test', 'origin/main', 'claude/link-parsing', '/api/activity', 'thread/start', 'console.warn', 'v1.2', '1/2.5', 'github.com/me/repo', '~', '~/', '/']) assert.equal(filePathOf(code), '', code);
+  for (const code of ['npm test', 'origin/main', 'claude/link-parsing', '/api/activity', 'thread/start', 'console.warn', 'v1.2', '1/2.5', 'github.com/me/repo', 'javascript:alert(1)', '~', '~/', '/']) assert.equal(filePathOf(code), '', code);
 });
 
 test('a Codex writing block is read up to its closing ::: (a fence inside it does not close it)', async () => {
@@ -540,4 +591,23 @@ test('a Codex writing block is read up to its closing ::: (a fence inside it doe
   // One still being written runs to the end of the text.
   assert.deepEqual(writingBlock(':::writing{variant="standard" id="83924"}\nSo the question'), { raw: ':::writing{variant="standard" id="83924"}\nSo the question', attributes: { variant: 'standard', id: '83924' }, body: 'So the question' });
   assert.equal(writingBlock('text\n:::writing{}'), null);
+});
+
+test('system notices injected into a trajectory are not how a turn ends', async t => {
+  const steps = [
+    agyStep('USER_INPUT', 'DONE', { userInput: { userResponse: 'go' } }),
+    agyStep('EPHEMERAL_MESSAGE', 'DONE', { ephemeralMessage: { content: '<context/>' } }),
+  ];
+  const { bridge, dir } = antigravityFixture(steps, { t });
+  const row = { last_user_input_step_index: 0 };
+  // The cascade went idle while only notices followed the message: not an ending yet.
+  assert.equal(await bridge.turnOutcome('c1', row), null);
+  steps.push(agyStep('ERROR_MESSAGE', 'DONE', { errorMessage: { shouldShowUser: true, error: { userErrorMessage: 'Agent execution terminated due to error.', shortError: 'quota gone' } } }));
+  assert.deepEqual(await bridge.turnOutcome('c1', row), { status: 'failed', error: { message: 'Agent execution terminated due to error. quota gone' } });
+  // A tool step settling is not an ending either: the desktop may still be writing its verdict.
+  steps.splice(2, 1, agyStep('RUN_COMMAND', 'DONE', { runCommand: { combinedOutput: { full: 'a.txt' } } }));
+  assert.equal(await bridge.turnOutcome('c1', row), null);
+  steps.splice(2, 1, agyStep('PLANNER_RESPONSE', 'DONE', { plannerResponse: { response: 'done' } }));
+  assert.deepEqual(await bridge.turnOutcome('c1', row), { status: 'completed' });
+  bridge.dispose(); fs.rmSync(dir, { recursive: true });
 });

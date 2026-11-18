@@ -30,6 +30,9 @@ export type CodexInput = { type: string; [field: string]: unknown };
 const ipcError = (message: string, code: string): IpcError => Object.assign(new Error(message), { code });
 
 function socketPath(codexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex')): string {
+  // Windows: verified inside OpenAI.Codex app.asar (early-bootstrap-824, module 92272);
+  // overridable via CODEX_IPC_PATH.
+  if (process.platform === 'win32') return process.env.CODEX_IPC_PATH || '\\\\.\\pipe\\codex-ipc';
   return path.join(codexHome, 'ipc', 'ipc.sock');
 }
 

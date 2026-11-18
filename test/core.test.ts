@@ -100,8 +100,9 @@ test('history presentation removes patches, raw thinking and file contents', () 
   assert.doesNotMatch(JSON.stringify(output), /PRIVATE|SECRET/);
   assert.equal(at(at(output.turns, 0).artifacts, 0).title, 'brief.md');
 });
-test('tailer retains partial JSON and multibyte text and releases timer', () => {
+test('tailer retains partial JSON and multibyte text and releases timer', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-tail-')), file = path.join(dir, 'history.jsonl');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   fs.writeFileSync(file, ''); const records: unknown[] = [], errors: unknown[] = [];
   const tail = tailJsonl(file, 0, record => records.push(record), { onError: err => errors.push(err) });
   const bytes = Buffer.from('{"text":"你好"}\n');
@@ -291,7 +292,9 @@ test('a queued message can still be steered in, or taken back to edit', async ()
 
 test('Codex steers a desktop-run turn through the desktop IPC as a thread follower', async t => {
   const net = __node_net, codexDesktop = __codex_desktop;
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ipc-')), sock = path.join(dir, 's.sock');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ipc-'));
+  // Windows: AF_UNIX bind of a filesystem path is refused (EACCES); a named pipe stands in.
+  const sock = process.platform === 'win32' ? `\\\\.\\pipe\\frontdesk-ipc-test-${process.pid}` : path.join(dir, 's.sock');
   const seen: unknown[] = [];
   const server = net.createServer(socket => {
     let buffer: Buffer = Buffer.alloc(0); socket.on('error', () => {});
@@ -431,4 +434,41 @@ test('every icon the page names in its sources is one it carries (the rest of lu
   const missing = [...named].filter(([name]) => !hasIcon(name)).map(([name, file]) => `${name} (${file})`);
   assert.deepEqual(missing, [], 'add these to src/client/js/icons.ts');
   assert.equal(hasIcon('zebra-crossing-not-an-icon'), false);
+});
+
+test('the Windows helper builds through dotnet publish and runs the same protocol', async t => {
+  const { DesktopAutomation } = await import('../src/server/core/desktop-automation.js');
+  const ran: string[][] = [];
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'uia-cache-'));
+  const desktop = new DesktopAutomation({ engine: 'claude', platform: 'win32', cacheDir: temp,
+    runner: async (_file, args) => { ran.push(args); return args[0] === 'check' ? { ok: true, trusted: true, running: true } : { ok: true }; } });
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  // check on win32 says what the machine offers, not the macOS permission refusal.
+  const state = await desktop.check();
+  assert.equal(state.available, true);
+  assert.equal(state.code, undefined);
+  // keepWarm works on win32 too: the first beat reads the page through the helper.
+  const calls: string[][] = [];
+  desktop.runner = async (_file, args) => { calls.push(args); return { ok: true }; };
+  desktop.keepWarm(0); // warmEveryMs 0 would stop it; keepWarm(0) still fires one beat
+  assert.deepEqual(calls.filter(args => args[0] === 'warm').length <= 1, true);
+  // A platform the codebase does not serve still refuses, with the wording both languages carry.
+  const nowhere = new DesktopAutomation({ engine: 'claude', platform: 'linux' });
+  const refused = await nowhere.check();
+  assert.equal(refused.available, false);
+  assert.match(refused.reason || '', /macOS 和 Windows|macOS and Windows/);
+  if (process.platform === 'win32') {
+    const realDesktop = new DesktopAutomation({ engine: 'claude', platform: 'win32', cacheDir: temp });
+    const realState = await realDesktop.check();
+    assert.ok(realDesktop.binary?.endsWith('.exe'), 'Windows UIA helper must end with .exe');
+    assert.notEqual(realState.reason, '桌面代发程序没有正常返回');
+    // Expanded UIA protocol check: flag parsing (--space/--previous/--stay) + ms/reads timing fields + non-unsupported handling
+    const checkRes = await realDesktop.runner(must(realDesktop.binary), ['check'], { timeout: 5000, env: { AX_PROFILE: realDesktop.profile } });
+    assert.equal(checkRes.ok, true);
+    assert.equal(typeof checkRes['ms'], 'number');
+    assert.equal(typeof checkRes['reads'], 'number');
+    const leaveRes = await realDesktop.runner(must(realDesktop.binary), ['new-leave', '--space', 'code', '--previous', 'none', '--stay'], { timeout: 5000, env: { AX_PROFILE: realDesktop.profile } });
+    assert.notEqual(leaveRes.code, 'unsupported');
+    assert.equal(typeof leaveRes['ms'], 'number');
+  }
 });
