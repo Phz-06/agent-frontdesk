@@ -7,7 +7,8 @@
 //                            a new chat runs with it; nothing is picked)
 //   new-leave               (the shared driver's: back to the person's chat, unless they write there)
 //   settings <title>        (brings the chat up in the sidebar, then back to the person's chat: a window
-//                            then owns it, and its model and effort are changed over the router)
+//                            then owns it, and its model and effort are changed over the router; with
+//                            --model, picked in the chat's own model menu, when the router cannot)
 // new takes --model / --effort as the console names them ("GPT-6-Sol", "high").
 //
 // Everything else Codex does from the console needs no window: sending, steering and stopping go
@@ -25,8 +26,8 @@
 //   started; the page is told why, before anything on the page was touched.
 // - A Codex menu is not closed by Collapse (measured); a pick closes it. One left open is reported,
 //   and nothing is sent.
-// - `settings` only brings the chat up: the Mac's fallback of picking in the model menu and the Power
-//   slider (when the router cannot) is refused here, as the slider takes only arrow keys.
+// - `settings` picks a model in the chat's model menu (the Mac's fallback when the router cannot), but
+//   not an effort: one other than the chat's is refused, as the slider takes only arrow keys.
 // Tried on the real app: probes/windows/PLAN.md, "The round of real-app tests".
 using System;
 using System.Collections.Generic;
@@ -105,15 +106,31 @@ namespace Frontdesk.Driver
             return null;
         }
 
+        // Moves the page's focus into the composer, which closes a menu a pick from behind left open (a
+        // fill was seen to close the model menu, new below). The composer keeps what it held: its text
+        // is set again, or, empty, a space is set and taken out.
+        static void FocusComposer()
+        {
+            Node box = Find("composer");
+            if (box == null) return;
+            string held = HoldsText(box) ? box.Value : "";
+            SetValue(box, held.Length > 0 ? held : " ");
+            if (held.Length > 0) return;
+            Wait(0.2);
+            Node again = Find("composer");
+            if (again != null) SetValue(again, "");
+        }
+
         // The effort, checked before anything on the page is touched: the slider has no way in on
         // Windows but the arrow keys, so a level other than the one the page shows cannot be picked.
-        static string[] EffortCheck()
+        static string[] EffortCheck(bool newPage = true)
         {
             string effort; if (!wanted.TryGetValue("effort", out effort) || string.IsNullOrEmpty(effort)) return null;
             Until(2, () => CodexModelMenu() != null);
             if (CodexModelMenu() == null) return new[] { "no_model_menu", "Codex 桌面版的输入框下面没有模型菜单" };
             string label; if (!StrMap(profile, "effortNames").TryGetValue(effort, out label)) return new[] { "effort_unavailable", "Codex 桌面版没有「" + effort + "」这一档推理强度" };
             if (ShowsEffort(label)) return null;
+            if (!newPage) return new[] { "effort_keys", "Windows 上 Codex 桌面版的推理强度只能用方向键调，工作台不向桌面版发按键：请在桌面版里把这个聊天的推理强度调成「" + label + "」" };
             return new[] { "effort_keys", "Windows 上 Codex 桌面版的推理强度只能用方向键调，工作台不向桌面版发按键，没有新建：请先在桌面版的新建页上把推理强度调成「" + label + "」" };
         }
         // A model other than the one the composer shows, picked in the desktop's own model menu.
@@ -152,15 +169,28 @@ namespace Frontdesk.Driver
             {
                 string chat = args.Count > 1 ? args[1] : "";
                 if (chat.Length == 0) Fail("usage", "缺少会话标题");
-                if (wanted.ContainsKey("model") || wanted.ContainsKey("effort")) Fail("menu_keys", "Windows 上不用 Codex 桌面版的菜单换模型或推理强度（推理强度只能用方向键调，工作台不向桌面版发按键）");
                 Begin(true);
                 string was = StartedOn();
                 Action goBack = () => { if (was.Length > 0 && was != chat) Show(was, ""); };
                 if (!Show(chat, "")) { goBack(); Fail("not_found", "没能在 Codex 桌面版的侧栏里找到这个聊天"); }
                 Until(2, () => CodexModelMenu() != null);
+                // An effort other than the chat's is refused before anything is touched (its slider takes
+                // only arrow keys); a model is picked in the chat's own model menu, which needs no key.
+                string[] tooFar = EffortCheck(false);
+                if (tooFar != null) { goBack(); Fail(tooFar[0], tooFar[1]); }
+                List<string> made = new List<string>();
+                string[] unpicked = PickModel(made);
+                if (unpicked != null) { goBack(); Fail(unpicked[0], unpicked[1]); }
+                if (made.Contains("model"))
+                {
+                    string asked = wanted["model"];
+                    if (!Until(0.3, () => Menus() == 0)) FocusComposer();
+                    if (!Until(1.6, () => Menus() == 0)) { goBack(); Fail("menu_open", "Codex 桌面版的模型菜单没有关上，请到桌面版里关掉它"); }
+                    if (!Until(1.6, () => ShowsModel(asked))) { goBack(); Fail("model_not_set", "在 Codex 桌面版里选了 " + asked + "，但它没有切换过去"); }
+                }
                 string shown = ShownLabel();
                 goBack();
-                Out(new Dictionary<string, object> { { "ok", true }, { "changed", new List<object>() }, { "shown", shown } });
+                Out(new Dictionary<string, object> { { "ok", true }, { "changed", made }, { "shown", shown } });
             }
             if (command == "new-leave")
             {

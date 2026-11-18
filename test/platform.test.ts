@@ -142,11 +142,13 @@ test('Windows: no flow sends input or moves a window itself; only the driver\'s 
   assert.match(body('FailIfHidden'), /IsWindowVisible\(window\)[\s\S]*Fail\("hidden"/);
   // The park lock's own code: a flow's "busy" means the chat is running, and the Claude bridge then steers.
   assert.doesNotMatch(body('Park'), /Fail\("busy"/);
-  // Codex's bridge opens a chat no window owns with `settings` (pickInDesktop), on Windows too; there
-  // it only brings the chat up: a model or effort for the menus is refused (the slider takes keys).
+  // Codex's bridge opens a chat no window owns with `settings` (pickInDesktop), on Windows too, and
+  // picks a model in its menu when the router cannot; an effort other than the chat's is refused
+  // before anything is touched (the slider takes only arrow keys).
   const codex = fs.readFileSync(path.join(native, 'codex-desktop.cs'), 'utf8');
   assert.match(codex, /new\[\] \{[^}]*"settings"[^}]*\}\) flowCommands\.Add/);
-  assert.match(codex, /command == "settings"[\s\S]*?wanted\.ContainsKey\("model"\) \|\| wanted\.ContainsKey\("effort"\)\) Fail\("menu_keys"/);
+  const settings = codex.slice(codex.indexOf('if (command == "settings")'), codex.indexOf('Out(', codex.indexOf('if (command == "settings")')));
+  assert.ok(settings.indexOf('EffortCheck(false)') > 0 && settings.indexOf('EffortCheck(false)') < settings.indexOf('PickModel('), 'the effort is checked before the model menu is touched');
 });
 
 test('Windows: a helper stopped mid-park is followed by `restore`, and a park that left something out is reported', async () => {

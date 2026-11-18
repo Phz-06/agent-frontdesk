@@ -233,7 +233,7 @@ const REPORTS: Record<string, string> = {
   '没能在 Codex 桌面版里新建聊天': "Couldn't start a new chat in Codex's desktop app", '没能在 Codex 桌面版里换模型': "Couldn't change the model in Codex's desktop app",
   '消息已在 Codex 桌面版里发出，但还没在它的聊天列表里看到这个新聊天，请到桌面版里查看': "Your message was sent in Codex's desktop app, but the new chat hasn't shown up yet. Check the desktop app.",
   '没能唤起 Codex 桌面版来处理这条消息': "Couldn't get Codex's desktop app to pick up this message", '消息已排进 Codex 桌面版的队列，正在等桌面版接手': "Your message is in Codex's desktop queue, waiting for the desktop app to pick it up",
-  'Windows 上不用 Codex 桌面版的菜单换模型或推理强度（推理强度只能用方向键调，工作台不向桌面版发按键）': "On Windows the console doesn't change Codex's model or effort through its menus (the effort slider takes only arrow keys, and the console sends the desktop app no keys)",
+  'Codex 桌面版的模型菜单没有关上，请到桌面版里关掉它': "Codex's model menu didn't close. Close it in the desktop app",
   '消息已排进 Codex 桌面版的队列，但上一轮是被停止的，桌面版会先暂停它：在桌面版里打开这个会话把它发出去，或在这里停止撤回': "Your message is in Codex's desktop queue, but the last turn was stopped, so the desktop app holds it. Open this chat in the desktop app to send it, or stop here to take it back.",
   'Codex 桌面版没有确认开始这一轮，请在桌面版里看一下这条消息有没有发出': "Codex's desktop app didn't confirm it started this turn. Check in the desktop app whether the message went out.",
   'Codex 桌面版没有确认收到这条消息，请在桌面版看一下是否已插入': "Codex's desktop app didn't confirm it got this message. Check the desktop app to see whether it was added.",
@@ -278,6 +278,7 @@ const REPORT_PATTERNS: Array<[RegExp, (match: RegExpExecArray) => string]> = [
   [/^(.+?)的窗口关到了托盘（现在没有显示），工作台在后台操作不了它：从托盘图标把.+?的窗口打开（打开后最小化也行）再试$/, match => `${owner(match[1])} window is closed to the tray (not shown), so the console can't act on it from behind. Open its window from the tray icon (minimizing it afterwards is fine) and try again.`],
   [/^(.+?)的窗口不在屏幕上（最小化或在另一个桌面），页面没有接进 UI Automation：把窗口还原后再试$/, match => `${owner(match[1])} window isn't on screen (minimized or on another desktop), so its page isn't reachable through UI Automation. Restore the window and try again.`],
   [/^(.+?)以更高的权限运行（例如以管理员身份），工作台读得到它的界面但不能操作：请用相同的权限运行两者$/, match => `${owner(match[1])} desktop app runs with higher rights (as administrator, say): the console can read its window but not act on it. Run both with the same rights.`],
+  [/^Windows 上 Codex 桌面版的推理强度只能用方向键调，工作台不向桌面版发按键：请在桌面版里把这个聊天的推理强度调成「(.+?)」$/, match => `On Windows, Codex's effort can only be changed with the arrow keys, and the console sends the desktop app no keys. Set this chat's effort to "${match[1]}" in the desktop app`],
   [/^Windows 上 Codex 桌面版的推理强度只能用方向键调，工作台不向桌面版发按键，没有新建：请先在桌面版的新建页上把推理强度调成「(.+?)」$/, match => `On Windows, Codex's effort can only be changed with the arrow keys, and the console sends no keys to the desktop app, so no chat was started. Set the effort to "${match[1]}" on the desktop's New chat page first.`],
   [/^Windows 上的桌面代发还在移植中，(.+?)暂时不能通过窗口操作「(.+?)」$/, match => `Sending through the desktop app's window is still being ported on Windows: ${owner(match[1])} desktop app can't do "${match[2]}" through its window yet`],
   // Held back by the driver rather than guessed at (ax-driver.swift: "one control, or none", "a control found by its place").
