@@ -14,6 +14,13 @@ import { bag, get, isBag, list, parseJson } from '../shared/guards.js';
 
 const STEER_VERSION = 1; // the desktop's protocol version for thread-follower-steer-turn
 const INTERRUPT_VERSION = 4; // …and for thread-follower-interrupt-turn with an expected turn
+const OWNER_VERSION = 1; // …for thread-owner-discovery
+const READ_SETTINGS_VERSION = 1; // …for thread-follower-read-model-settings
+const SETTINGS_VERSION = 2; // …and for thread-follower-update-thread-settings with a condition
+// A window that owns a thread answers whether it does within milliseconds (4-16 ms measured). When
+// none does, the router waits 10 s for a client that never answers before it says so; the console
+// stops waiting long before that.
+const OWNER_WAIT_MS = 500;
 
 /** An error from the desktop's router, with the code the bridge tells apart ('timeout', 'no-client-found', …). */
 export interface IpcError extends Error { code: string }
@@ -205,6 +212,37 @@ function watch(conversationId: string, onChange: (live: LiveThread) => void, { s
 const answerUserInput = ({ threadId, requestId, response }: { threadId: string; requestId: unknown; response: unknown }, options?: RequestOptions): Promise<unknown> => request('thread-follower-submit-user-input', { conversationId: threadId, requestId, response }, { version: 1, timeoutMs: 15000, ...options });
 const decideApproval = ({ threadId, requestId, kind, decision }: { threadId: string; requestId: unknown; kind: 'fileChange' | 'commandExecution'; decision: 'accept' | 'decline' }, options?: RequestOptions): Promise<unknown> => request(kind === 'fileChange' ? 'thread-follower-file-approval-decision' : 'thread-follower-command-approval-decision', { conversationId: threadId, requestId, decision }, { version: 1, timeoutMs: 15000, ...options });
 
+// ---- the model and effort a chat's next turn runs with ----
+// The window that owns a thread holds its settings for the next turn. A follower can read them and
+// ask the owner to change them; the owner then does what its own model menu does
+// (updateThreadSettingsForNextTurn: the desktop's app-server records it and its composer shows it).
+// Only a thread the desktop has loaded since it started has an owner.
+
+// Whether a desktop window owns this thread; false when none answers in time.
+async function owns(threadId: string, { waitMs = OWNER_WAIT_MS, ...options }: RequestOptions & { waitMs?: number } = {}): Promise<boolean> {
+  try { await request('thread-owner-discovery', { hostId: 'local', conversationId: threadId }, { version: OWNER_VERSION, timeoutMs: waitMs, ...options }); return true; }
+  catch { return false; }
+}
+/** The next turn's model and effort, as the owning window holds them. */
+export interface ThreadSettings { model: string | null; effort: string | null }
+async function readSettings(threadId: string, options?: RequestOptions): Promise<ThreadSettings> {
+  const result = await request('thread-follower-read-model-settings', { conversationId: threadId }, { version: READ_SETTINGS_VERSION, timeoutMs: 3000, ...options });
+  const model = get(result, 'settings', 'model'), effort = get(result, 'settings', 'reasoningEffort');
+  return { model: typeof model === 'string' ? model : null, effort: typeof effort === 'string' ? effort : null };
+}
+// Sets the next turn's model and effort, as the desktop's model menu does (it always sends both).
+// Applied only while the owner still holds `from`, so a pick made meanwhile in the desktop is not
+// overwritten; answers whether it was applied.
+async function updateSettings({ threadId, to, from }: { threadId: string; to: { model: string; effort: string | null }; from: ThreadSettings }, options?: RequestOptions): Promise<boolean> {
+  const result = await request('thread-follower-update-thread-settings', {
+    conversationId: threadId,
+    threadSettings: { model: to.model, effort: to.effort },
+    activeTurnId: null,
+    condition: { ifModelEquals: from.model, ifEffortEquals: from.effort },
+  }, { version: SETTINGS_VERSION, timeoutMs: 5000, ...options });
+  return get(result, 'applied') === true;
+}
+
 /** What the bridge uses of the desktop's IPC; a stand-in replaces it in tests. */
 export interface CodexDesktopIpc {
   steer: typeof steer;
@@ -212,6 +250,9 @@ export interface CodexDesktopIpc {
   watch?: typeof watch;
   answerUserInput: typeof answerUserInput;
   decideApproval: typeof decideApproval;
+  owns?: typeof owns;
+  readSettings?: typeof readSettings;
+  updateSettings?: typeof updateSettings;
 }
 
-export { socketPath, frame, request, steer, interrupt, applyPatches, watch, answerUserInput, decideApproval };
+export { socketPath, frame, request, steer, interrupt, applyPatches, watch, answerUserInput, decideApproval, owns, readSettings, updateSettings };

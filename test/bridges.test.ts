@@ -105,6 +105,7 @@ test('Codex: a reply the desktop is writing is shown as it grows, from the windo
 test('Codex: a different model is picked in the desktop first; when it cannot be, nothing is queued', async () => {
   const { bridge, calls, take } = fakeCodex();
   const asked: unknown[] = [];
+  bridge.desktop = fake<CodexDesktopIpc>({}); // no IPC for settings: the menu
   const ui = bridge.ui = fake<DesktopAutomation>({ check: async () => ({ available: true }), run: async (args, options) => { asked.push([args, options?.settings]); return { ok: true, changed: ['model'] }; } });
   const emitter = bridge.startTurn({ threadId: 'th', prompt: 'go', model: 'gpt-b', reasoningEffort: 'high' });
   const done = settle(emitter);
@@ -123,6 +124,84 @@ test('Codex: a different model is picked in the desktop first; when it cannot be
   const same = bridge.startTurn({ threadId: 'th', prompt: 'more', model: 'gpt-a', reasoningEffort: 'medium' });
   await new Promise(resolve => setTimeout(resolve, 20)); same.emit('interrupt');
   assert.deepEqual(touched, []);
+});
+
+// The desktop's IPC as a window that owns (or does not own) the chat answers it.
+function ownerIpc({ owned = true, applies = true, fails = false }: { owned?: boolean | (() => boolean); applies?: boolean; fails?: boolean } = {}) {
+  const held = { model: 'gpt-a' as string | null, effort: 'medium' as string | null }, updates: unknown[] = [];
+  const ipc = fake<CodexDesktopIpc>({
+    owns: async () => typeof owned === 'function' ? owned() : owned,
+    readSettings: async () => ({ ...held }),
+    updateSettings: async request => { if (fails) throw Object.assign(new Error('timeout'), { code: 'timeout' }); updates.push(request); if (applies) Object.assign(held, request.to); return applies; },
+  });
+  return { ipc, held, updates };
+}
+
+test('Codex: a different model is set by the window that owns the chat, as its menu does, without touching the window', async () => {
+  const { bridge, calls, take } = fakeCodex();
+  bridge.getModels = async () => [{ id: 'gpt-a', name: 'GPT-A' }, { id: 'gpt-b', name: 'GPT-B', reasoningEfforts: ['low', 'medium', 'high'] }];
+  const { ipc, updates } = ownerIpc(); bridge.desktop = ipc;
+  const touched: unknown[] = []; bridge.ui = fake<DesktopAutomation>({ check: async () => ({ available: true }), run: async args => { touched.push(args); return { ok: true }; } });
+  const emitter = bridge.startTurn({ threadId: 'th', prompt: 'go', model: 'gpt-b', reasoningEffort: 'high' });
+  const done = settle(emitter);
+  await new Promise(resolve => setTimeout(resolve, 20)); take('go'); await done; emitter.emit('interrupt');
+  assert.deepEqual(updates, [{ threadId: 'th', to: { model: 'gpt-b', effort: 'high' }, from: { model: 'gpt-a', effort: 'medium' } }]);
+  assert.deepEqual(touched, []);
+  assert.ok(calls.some(([method]) => method === 'thread/queue/add'));
+  // An effort the model does not have is refused before anything is touched.
+  calls.length = 0; updates.length = 0;
+  const refused = bridge.startTurn({ threadId: 'th', prompt: 'again', model: 'gpt-b', reasoningEffort: 'xhigh' });
+  const error: unknown = await settle(refused).catch((err: unknown) => err);
+  assert.match(String(errorField(error, 'message')), /GPT-B 没有「xhigh」这一档推理强度，没有发送$/);
+  assert.deepEqual(updates, []); assert.ok(!calls.some(([method]) => method === 'thread/queue/add'));
+});
+
+test('Codex: a chat no window owns is opened in the desktop in the background, then set by its owner', async () => {
+  const { bridge, take } = fakeCodex();
+  let opened = false;
+  const { ipc, updates } = ownerIpc({ owned: () => opened }); bridge.desktop = ipc;
+  const asked: unknown[] = []; bridge.ui = fake<DesktopAutomation>({ check: async () => ({ available: true }), run: async (args, options) => { asked.push([args, options?.settings]); opened = true; return { ok: true, changed: [] }; } });
+  const emitter = bridge.startTurn({ threadId: 'th', prompt: 'go', model: 'gpt-b' });
+  const done = settle(emitter);
+  await new Promise(resolve => setTimeout(resolve, 20)); take('go'); await done; emitter.emit('interrupt');
+  assert.deepEqual(asked, [[['settings', 'Plan the trip'], undefined]], 'opened only: nothing picked in its menus');
+  assert.deepEqual(updates, [{ threadId: 'th', to: { model: 'gpt-b', effort: 'medium' }, from: { model: 'gpt-a', effort: 'medium' } }]);
+  // A chat the sidebar does not show cannot be opened, nor found by the menu: not sent, and the menu is not tried.
+  const hidden = fakeCodex();
+  hidden.bridge.desktop = ownerIpc({ owned: false }).ipc;
+  const tried: unknown[] = []; hidden.bridge.ui = fake<DesktopAutomation>({ check: async () => ({ available: true }), run: async (args, options) => { tried.push([args, options?.settings]); return { ok: false, error: '没能在 Codex 桌面版的侧栏里找到这个聊天' }; } });
+  const error: unknown = await settle(hidden.bridge.startTurn({ threadId: 'th', prompt: 'go', model: 'gpt-b' })).catch((err: unknown) => err);
+  assert.equal(errorField(error, 'message'), '没能在 Codex 桌面版的侧栏里找到这个聊天，没有发送');
+  assert.deepEqual(tried, [[['settings', 'Plan the trip'], undefined]]);
+  assert.ok(!hidden.calls.some(([method]) => method === 'thread/queue/add'));
+});
+
+test('Codex: when the owner cannot set it the menu does, but never for a chat whose name another shares; a change made meanwhile is not overwritten', async () => {
+  // The IPC fails (a desktop that changed its protocol): the menu picks it, as before.
+  const { bridge, take } = fakeCodex();
+  bridge.desktop = ownerIpc({ fails: true }).ipc;
+  const asked: unknown[] = []; bridge.ui = fake<DesktopAutomation>({ check: async () => ({ available: true }), run: async (args, options) => { asked.push([args, options?.settings]); return { ok: true, changed: ['model'] }; } });
+  const emitter = bridge.startTurn({ threadId: 'th', prompt: 'go', model: 'gpt-b' });
+  const done = settle(emitter);
+  await new Promise(resolve => setTimeout(resolve, 20)); take('go'); await done; emitter.emit('interrupt');
+  assert.deepEqual(asked, [[['settings', 'Plan the trip'], { model: 'GPT-B' }]]);
+  // Still not owned once opened (the sidebar opened another chat of that name): not sent.
+  const second = fakeCodex();
+  second.bridge.desktop = ownerIpc({ owned: false }).ipc;
+  const send = second.bridge.send;
+  second.bridge.send = async (method, params) => method === 'thread/list' ? { result: { data: [{ id: 'th' , name: 'Plan the trip' }, { id: 'other', name: 'Plan the trip' }] } } : send(method, params);
+  const menus: unknown[] = []; second.bridge.ui = fake<DesktopAutomation>({ check: async () => ({ available: true }), run: async (args, options) => { menus.push([args, options?.settings]); return { ok: true }; } });
+  const refused: unknown = await settle(second.bridge.startTurn({ threadId: 'th', prompt: 'go', model: 'gpt-b' })).catch((err: unknown) => err);
+  assert.match(String(errorField(refused, 'message')), /不止一个叫「Plan the trip」的聊天/);
+  assert.deepEqual(menus, [[['settings', 'Plan the trip'], undefined]], 'opened, never picked in a menu');
+  assert.ok(!second.calls.some(([method]) => method === 'thread/queue/add'));
+  // The owner's settings changed between reading and setting: not applied, not sent.
+  const third = fakeCodex();
+  third.bridge.desktop = ownerIpc({ applies: false }).ipc;
+  third.bridge.ui = fake<DesktopAutomation>({ check: async () => ({ available: true }), run: async () => ({ ok: true }) });
+  const raced: unknown = await settle(third.bridge.startTurn({ threadId: 'th', prompt: 'go', model: 'gpt-b' })).catch((err: unknown) => err);
+  assert.match(String(errorField(raced, 'message')), /刚被改过，没有发送/);
+  assert.ok(!third.calls.some(([method]) => method === 'thread/queue/add'));
 });
 
 test('Codex: stopping takes back a message the desktop has not started, and stops a running turn through the desktop', async () => {

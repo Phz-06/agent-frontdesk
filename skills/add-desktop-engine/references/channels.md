@@ -14,7 +14,7 @@ Three yeses: use it. Any no: try the next route. If none of the three routes wor
 
 Read-only queries (quota, model list, sign-in status) are not subject to question 1: you may start the official CLI for one query that persists nothing and runs no turn (Claude's quota is the control request `get_usage` on `claude --no-session-persistence`). Only actions that write to a session must pass all three.
 
-Decide per action, not one route per engine: Codex sends through the official queue, steers through the window-to-window channel, and starts chats and changes settings through the helper, all three at once.
+Decide per action, not one route per engine: Codex sends through the official queue, steers and changes settings through the window-to-window channel, and starts chats through the helper, all three at once.
 
 ## 2. The three routes (best first)
 
@@ -36,7 +36,7 @@ How to find this kind of interface:
 
 Some desktop apps have a channel between their windows: one window "owns" a session and the others, as "followers", ask it to act. Frontdesk can briefly connect as a follower and ask the owning window to steer, stop or answer, with the same effect as doing it in the desktop app.
 
-- **Codex**: `~/.codex/ipc/ipc.sock`. Steer is `thread-follower-steer-turn`, stop is `thread-follower-interrupt-turn` (with `expectedTurnId`), answering a question is `thread-follower-submit-user-input`, approvals are `*-approval-decision`; following a session gives you the requests it is waiting on the person for (`watch`). See `src/server/codex-desktop.ts`.
+- **Codex**: `~/.codex/ipc/ipc.sock`. Steer is `thread-follower-steer-turn`, stop is `thread-follower-interrupt-turn` (with `expectedTurnId`), answering a question is `thread-follower-submit-user-input`, approvals are `*-approval-decision`; following a session gives you the requests it is waiting on the person for (`watch`). The next turn's model and effort are `thread-follower-update-thread-settings` (version 2, with a condition on what the owner holds), the very function the desktop's model menu calls; it takes about 0.1 s where the menu takes 5-7 s. Only a session the desktop has loaded since it started has an owner: `thread-owner-discovery` answers within milliseconds when one does, but the router waits 10 s when none does, so stop waiting after 0.5 s. A session with no owner is opened in the sidebar in the background (route C, about 1.5 s), which makes it owned. See `src/server/codex-desktop.ts` and `pickInDesktop` in `src/server/codex-bridge.ts`.
 - Conditions: when no desktop window owns the session, or the turn has ended, fall back to the queue; never resend after a timeout; the native record decides. For versioned protocols, pin the version you verified, and report a reason rather than forcing a send when it does not match.
 
 ### Route C: the Accessibility driver (the helper)
@@ -44,7 +44,7 @@ Some desktop apps have a channel between their windows: one window "owns" a sess
 For actions neither A nor B can do, use macOS Accessibility to operate the desktop app's own interface in the background on the person's behalf: press the session in the sidebar, fill the composer, press Send, open a menu and pick a model. The message's identity is the person's own, execution stays in the desktop app's process, and no token is read.
 
 - **Claude does everything this way**: Claude Code's official channels (CLI / SDK) can only continue a session in another process, which fails question 1. So sending, steering, Send now, stopping, changing model / effort / permissions, new chats, the new-chat page's options, answering question cards and opening a file in the desktop app are all done in the Claude window by `src/server/native/claude-desktop.swift`.
-- **Codex does some actions this way**: new chats (pick the project on the New chat page, fill in the message, press Send), changing model and reasoning effort (the model menu and the "Power" slider), reading the model the New chat page shows, opening files, and chats in its ChatGPT mode.
+- **Codex does some actions this way**: new chats (pick the project on the New chat page, fill in the message, press Send), opening a chat the desktop has not loaded so that route B can change its settings (and, when route B cannot, the model menu and the "Power" slider, never for a chat whose name another shares), reading the model the New chat page shows, opening files, and chats in its ChatGPT mode.
 - **Both apps' cloud chat modes** (Claude's Claude mode, Codex's ChatGPT mode): their messages are not on disk, so reading, starting and sending all go through the desktop window (`ChatMode` in `src/server/services/desktop-chat.ts`).
 
 The helper's result only says "what was pressed in the interface"; **whether it really went out is decided by the native record** (the message appearing in the session record). How to write it is in section 4.
@@ -59,7 +59,7 @@ The helper's result only says "what was pressed in the interface"; **whether it 
 | Send now (the message the desktop is holding) | C: press the desktop's Send now | — (steering delivers at once) | — |
 | Queue (send after this turn) | Frontdesk's RunService queue | Same | Same |
 | Stop | C: press Stop | B: `thread-follower-interrupt-turn`; not yet picked up, A: `thread/queue/delete` | A: `CancelCascadeInvocation` |
-| Change model / effort / permissions | C: the menus under the composer | C: the model menu, the Power slider | `requestedModel` with the message |
+| Change model / effort / permissions | C: the menus under the composer | B: `thread-follower-update-thread-settings`; a chat not loaded is first opened with C; when B fails, C: the model menu, the Power slider | `requestedModel` with the message |
 | New chat | C: the New session page (its options picked first on cards in the page) | C: the New chat page, project picked | A: agentapi / `StartCascade` |
 | Answer question / permission cards | C: pick and submit on the desktop's card | B: answer as a follower | A: `HandleCascadeUserInteraction` |
 | Open a file in the desktop app | C: shared driver `open-file` | C: same | `open -a Antigravity <file>` |

@@ -16,7 +16,7 @@ import { changesOf, questionCard } from './core/presentation.js';
 import { withAttachments } from './core/attachments.js';
 import { characterReferences, promptStarts } from '../shared/turn-match.js';
 import * as codexDesktop from './codex-desktop.js';
-import type { CodexDesktopIpc, CodexInput, DesktopRequest } from './codex-desktop.js';
+import type { CodexDesktopIpc, CodexInput, DesktopRequest, ThreadSettings } from './codex-desktop.js';
 import { DesktopAutomation, type DesktopFlags } from './core/desktop-automation.js';
 import { CodexProjects } from './services/codex-projects.js';
 import { UnifiedSession, UnifiedTurn, UnifiedStep, EngineEvents } from './types.js';
@@ -507,7 +507,7 @@ class CodexBridge extends EventEmitter {
   //    app-server resumes the thread and runs what is queued, without showing its window);
   //  - a message for the running turn goes to the desktop window that owns it (thread-follower IPC).
   // The desktop's model and effort follow the chat; a different pick in the console is made in the
-  // desktop's own model menu first, and when it cannot be made nothing is sent.
+  // desktop first (pickInDesktop), and when it cannot be made nothing is sent.
 
   // The chat's name as the desktop's sidebar shows it.
   titleOf(thread: unknown): string { return String(get(thread, 'name') || get(thread, 'title') || text(get(thread, 'preview')).trim().split('\n')[0]?.slice(0, 120) || 'Codex Chat'); }
@@ -610,13 +610,7 @@ class CodexBridge extends EventEmitter {
       const thread = await this.readThread(threadId, true);
       const known = new Set(list(get(thread, 'turns')).map(turn => get(turn, 'id')));
       // A different model or effort is picked in the desktop first.
-      const wanted = await this.desktopSettings({ model, reasoningEffort }, { model: get(thread, 'model'), reasoningEffort: get(thread, 'reasoningEffort') });
-      if (Object.keys(wanted).length) {
-        const state = await this.ui.check();
-        if (!state.available) throw Object.assign(new Error(`要换模型或推理强度得在 Codex 桌面版里换，但${state.reason}，没有发送`), { terminal: true });
-        const result = await this.ui.run(['settings', this.titleOf(thread)], { settings: wanted });
-        if (!result.ok) throw Object.assign(new Error(`${result.error || '没能在 Codex 桌面版里换模型'}，没有发送`), { terminal: true });
-      }
+      await this.pickInDesktop(thread, { model, reasoningEffort });
       const inputs = this.buildCodexInputs(prompt, attachments);
       const queued = await this.send('thread/queue/add', { threadId, clientUserMessageId: randomUUID(), input: inputs });
       emitter.queuedId = get(queued, 'result', 'queuedSubmission', 'id');
@@ -627,6 +621,63 @@ class CodexBridge extends EventEmitter {
       emitter.emit('error', Object.assign(error, { terminal: Boolean(errorField(error, 'terminal') ?? !errorField(error, 'transport')) }));
     });
     return emitter;
+  }
+  // A different model or effort for the chat's next turn is set in the desktop itself, so the
+  // desktop shows and keeps it; when it cannot be, this throws why and nothing is sent.
+  //  1. The window that owns the chat sets it as its own model menu does, asked over the desktop's
+  //     IPC (codex-desktop.ts): no window is touched, and it takes a tenth of a second.
+  //  2. No window owns it (the desktop has not loaded it since it started): the chat is opened in
+  //     the desktop's sidebar in the background and the window goes back to where it was
+  //     (Accessibility, about 1.5 s). The chat is then owned, by its id, and set as in 1. A chat the
+  //     sidebar does not show cannot be opened this way, nor picked in the menu: not sent.
+  //  3. Neither works (the IPC has changed, or the sidebar opened another chat of the same name):
+  //     the desktop's model menu and Power slider pick it (5-7 s), unless another chat has the same
+  //     name, since the menu finds the chat by its name.
+  async pickInDesktop(thread: unknown, { model, reasoningEffort }: { model?: string | undefined; reasoningEffort?: string | undefined }): Promise<void> {
+    const refuse = (message: string): never => { throw Object.assign(new Error(message), { terminal: true }); };
+    const threadId = text(get(thread, 'id'));
+    const current = { model: text(get(thread, 'model')), effort: text(get(thread, 'reasoningEffort')) };
+    const to = { model: model || current.model, effort: reasoningEffort || current.effort || null };
+    if (to.model === current.model && to.effort === (current.effort || null)) return;
+    const known = (await this.getModels().catch((): Model[] => [])).find(item => item.id === to.model);
+    if (to.model !== current.model && !known) refuse('没能确定这个模型在 Codex 桌面版里叫什么，没有发送');
+    if (to.effort && known?.reasoningEfforts?.length && !known.reasoningEfforts.includes(to.effort)) refuse(`Codex 桌面版里 ${known.name} 没有「${to.effort}」这一档推理强度，没有发送`);
+    const title = this.titleOf(thread);
+    const ipc = this.desktop;
+    if (ipc.owns && ipc.readSettings && ipc.updateSettings) {
+      let owned = await ipc.owns(threadId);
+      if (!owned && (await this.ui.check()).available) {
+        const opened = await this.ui.run(['settings', title]);
+        // The menu finds the chat in the sidebar the same way: not there, so no use trying it.
+        if (!opened.ok) refuse(`${opened.error || '没能在 Codex 桌面版里打开这个聊天'}，没有发送`);
+        owned = await ipc.owns(threadId, { waitMs: 2000 });
+      }
+      if (owned) {
+        let from: ThreadSettings | null = null;
+        try { from = await ipc.readSettings(threadId); } catch { /* the menu below */ }
+        if (from && from.model === to.model && from.effort === to.effort) return;
+        if (from) {
+          let applied: boolean | null = null;
+          try { applied = await ipc.updateSettings({ threadId, to, from }); } catch { /* the menu below */ }
+          // Not applied: the chat's settings changed in the desktop since they were read.
+          if (applied === false) refuse('Codex 桌面版里这个聊天的模型刚被改过，没有发送，请再发一次');
+          const now = applied ? await ipc.readSettings(threadId).catch(() => null) : null;
+          if (now && now.model === to.model && now.effort === to.effort) return;
+        }
+      }
+    }
+    // The menu finds the chat by its name in the sidebar; with two chats of that name it could set another's.
+    if (await this.sharesName(threadId, title)) refuse(`Codex 桌面版里有不止一个叫「${title}」的聊天，没法确定要换的是哪一个，没有发送；请先在桌面版里打开这个聊天`);
+    const wanted = await this.desktopSettings({ model, reasoningEffort }, { model: current.model, reasoningEffort: current.effort });
+    const state = await this.ui.check();
+    if (!state.available) refuse(`要换模型或推理强度得在 Codex 桌面版里换，但${state.reason}，没有发送`);
+    const result = await this.ui.run(['settings', title], { settings: wanted });
+    if (!result.ok) refuse(`${result.error || '没能在 Codex 桌面版里换模型'}，没有发送`);
+  }
+  // Whether another recent chat has this name in the desktop's sidebar.
+  async sharesName(threadId: string, title: string): Promise<boolean> {
+    const rows = list(get(await this.send('thread/list', { limit: 100 }).catch(() => null), 'result', 'data'));
+    return rows.some(row => get(row, 'id') !== threadId && !get(row, 'parentThreadId') && this.titleOf(row) === title);
   }
   // Asks the desktop to run what the thread has queued. `open -g` keeps it in the background;
   // a desktop that is not running starts just to do this.
