@@ -7,11 +7,17 @@ This is the hand-off for whoever continues the Windows port, in particular a Cla
 - **Done:** the analysis below, and the probe (`uia-probe.cs`, `probe.ps1`).
 - **Step 1 runs:** on Windows 11 (build 26200, PowerShell 5.1, .NET 4.8.1) the helper compiles with `csc.exe` as written, and step 1 (read) runs end to end. The first run needed three fixes in `probe.ps1` and the helper: output paths past 260 characters, a second engine being handed the first engine's window, and a hidden Codex window being picked over its main one.
 - **Probe phase closed.** Development happens on the `windows` branch, verified step by step against the real apps, in test chats only. The probe's open questions that were not run (settle, off screen) are answered as the port reaches them.
-- **Where it stands (2026-11-18, after the integration with PR 1).** Development continues on the branch `windows-integrate`: PR 1 (lokic7123-star's Windows 11 support) with the `windows` branch merged in. See "Integration with PR 1, and one quiet layer for every engine" just below. `npm test` (163) and `npm run check` pass on Windows; CI has a Windows job. Nothing is pushed.
+- **Where it stands (2026-11-18, after the round of real-app tests).** Development continues on the branch `windows-integrate`: PR 1 (lokic7123-star's Windows 11 support) with the `windows` branch merged in, then the round below. See "Integration with PR 1, and one quiet layer for every engine" and "The round of real-app tests" just below. `npm test` (165) and `npm run check` pass on Windows; CI has a Windows job (not run yet: nothing is pushed).
+- **Left for the person, or for another machine** (each says why):
+  - **A server at Medium integrity.** This machine has UAC off (`EnableLUA=0`), so every program runs at High. Trying it needs UAC on and a restart, a system security setting that is the person's to change, not a test's.
+  - **More than one monitor.** This machine has one.
+  - **A person moving to the app itself mid-park** (its taskbar button or Alt+Tab). It needs a real click during a park; a program cannot take the foreground on cue (measured again: `SetForegroundWindow` and `SwitchToThisWindow` from a background process were refused). The watchdog still takes such a move back, as it cannot tell it from the page's own grabs. A way to tell them apart, not built: a move the person makes goes through the shell first (taskbar, Alt+Tab switcher), a page's grab does not.
+  - **On a Mac:** `claude-desktop.swift` now answers `queued` (written to match the C# flow, not compiled: it needs a Mac); route B's `thread-follower-start-turn` after a stopped turn (the same desktop code, not tried there); PR 1's Antigravity changes (tried on Windows: below).
+  - **Claude's Code sessions are found by their title** in the sidebar, on both platforms. Two sessions with one title could be mixed up; the session link (`claude://…/<localId>`) would tell them apart. Both drivers would have to take it first where the title is not unique: a change to try on a Mac too.
 - **Before that (end of the second round of step 3).** Claude sends end to end through its window on Windows: send, steer and Send now, stop, model / effort changes (with the "Switch model?" question), a question card, a card's own button, from behind the person's window, which keeps the foreground. Details: "Step 3" and "Step 3, second round" below. For whoever continues:
   - **The console reads Claude's models, efforts and usage through Claude's CLI**, on Windows as on the Mac (`list_models`, `get_usage`, `auth status`). The Windows desktop signs its own sessions in through a local proxy, which the console must not use, so the CLI needs its own `claude auth login` once. Until then the model menu is empty and says why on hover.
-  - **The Mac helper (`claude-desktop.swift`) does not answer `queued` yet** (the steer the desktop keeps in its own queue, second round). The console still works without it, but waits the full 12 s and calls such a steer lost. It needs porting on a Mac.
-  - **Not tried:** `new` through the console, `open-file`, the Claude-mode chat commands on a real chat, a park from minimized since the second round, more than one monitor, a person moving to Claude itself mid-park.
+  - ~~The Mac helper (`claude-desktop.swift`) does not answer `queued` yet~~ It does now, not compiled (above).
+  - ~~Not tried: `new` through the console, `open-file`, the Claude-mode chat commands on a real chat, a park from minimized since the second round~~ Tried in the round of real-app tests (below). More than one monitor and a person moving to Claude mid-park: still not (above).
   - **The test machine's Claude window lost its normal bounds** to the maximized ones, through the first way of parking a maximized window (second round). Showing it normal once and sizing it back fixes it. It was left as it is.
 
 ## Integration with PR 1, and one quiet layer for every engine
@@ -67,27 +73,52 @@ What each kind of action costs the person, as measured (the layer decides it, no
 **Codex on Windows now:**
 - sending, steering, stopping, queuing: routes A and B, no window (verified earlier);
 - an existing chat's model and effort: route B (`thread-follower-update-thread-settings`), brought back from `codex-ipc-settings`; with no window owning the chat, Windows does not send and says why;
-- a new chat: `codex-desktop.cs` `new` / `new-shown` / `new-leave`, parked. An effort other than the New chat page's is refused before anything is touched (the slider takes only arrow keys). **Compiled and `check`ed against the running Codex; `new` has not been run on the real app.**
+- a new chat: `codex-desktop.cs` `new` / `new-shown` / `new-leave`, parked. An effort other than the New chat page's is refused before anything is touched (the slider takes only arrow keys). Tried on the real app (below).
 
-**Next, each with the person's agreement and in test chats only** (none of this was run in this round):
-1. Codex `new` through the console, in `D:\af\codex-test`: the project menu and a model pick from behind, and whether the project popover and the model menu close after a pick (Collapse does not close them). If the menus do not close, try the deep link (`codex://threads/new?path=…&prompt=…`) opened inside a park, then `Press` Send.
-2. Kill recovery on the real Claude window: a park stopped by the server's timeout, then the next `warm` or `restore`.
-3. Two engines at once: a Claude send and a Codex new chat in the same second (the park lock).
-4. A server at Medium integrity (UAC on, a normal user): this machine runs everything at High.
-5. The items from step 3 still not tried: `new` through the console, `open-file`, the chat modes on a real chat, a minimized park, two monitors, a person moving to the app itself mid-park.
-6. On a Mac: `claude-desktop.swift` answering `queued`, and PR 1's Antigravity changes.
+## The round of real-app tests (2026-11-18)
+
+Claude 6.6395, Codex 26.1111, Antigravity running; one monitor, UAC off. Test chats only: Codex's local "回复 OK" (`D:\af\codex-test`) and new chats there, Claude's "测试" and a new session in `D:\af`, Antigravity's "Casual Greeting", and, for the chat modes, one new ChatGPT-mode chat ("回复指定文本") and one new Claude-mode chat ("绿色鹦鹉 9047"), which stay in the person's accounts. Every turn was checked in its record. Server on port 4111.
+
+**Codex with its window closed to the tray** (the app hides its window; found so at the start):
+- Its page reads as 22 elements, and its main window (hidden and minimized) sits beside a second hidden window titled the same ("ChatGPT"), which `FindWindow` would pick. So a window command could not act, and nothing could tell which window to show: **every window command now refuses a hidden window** (`FailIfHidden`: the park, `open-file`, `show-session`, a page that reads empty) and says to open the window from the tray. Tried: the New chat options answered with that message.
+- Route A (queue + wake): the desktop took the message from the tray and ran it.
+- Route B, all of it, from the tray: read settings (7 ms), **stop** (`turn_aborted` within a second), **model change** (the next turn's `turn_context` has the new model), **an approval** (with the chat's `approvals_reviewer` set to `user` for the test, then back to `auto_review`: the card showed in the console, accept ran the command), **a question card** (in Plan mode for the test, then back to Default: the console's pick was the answer).
+- **After a stopped turn, the desktop holds its queue**: each queued message shows paused until the person sends one (`pausedReason` while the last turn is `interrupted`, the desktop's own code). A message the console queued then waited for good; a new wake did not help. Now the window that owns the chat starts that turn over route B (`thread-follower-start-turn`, version 2), given only the message; the owner fills in cwd, model, mode and permissions (its `turn_context` matched the desktop's own turns). Stop, then send: the second message ran at once. With no window on the chat it is queued as before, and the waiting note says why it may wait.
+- An existing chat's model and effort go over route B on Windows only; macOS keeps its menus (route B settings are not tried on a Mac).
+
+**Codex's new chat through its window** (parked from minimized, and from behind every window):
+- In the project: created and completed (7.9 s park, 5 grabs of up to 102 ms, all given back).
+- With another model: the pick is made, but from behind the model menu goes back to its first page and stays open, and the button shows the new model only once it closes. The flow goes on to the fill, which closes it, and presses Send only with no menu open and the model shown. GPT-6-Luna, then back to GPT-6-Sol: each turn ran with the model picked; the foreground is held 1 s at most for the menu (it was 4.5 s).
+- A page Codex drew while fully covered can lack nodes (its composer was not in the tree): the command refuses ("bring its window to the front once"), as a cold Claude page does. Uncovered, the nodes came.
+- The park report no longer calls a minimized window's z-order not put back.
+
+**Claude:**
+- **Kill recovery** on the real window: the helper killed 150 ms after its park record was written, the window left at the corner (`-2565,-1385`); `restore` put placement and rect back exactly and removed the record; the foreground never moved.
+- **Two engines at once**: a Claude `settings` and a Codex `new-shown` started together: Claude parked 0 to 3.0 s, Codex waited on the park lock and parked 3.1 to 5.4 s; both put back exactly.
+- **From minimized**: put back minimized. But a 1.1 s park left `window-state.json` with the corner's bounds (`x:-2031, y:-1094`): this Claude version saves about 1 s after the move. Repaired by hand (shown normal at its bounds until saved, maximized again: the file reads `x:0, y:0, 2054×1105, maximized`, as before). The driver now checks the saved bounds after every park from minimized (until 4 s after the move, or a save on screen since the park began).
+- `new` through the console (a session in `D:\af`, completed), `open-file` (pressed, 1.2 s), `show-session` back to the session the tests ran in.
+- **Chat mode**: a new chat, a message into it, and its reply stopped from the console (cut at 165 characters, read back as interrupted). The switch to the chat mode missed about one run in four (a press lost while the page settled): it is pressed again after 1.2 s; eight reads in a row then all worked, four of them on the second press.
+- The park lock's failure answers `park_busy` now: its `busy` was what a Claude flow answers for a running chat, which the bridge steers into.
+
+**Codex's ChatGPT mode** (the chat modes are shared code):
+- A message for its ChatGPT chat "回复 OK" went to the Codex thread of that name: the mode's Recents list the Codex threads too, a sidebar row carries no id, and Codex's page address (`app://-/index.html`) none either. One chat is often listed twice (under its project and in Recents), so the driver cannot refuse on rows alone. **The console's chat mode** (`desktop-chat.ts`) now does not send to, read or show a chat whose title another entry of that sidebar has, and says to rename one. Tried: the console refused both, and nothing reached either chat.
+- A new chat and its first message went through. In a chat already open, Send pressed from behind did nothing; with Codex in front the same press sent. So when the message stays in the composer, the window is activated (still off screen) for that press only, as for a card's buttons (held 0.9 s); the page draws Send anew around the press, so it is read again first. Sent; window back minimized, the person's window kept the foreground. The fill itself takes about 4 s there (its first attempt does not take); not looked into.
+
+**Antigravity** (PR 1's changes run on every platform): a message to "Casual Greeting" from the console ran in the desktop and ended `completed` on its reply.
+
+What the test machine was left as: Codex in its Codex mode, minimized (it was in the tray at the start; the console cannot hide it again without the decoy-window problem above), its New chat page on GPT-6-Sol; Claude maximized with its saved bounds as before; the test chats' settings as they were.
 
 ## Development on Windows
 
 The runners and the foreground tool behind the measurements below are in `probes/windows/tools` (see its README: `build-tools.ps1`, then `node --import tsx probes\windows\tools\<runner>.mts`).
 
-Order (status as of the integration above):
+Order (status as of the round of real-app tests above):
 1. The platform layer: done;
 2. the C# driver's skeleton, read-only: done;
-3. Claude sending: done, tried on the real app;
-4. the settings menus: Claude's done; Codex's through route B instead;
-5. a Codex new chat: ported to the window (`codex-desktop.cs`), not tried on the real app; the deep link is the fallback;
-6. CI: a Windows job (compile + unit tests, no app driven).
+3. Claude sending: done, tried on the real app (its chat mode too);
+4. the settings menus: Claude's done; Codex's through route B instead (Windows only);
+5. a Codex new chat: done, tried on the real app (project and model picked from behind);
+6. CI: a Windows job (compile + unit tests, no app driven); runs once the branch is pushed.
 
 **Step 1, the platform layer.** Status: done for reading; sending: see step 3.
 
