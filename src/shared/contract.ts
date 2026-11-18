@@ -58,6 +58,8 @@ export interface Capabilities {
   desktopInterrupt?: boolean;
   /** true: a message is sent by working the desktop app's window, which on this platform takes the keyboard focus for a moment (Windows: docs/windows.md). The page says so once, at the first send. */
   takesFocus?: boolean;
+  /** true: only a new chat (its first message) is sent that way; the others go by a channel that leaves the focus alone (Codex). The page says so once, at the first new chat. */
+  newTakesFocus?: boolean;
 }
 /** The flags of Capabilities only: what a desktop mode (space) or a session may narrow. */
 export type CapabilityFlags = { [K in keyof Capabilities as NonNullable<Capabilities[K]> extends boolean ? K : never]?: boolean };

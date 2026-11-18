@@ -270,6 +270,16 @@ test('Codex: a new chat is started on the desktop\'s New chat page, in the proje
   await bridge.create({ prompt: 'hi' });
   assert.equal(at(at(asked, 0)[0], 1), ':none', 'no folder: a chat outside every project');
   bridge.observe('loose').emit('interrupt');
+  // A full-screen program in front: the New chat page is worked once it has gone.
+  asked.length = 0; listed[1] = [{ id: 'old' }, { id: 'later', preview: 'after the game' }]; reads = 0;
+  let fullscreen = 2;
+  ui.run = async (args, options) => { asked.push([args, options]); return fullscreen-- > 0 ? { ok: false, code: 'fullscreen', error: '前台的程序独占全屏' } : { ok: true }; };
+  bridge.fullscreenRetryMs = 5;
+  assert.equal((await bridge.create({ prompt: 'after the game' })).id, 'later');
+  assert.equal(asked.length, 3, 'tried again until the program was gone');
+  bridge.observe('later').emit('interrupt');
+  fullscreen = Infinity; bridge.fullscreenHoldMs = 30;
+  await assert.rejects(bridge.create({ prompt: 'x' }), err => errorField(err, 'status') === 409 && /一直独占全屏/.test(String(errorField(err, 'message'))));
   ui.check = async () => ({ available: false, reason: 'Codex 桌面版没有在运行' });
   await assert.rejects(bridge.create({ prompt: 'x' }), /没有在运行/);
 });

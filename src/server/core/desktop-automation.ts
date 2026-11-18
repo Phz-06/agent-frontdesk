@@ -133,6 +133,28 @@ export function markTyping(typing: 'composing' | 'keys', { dir = helperCacheDir(
   } catch { /* the helper then just does not wait */ }
 }
 
+/**
+ * An exclusive full-screen program (a game) is in front: the Windows helper did nothing and answered
+ * `fullscreen` (uia-driver.cs, ExclusiveFullscreen). A command with no run of its own the page shows as
+ * waiting and can stop (a new chat, a chat mode's message, a settings change before a message) is tried
+ * again every `everyMs` until the program has left the front, for at most `maxMs`; `held` is told once,
+ * when it starts waiting. Still full screen after that: nothing was done, and the answer says so.
+ * (A message to a session Claude's bridge sends waits as long as it takes: its run shows it and Stop takes it back.)
+ */
+export const FULLSCREEN_EVERY_MS = 3000, FULLSCREEN_HOLD_MS = 120_000;
+export const FULLSCREEN_GAVE_UP = '前台的程序一直独占全屏，工作台没有操作桌面版：离开它后再发一次';
+export async function throughFullscreen(attempt: () => Promise<HelperResult>, { everyMs = FULLSCREEN_EVERY_MS, maxMs = FULLSCREEN_HOLD_MS, held }: { everyMs?: number; maxMs?: number; held?: () => void } = {}): Promise<HelperResult> {
+  const until = Date.now() + maxMs;
+  let result = await attempt();
+  if (result.ok || result.code !== 'fullscreen') return result;
+  held?.();
+  while (!result.ok && result.code === 'fullscreen' && Date.now() + everyMs <= until) {
+    await new Promise(resolve => setTimeout(resolve, everyMs));
+    result = await attempt();
+  }
+  return !result.ok && result.code === 'fullscreen' ? { ...result, error: FULLSCREEN_GAVE_UP } : result;
+}
+
 export interface AutomationOptions { engine: string; label?: string; cacheDir?: string; platform?: string; runner?: HelperRunner; parkMs?: number; warmEveryMs?: number }
 /** A Windows park, as the helper reported it: `issues` names what it did not put back. */
 export interface ParkNote { at: number; command: string; ms: number; heldMs: number; grabs: number; issues: string[] }

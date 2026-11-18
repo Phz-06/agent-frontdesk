@@ -17,7 +17,7 @@ Two more things Chromium does on Windows shape the rest:
 - **Each step waits for the page.** Chromium does not notice by itself that a raised corner is uncovered. Frontdesk moves the window by a pixel and back, which makes it look again within about 0.1 s, and checks the page is shown before each press. Before this, a press was often lost and repeated two seconds later.
 - **Each step waits for you.** While you type in Frontdesk's own page (a word in an input method, or keys), every step waits for a pause, at most 3 s per step and 10 s per message, so the message still goes out if you never stop.
 - **As few steps as possible.** A message is three presses (open the conversation, fill in, Send), two when the conversation is already open. Frontdesk no longer switches the app back to the conversation you had open there when its window was behind yours; the app stays on the one it used last.
-- **Exclusive full screen is left alone.** With a program in exclusive full screen in front, nothing is done: the message waits in Frontdesk, marked as waiting, and goes out a few seconds after you leave it. Stop takes it back meanwhile.
+- **Exclusive full screen is left alone.** With a program in exclusive full screen in front, nothing is done: the message waits in Frontdesk, marked as waiting, and goes out a few seconds after you leave it. Stop takes it back meanwhile. A new chat waits the same way for up to two minutes; after that it is not made, and its message goes back into the composer to send again.
 - **No key and no clipboard.** Frontdesk never sends a keystroke or a mouse event and never touches the clipboard. A test checks that only one part of the helper may move a window or hand the focus anywhere.
 
 ## Known issues
@@ -29,6 +29,7 @@ Two more things Chromium does on Windows shape the rest:
 | A short stutter | A borderless full-screen window is in front while a message goes out | Exclusive full screen avoids it: the message waits |
 | The app shows a different conversation than before | Its window was behind yours or minimized when Frontdesk sent to another conversation | Intended: going back would cost another press |
 | A message waits | An exclusive full-screen program is in front | Leave it, or press Stop to take the message back |
+| A new chat is not made, and its message is back in the composer | An exclusive full-screen program stayed in front for two minutes | Leave it and send again |
 | A few pixels of the app in a corner of the screen | While a command runs | They go away when it ends |
 | You switch to the app yourself while Frontdesk works in it, and it is switched away again | You click its taskbar button or Alt+Tab during the second a command takes | Wait a moment and switch again |
 | A command is refused | The app's window is closed to the tray, or runs as administrator while Frontdesk does not | Open its window (minimized is fine); run both with the same rights |

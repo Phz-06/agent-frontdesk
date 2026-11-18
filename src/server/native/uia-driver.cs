@@ -1234,7 +1234,7 @@ namespace Frontdesk.Driver
             if (fg != IntPtr.Zero && Root(fg) == window && !minimized) { Parking.Front = true; Parking.Skipped = "front"; return false; }
             FailIfHidden();
             // An exclusive full-screen program in front (a game): nothing is done (ExclusiveFullscreen).
-            if (ExclusiveFullscreen()) { Parking.Skipped = "fullscreen"; Fail("fullscreen", "前台的程序独占全屏：工作台先不操作" + appName + "，等你离开它再发"); }
+            if (ExclusiveFullscreen()) { Parking.Skipped = "fullscreen"; Fail("fullscreen", "前台的程序独占全屏，工作台没有操作" + appName); }
             // On another virtual desktop: not parked, acted on where it is (measured: probes/windows/PLAN.md).
             if (Cloaked(window)) { Parking.Skipped = "cloaked"; return false; }
             // Not "busy": a flow's "busy" means the chat is running (the Claude bridge then steers).

@@ -268,3 +268,29 @@ test('The person typing in the page marks the time the Windows helper waits unti
   target.dispatchEvent(new Event('compositionstart')); key();
   assert.equal(said.length, 5, 'nothing is said once stopped');
 });
+
+test('A command with no run of its own waits out an exclusive full-screen program for a while, then says nothing was done', async () => {
+  const { throughFullscreen, FULLSCREEN_GAVE_UP } = await import('../src/server/core/desktop-automation.js');
+  let left = 2, tries = 0, held = 0;
+  const attempt = async () => { tries++; return left-- > 0 ? { ok: false, code: 'fullscreen', error: '前台的程序独占全屏，工作台没有操作Codex 桌面版' } : { ok: true }; };
+  assert.deepEqual(await throughFullscreen(attempt, { everyMs: 5, maxMs: 1000, held: () => { held++; } }), { ok: true });
+  assert.equal(tries, 3, 'tried again until the program was gone');
+  assert.equal(held, 1, 'told once that it waits');
+
+  left = Infinity; tries = 0; held = 0;
+  const gaveUp = await throughFullscreen(attempt, { everyMs: 5, maxMs: 30, held: () => { held++; } });
+  assert.equal(gaveUp.ok, false);
+  assert.equal(gaveUp.code, 'fullscreen');
+  assert.equal(gaveUp.error, FULLSCREEN_GAVE_UP, 'the answer says it gave up and what to do');
+  assert.ok(tries >= 2 && tries <= 8, `a bounded number of tries (${tries})`);
+
+  // Anything else answers at once, untouched.
+  tries = 0;
+  assert.deepEqual(await throughFullscreen(async () => { tries++; return { ok: false, code: 'not_found', error: 'x' }; }, { everyMs: 5 }), { ok: false, code: 'not_found', error: 'x' });
+  assert.equal(tries, 1);
+});
+
+test('Sending through a desktop window says it takes the focus on Windows: every message of a chat mode', async () => {
+  const { CHAT_CAPABILITIES } = await import('../src/server/services/desktop-chat.js');
+  assert.equal(CHAT_CAPABILITIES.takesFocus, process.platform === 'win32');
+});

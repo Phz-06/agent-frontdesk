@@ -69,7 +69,9 @@ export const setup: PluginSetup = ({ config, registerEngine, registerAsset }) =>
     ],
     capabilities: { attachments: true, cwd: true, models: true, reasoning: true, interrupt: true, approvals: true, steer: true, createRequiresPrompt: true,
       // The New chat page's own model and effort, read from it: a new chat's menus start on them.
-      newSettings: true, openFile: true, showInDesktop: true },
+      newSettings: true, openFile: true, showInDesktop: true,
+      // A new chat is made in the desktop's window, which on Windows takes the focus for a moment (uia-driver.cs); other messages go by its queue and IPC.
+      newTakesFocus: process.platform === 'win32' },
     // How the Codex desktop writes a conversation (plugin-contract.md, "对话的样子"): the work folds
     // under "Worked for …" ("Working for …" live, "You stopped after …"), tool runs are named by kind,
     // code blocks have a header, a turn's edits end in a diff card, and no times are shown.

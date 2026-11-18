@@ -17,7 +17,7 @@ import { withAttachments } from './core/attachments.js';
 import { characterReferences, promptStarts } from '../shared/turn-match.js';
 import * as codexDesktop from './codex-desktop.js';
 import type { CodexDesktopIpc, CodexInput, DesktopRequest, ThreadSettings } from './codex-desktop.js';
-import { DesktopAutomation, type DesktopFlags } from './core/desktop-automation.js';
+import { DesktopAutomation, throughFullscreen, FULLSCREEN_EVERY_MS, FULLSCREEN_HOLD_MS, type DesktopFlags } from './core/desktop-automation.js';
 import { CodexProjects } from './services/codex-projects.js';
 import { openLink } from './services/desktop-places.js';
 import { UnifiedSession, UnifiedTurn, UnifiedStep, EngineEvents } from './types.js';
@@ -586,7 +586,8 @@ class CodexBridge extends EventEmitter {
     // The desktop's composer takes text; attachments go in as their paths.
     const message = withAttachments(input.prompt, input.attachments);
     const known = new Set(list(get(await this.send('thread/list', { limit: 50 }), 'result', 'data')).map(thread => get(thread, 'id')));
-    const result = await this.ui.run(['new', project], { input: message, settings: wanted });
+    // With a full-screen program in front, the request waits a while for it to go (throughFullscreen).
+    const result = await throughFullscreen(() => this.ui.run(['new', project], { input: message, settings: wanted }), this.held());
     if (!result.ok) refuse(result.error || '没能在 Codex 桌面版里新建聊天');
     const thread = await this.newDesktopThread(known, message);
     if (!thread) throw Object.assign(new Error('消息已在 Codex 桌面版里发出，但还没在它的聊天列表里看到这个新聊天，请到桌面版里查看'), { status: 504 });
@@ -622,7 +623,7 @@ class CodexBridge extends EventEmitter {
       const thread = await this.readThread(threadId, true);
       const known = new Set(list(get(thread, 'turns')).map(turn => get(turn, 'id')));
       // A different model or effort is picked in the desktop first.
-      await this.pickInDesktop(thread, { model, reasoningEffort });
+      await this.pickInDesktop(thread, { model, reasoningEffort }, () => emitter.emit('warning', { message: '前台的程序独占全屏，消息先留在工作台，你离开它后自动发出', retrying: true }));
       const inputs = this.buildCodexInputs(prompt, attachments);
       // After a stopped turn the desktop holds its queue: every queued message shows as paused
       // until the person sends one, so a queued message would wait there (measured on Windows; the
@@ -660,7 +661,8 @@ class CodexBridge extends EventEmitter {
   //  3. Neither works (the IPC has changed, or the sidebar opened another chat of the same name):
   //     the desktop's model menu and Power slider pick it (5-7 s), unless another chat has the same
   //     name, since the menu finds the chat by its name.
-  async pickInDesktop(thread: unknown, { model, reasoningEffort }: { model?: string | undefined; reasoningEffort?: string | undefined }): Promise<void> {
+  // `held`: told when the desktop's window cannot be worked yet (a full-screen program in front), and the change waits for it.
+  async pickInDesktop(thread: unknown, { model, reasoningEffort }: { model?: string | undefined; reasoningEffort?: string | undefined }, held?: () => void): Promise<void> {
     const refuse = (message: string): never => { throw Object.assign(new Error(message), { terminal: true }); };
     const threadId = text(get(thread, 'id'));
     const current = { model: text(get(thread, 'model')), effort: text(get(thread, 'reasoningEffort')) };
@@ -674,7 +676,7 @@ class CodexBridge extends EventEmitter {
     if (ipc.owns && ipc.readSettings && ipc.updateSettings) {
       let owned = await ipc.owns(threadId);
       if (!owned && (await this.ui.check()).available) {
-        const opened = await this.ui.run(['settings', title]);
+        const opened = await throughFullscreen(() => this.ui.run(['settings', title]), this.held(held));
         // The menu finds the chat in the sidebar the same way: not there, so no use trying it.
         if (!opened.ok) refuse(`${opened.error || '没能在 Codex 桌面版里打开这个聊天'}，没有发送`);
         owned = await ipc.owns(threadId, { waitMs: 2000 });
@@ -698,9 +700,13 @@ class CodexBridge extends EventEmitter {
     const wanted = await this.desktopSettings({ model, reasoningEffort }, { model: current.model, reasoningEffort: current.effort });
     const state = await this.ui.check();
     if (!state.available) refuse(`要换模型或推理强度得在 Codex 桌面版里换，但${state.reason}，没有发送`);
-    const result = await this.ui.run(['settings', title], { settings: wanted });
+    const result = await throughFullscreen(() => this.ui.run(['settings', title], { settings: wanted }), this.held(held));
     if (!result.ok) refuse(`${result.error || '没能在 Codex 桌面版里换模型'}，没有发送`);
   }
+  // How a command through the window waits out a full-screen program in front (throughFullscreen).
+  fullscreenRetryMs = FULLSCREEN_EVERY_MS;
+  fullscreenHoldMs = FULLSCREEN_HOLD_MS;
+  held(held?: () => void): { everyMs: number; maxMs: number; held?: () => void } { return { everyMs: this.fullscreenRetryMs, maxMs: this.fullscreenHoldMs, ...(held ? { held } : {}) }; }
   // Whether another recent chat has this name in the desktop's sidebar.
   async sharesName(threadId: string, title: string): Promise<boolean> {
     const rows = list(get(await this.send('thread/list', { limit: 100 }).catch(() => null), 'result', 'data'));

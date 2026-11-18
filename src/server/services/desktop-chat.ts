@@ -1,5 +1,5 @@
 import { EngineEvents, UnifiedTurn } from '../types.js';
-import type { DesktopAutomation, HelperResult } from '../core/desktop-automation.js';
+import { throughFullscreen, FULLSCREEN_EVERY_MS, FULLSCREEN_HOLD_MS, type DesktopAutomation, type HelperResult } from '../core/desktop-automation.js';
 import type { CapabilityFlags, CreateInput, CreateResult, History, SendInput, UnifiedSession } from '../../shared/contract.js';
 import { get, list, messageOf } from '../../shared/guards.js';
 
@@ -122,7 +122,8 @@ async function readPage(reader: DesktopChatReader, session: UnifiedSession, spac
 // What a chat mode's chats take from the console, as a space's `capabilities` (plugin-contract.md,
 // "桌面版的模式"): no folder, no model, effort or permission picks (the mode's own apply), no
 // attachments or steering. A plugin with a verified stop action can opt in to it.
-const CHAT_CAPABILITIES: Readonly<CapabilityFlags> = Object.freeze({ cwd: false, models: false, reasoning: false, permissions: false, attachments: false, steer: false, interrupt: false, newOptions: false, newSettings: false, cardActions: false });
+// Every message of a chat mode goes through the desktop's window, which on Windows takes the focus for a moment.
+const CHAT_CAPABILITIES: Readonly<CapabilityFlags> = Object.freeze({ takesFocus: process.platform === 'win32', cwd: false, models: false, reasoning: false, permissions: false, attachments: false, steer: false, interrupt: false, newOptions: false, newSettings: false, cardActions: false });
 // `sidebar`: everything the mode's sidebar lists besides its chats (Codex's ChatGPT mode lists the
 // Codex threads in its Recents too), for sharedTitle.
 export interface ChatModeOptions { automation: DesktopRunner; space: string; list: () => ModeChat[]; sidebar?: () => ReadonlyArray<{ id: string; title: string }>; idFrom?: RegExp | null; waitSeconds?: number; pollMs?: number; awayMs?: number; awayMaxMs?: number; followMs?: number; label?: string; watchVisible?: boolean }
@@ -131,6 +132,8 @@ class ChatMode {
   automation: DesktopRunner; space: string; list: () => ModeChat[]; sidebar: () => ReadonlyArray<{ id: string; title: string }>; idFrom: RegExp | null; waitSeconds: number; pollMs: number; awayMs: number; awayMaxMs: number; followMs: number; label: string;
   reader: DesktopChatReader; made: Map<string, ModeChat>; starts: Map<string, EngineEvents>;
   following = new Map<string, (result: HelperResult) => void>();
+  // How a message waits out a full-screen program in front (throughFullscreen).
+  fullscreenRetryMs = FULLSCREEN_EVERY_MS; fullscreenHoldMs = FULLSCREEN_HOLD_MS;
   constructor({ automation, space, list, sidebar = () => [], idFrom = null, waitSeconds = 60, pollMs = 20000, awayMs = 15000, awayMaxMs = 60000, followMs = 30 * 60 * 1000, label = '桌面版', watchVisible = false }: ChatModeOptions) {
     this.automation = automation; this.space = space; this.list = list; this.sidebar = sidebar; this.idFrom = idFrom; this.waitSeconds = waitSeconds; this.pollMs = pollMs; this.awayMs = awayMs; this.awayMaxMs = awayMaxMs; this.followMs = followMs; this.label = label;
     this.reader = new DesktopChatReader(automation, { watchVisible, awayMs, held: id => this.following.has(id) }); this.made = new Map(); this.starts = new Map();
@@ -167,7 +170,7 @@ class ChatMode {
     const prompt = input.prompt || fail('请输入首条消息', 400);
     const refused = this.refuse(input); if (refused) fail(refused);
     const known = new Set(this.chats().map(chat => chat.id));
-    const result = await this.automation.run(['chat-new', project?.name || '-', String(this.waitSeconds)], { input: prompt, settings: { space: this.space }, timeout: (this.waitSeconds + 90) * 1000 });
+    const result = await throughFullscreen(() => this.automation.run(['chat-new', project?.name || '-', String(this.waitSeconds)], { input: prompt, settings: { space: this.space }, timeout: (this.waitSeconds + 90) * 1000 }), { everyMs: this.fullscreenRetryMs, maxMs: this.fullscreenHoldMs });
     if (!result?.ok) fail(result?.error || `没能在${this.label}里新建聊天`);
     // Its id: from the page's address, or the entry the desktop's list gained.
     let id = this.idFrom ? String(result.url || '').match(this.idFrom)?.[1] || '' : '';
@@ -197,7 +200,8 @@ class ChatMode {
     queueMicrotask(async () => {
       const chat = this.get(id), refused = this.refuse(input) || this.sharedTitle(id);
       if (!chat || refused) { emitter.emit('error', new Error(refused || `这个聊天不在${this.label}的列表里`)); return; }
-      const result = await this.automation.run(['chat-send', chat.title, String(this.waitSeconds)], { input: input.prompt, settings: { space: this.space }, timeout: (this.waitSeconds + 90) * 1000 });
+      const held = () => emitter.emit('warning', { message: '前台的程序独占全屏，消息先留在工作台，你离开它后自动发出', retrying: true });
+      const result = await throughFullscreen(() => this.automation.run(['chat-send', chat.title, String(this.waitSeconds)], { input: input.prompt, settings: { space: this.space }, timeout: (this.waitSeconds + 90) * 1000 }), { everyMs: this.fullscreenRetryMs, maxMs: this.fullscreenHoldMs, held });
       if (!result?.ok) { emitter.emit('error', new Error(result?.error || `没能把消息交给${this.label}`)); return; }
       this.follow(chat, input.prompt, result, emitter);
     });

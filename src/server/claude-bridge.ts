@@ -20,7 +20,7 @@ import { withAttachments } from './core/attachments.js';
 import { promptStarts } from '../shared/turn-match.js';
 import { ClaudeDesktop, type DesktopSession } from './claude-desktop.js';
 import { winSpawnArgs } from './config.js';
-import { newControlsOf, type DesktopFlags, type HelperResult } from './core/desktop-automation.js';
+import { newControlsOf, throughFullscreen, FULLSCREEN_HOLD_MS, type DesktopFlags, type HelperResult } from './core/desktop-automation.js';
 import { globalSocket } from './services/node-websocket.js';
 import { claudeCliIn, claudeDesktopHome, findExecutable, installedClaudeCli } from './services/desktop-places.js';
 import { arr, bag, errorField, get, list, messageOf, num, parseJson, str, text as asText } from '../shared/guards.js';
@@ -942,7 +942,8 @@ class ClaudeBridge {
     const known = new Set(this.desktopIndex().map(meta => meta.localId));
     let wanted: DesktopFlags;
     try { wanted = await this.desktopSettings(input); } catch (err) { refuse(messageOf(err)); }
-    const result = await this.desktop.create(input.cwd || '', withAttachments(input.prompt, input.attachments, 'mention'), wanted, input.expect || []);
+    // With a full-screen program in front, the request waits a while for it to go (throughFullscreen).
+    const result = await throughFullscreen(() => this.desktop.create(input.cwd || '', withAttachments(input.prompt, input.attachments, 'mention'), wanted, input.expect || []), { everyMs: this.fullscreenRetryMs, maxMs: this.fullscreenHoldMs });
     if (!result.ok) refuse(result.error || '没能在 Claude 桌面版里新建会话');
     const meta = await this.newDesktopSession(known);
     const id = meta?.id, file = id ? this.transcriptPath(id) : null;
@@ -1141,6 +1142,8 @@ class ClaudeBridge {
   steerConfirmMs = 12000;
   // How often a message held back by an exclusive full-screen program is tried again (sendViaDesktop).
   fullscreenRetryMs = 3000;
+  // How long a new chat, which has no run to show it waiting, waits for such a program (create).
+  fullscreenHoldMs = FULLSCREEN_HOLD_MS;
   // Adds a message to the turn the desktop is running: typed into its composer and sent there,
   // the desktop queues it and puts it in at the next step (or at once with Send now).
   async steer(id: string, input: Partial<SendInput> = {}): Promise<Record<string, never>> {

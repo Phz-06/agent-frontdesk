@@ -847,7 +847,7 @@ async function sendMessage(event?: Event | null, queue = false): Promise<void> {
     const result = await request<{ status?: string; reason?: string } | null>(`${url}/messages`, { method: 'POST', body: JSON.stringify({ prompt, attachments, cwd: state.session.cwd || undefined, mode, ...options() }) });
     if (mode === 'steer' && result?.status === 'queued' && view === state.view) notify(`${say(result.reason) || t('这一轮没法插进去，消息已排队')}${t('，可以在队列里再点“插入”')}`);
     drafts.clearSent(owner, originalInput, attachments);
-    noteFocusOnce();
+    noteFocusOnce('send');
     if (owner !== currentKey()) return;
     if ($('prompt').value === originalInput) { $('prompt').value = ''; $('prompt').style.height = ''; }
     const sent = new Set(attachments.map(item => item.filename));
@@ -892,7 +892,7 @@ async function sendFirst() {
     newOptions.sent();
     (state.sessions[provider.id] ||= []).unshift({ ...session, title: session.title || title || t('新建聊天'), updatedAt: new Date().toISOString(), cwd: session.cwd || cwd || '', engine: provider.id, metadata: { ...session.metadata, ...(mode ? { space: mode } : {}), ...(group === undefined ? {} : { group }) } });
     drafts.clearSent(owner, originalInput, attachments);
-    noteFocusOnce();
+    noteFocusOnce('new');
     if (view === state.view) {
       $('prompt').value = ''; $('prompt').style.height = ''; state.attachments = []; saveDraft();
       await selectSession(session.id, { engineId: provider.id });
@@ -1500,10 +1500,11 @@ function openOnboard(): void {
 $('close-onboard').addEventListener('click', () => $('onboard-dialog').close());
 // An engine that sends by working its desktop app's window, which takes the keyboard focus for a
 // moment on this platform (capabilities.takesFocus: Windows), says so once, after the first message
-// sent to it; Settings can show it again.
+// sent to it (newTakesFocus: the first new chat); Settings can show it again.
 const FOCUS_NOTE_KEY = 'desktop-bridge:focus-note-seen';
-function noteFocusOnce(): void {
-  if (!capsOf().takesFocus) return;
+function noteFocusOnce(kind: 'send' | 'new'): void {
+  const caps = capsOf();
+  if (!caps.takesFocus && !(kind === 'new' && caps.newTakesFocus)) return;
   try { if (storageFor('localStorage')?.getItem(FOCUS_NOTE_KEY)) return; storageFor('localStorage')?.setItem(FOCUS_NOTE_KEY, '1'); } catch {}
   if (!$('focus-dialog').open) $('focus-dialog').showModal();
 }
@@ -1829,7 +1830,7 @@ function renderSettings() {
     ? `<select id="setting-${escape(item.key)}" class="subtle-select" data-setting-select="${escape(item.key)}" aria-label="${escape(item.title)}">${item.choices.map(([value, label]) => `<option value="${escape(value)}"${appearance[item.key] === value ? ' selected' : ''}>${escape(label)}</option>`).join('')}</select>`
     : `<div class="setting-choices" role="radiogroup" aria-label="${escape(item.title)}">${item.choices.map(([value, label]) => `<button type="button" role="radio" class="setting-choice" data-setting="${escape(item.key)}" data-value="${escape(value)}" aria-checked="${appearance[item.key] === value}">${escape(label)}</button>`).join('')}</div>`;
   // Which agents are on is the console's first setting: the same switches as the rail's "+".
-  const takesFocus = state.engines.some(item => item.capabilities.takesFocus);
+  const takesFocus = state.engines.some(item => item.capabilities.takesFocus || item.capabilities.newTakesFocus || (item.spaces || []).some(mode => mode.capabilities?.takesFocus));
   const agentsGroup = `<fieldset class="setting-group is-stacked"><legend>Agent</legend><div id="settings-agents">${agentsMarkup(true)}</div><button type="button" class="text-button" data-open-onboard>${t('接入其他桌面 AI…')}</button>${takesFocus ? `<button type="button" class="text-button" data-open-focus>${t('在 Windows 上代发消息时会短暂拿走焦点…')}</button>` : ''}</fieldset>`;
   $('settings-content').innerHTML = agentsGroup + avatarRow + SETTINGS.map(item => `<fieldset class="setting-group"><legend>${escape(item.title)}</legend>${control(item)}${item.note?.() ? `<p class="field-help setting-note">${escape(item.note())}</p>` : ''}</fieldset>`).join('') + '<fieldset class="setting-group" id="settings-voice"></fieldset>';
   renderVoiceSetting();

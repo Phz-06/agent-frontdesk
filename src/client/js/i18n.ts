@@ -67,7 +67,7 @@ const EN: Record<string, string> = {
   // sending on Windows takes the focus for a moment (said once at the first send; Settings shows it again)
   '在 Windows 上代发消息时会短暂拿走焦点…': 'Sending on Windows takes the focus for a moment…',
   '在 Windows 上代发消息': 'Sending on Windows',
-  'Windows 不允许程序在后台按桌面版的按钮而不让它拿到焦点。所以每发一条消息，桌面版的窗口会短暂拿走焦点几次，每次不到 0.1 秒。': "Windows doesn't let a program press a button in a desktop app's window from behind without that window taking the focus. So each message makes the app's window take the focus a few times, for less than 0.1 s each.",
+  'Windows 不允许程序在后台按桌面版的按钮而不让它拿到焦点。所以工作台经过桌面版的窗口代发一条消息时，那个窗口会短暂拿走焦点几次，每次不到 0.1 秒。': "Windows doesn't let a program press a button in a desktop app's window from behind without that window taking the focus. So a message the console sends through the app's window makes that window take the focus a few times, for less than 0.1 s each.",
   '这时你如果在别的程序里打字，正在拼的字可能会被打断。在工作台里打字时，它会等你停顿再动手。': "If you're typing in another app at that moment, a word you're composing may be cut off. When you type in Frontdesk, it waits for a pause.",
   '改模型或推理强度时，大约半秒内你打的字会进到桌面版里。': 'When a message changes the model or effort, what you type for about half a second goes to the app.',
   '前台的程序独占全屏时，消息会等你离开它再发。': 'If the program in front runs in exclusive full screen, the message waits until you leave it.',
@@ -209,7 +209,7 @@ const REPORTS: Record<string, string> = {
   '另一个桌面版正在后台操作，稍后再试': 'Another desktop app is being worked from behind right now. Try again in a moment.',
   '前台的程序独占全屏，消息先留在工作台，你离开它后自动发出': 'The program in front runs in exclusive full screen: the message waits in the console and goes out once you leave it',
   '前台的程序独占全屏': 'The program in front runs in exclusive full screen',
-  '前台的程序独占全屏：工作台先不操作{x}，等你离开它再发': "The program in front runs in exclusive full screen: the console leaves {x} alone until you leave it",
+  '前台的程序一直独占全屏，工作台没有操作桌面版：离开它后再发一次': 'The program in front stayed in exclusive full screen, so the console left the desktop app alone. Send again once you leave it.',
   'Codex 桌面版的项目菜单没有关上，没有发送：请到桌面版里关掉它': "Codex's project menu didn't close, so nothing was sent. Close it in the desktop app.", 'Codex 桌面版的模型菜单没有关上，没有发送：请到桌面版里关掉它': "Codex's model menu didn't close, so nothing was sent. Close it in the desktop app.",
   'Codex 桌面版里这个会话的模型或推理强度刚刚变了，没有发送：请刷新后重新选择': "This chat's model or effort just changed in Codex's desktop app, so nothing was sent. Refresh and pick again.", 'Codex 桌面版现在没有打开这个会话，没法给它换模型或推理强度，没有发送：请先在桌面版里打开这个会话': "Codex's desktop app doesn't have this chat open, so its model or effort can't be changed and nothing was sent. Open the chat in the desktop app first.",
   '桌面代发程序编译失败（需要 Xcode 命令行工具：xcode-select --install）': "Couldn't build the desktop helper. Install the Xcode command line tools: xcode-select --install", 'Claude 桌面版没有在运行': "Claude's desktop app isn't running",
@@ -267,7 +267,7 @@ const REPORTS: Record<string, string> = {
   'ChatGPT 对话在回复时不能插话，消息已排队，等这条回复结束再发': "A ChatGPT conversation can't take a message while it's replying. Your message is queued for when the reply ends.",
   '缺少会话标题或消息': 'The chat title or the message is missing',
   '没能在 Codex 桌面版的侧栏里找到这个聊天': "Couldn't find this chat in Codex's desktop sidebar", '在 Codex 桌面版里选了不在项目里，但项目没有切换过去': "Picked no project in Codex's desktop app, but it didn't switch",
-  // Win32 UIA driver (src/server/native/win32/uia-driver/Program.cs)
+  // The Windows driver (src/server/native/uia-driver.cs)
 };
 const REPORT_PATTERNS: Array<[RegExp, (match: RegExpExecArray) => string]> = [
   // The sign-in command is the one that works on that machine (claude-bridge.ts, loginCommand).
@@ -290,6 +290,7 @@ const REPORT_PATTERNS: Array<[RegExp, (match: RegExpExecArray) => string]> = [
   [/^(.+?)的窗口不在屏幕上，这次没能把消息交给它：把窗口放到看得见的地方再发$/, match => `${owner(match[1])} window isn't on screen, so the message didn't reach it. Put the window where it can be seen and send again.`],
   [/^(.+?)没有出现发送按钮$/, match => `${owner(match[1])} desktop app didn't show a Send button`],
   // The Windows driver (uia-driver.cs): a page UI Automation has not reached, rights, what is not ported yet.
+  [/^前台的程序独占全屏，工作台没有操作(.+)$/, match => `The program in front runs in exclusive full screen, so the console left ${owner(match[1])} window alone`],
   [/^(.+?)的窗口被别的窗口完全挡住，或者刚启动后还没显示过，页面没有接进 UI Automation：把它的窗口切到前台看一眼再发$/, match => `${owner(match[1])} window is fully covered, or hasn't been shown since it started, so its page isn't reachable through UI Automation. Bring the window to the front once, then send again.`],
   [/^(.+?)的页面没有接进 UI Automation，工作台读不到它的界面：把它的窗口切到前台看一眼再发$/, match => `${owner(match[1])} page isn't reachable through UI Automation, so the console can't read it. Bring the window to the front once, then send again.`],
   [/^(.+?)的侧栏里有不止一个叫「(.+)」的会话，工作台分不清是哪一个，没有操作：在桌面版里给它改个名字再试$/, match => `${owner(match[1])} sidebar has more than one conversation named "${match[2]}", so the console can't tell which one is meant and did nothing. Rename it in the desktop app and try again.`],
