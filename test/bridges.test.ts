@@ -73,12 +73,15 @@ test('Codex: a message to a chat is queued for the desktop and the desktop is wo
 
 test('Codex: a different model is picked in the desktop first; when it cannot be, nothing is queued', async () => {
   const { bridge, calls, take } = fakeCodex();
-  const asked: unknown[] = [];
+  const asked: unknown[] = [], routed: unknown[] = [];
+  // macOS picks them in the desktop's menus; the router is not asked there.
+  bridge.desktop = fake<CodexDesktopIpc>({ updateSettings: async request => { routed.push(request); return { applied: true }; } });
   const ui = bridge.ui = fake<DesktopAutomation>({ check: async () => ({ available: true }), run: async (args, options) => { asked.push([args, options?.settings]); return { ok: true, changed: ['model'] }; } });
   const emitter = bridge.startTurn({ threadId: 'th', prompt: 'go', model: 'gpt-b', reasoningEffort: 'high' });
   const done = settle(emitter);
   await new Promise(resolve => setTimeout(resolve, 20)); take('go'); await done; emitter.emit('interrupt');
   assert.deepEqual(asked, [[['settings', 'Plan the trip'], { model: 'GPT-B', effort: 'high' }]]);
+  assert.deepEqual(routed, [], 'macOS does not change settings over the router');
   // The desktop could not switch: the message is not queued, and the reason says why.
   calls.length = 0;
   ui.run = async () => ({ ok: false, error: '在 Codex 桌面版里选了 GPT-B，但它没有切换过去' });
@@ -94,8 +97,9 @@ test('Codex: a different model is picked in the desktop first; when it cannot be
   assert.deepEqual(touched, []);
 });
 
-test('Codex: a different model or effort is made by the window that owns the chat, on condition it still has the settings just read; no menu is opened', async () => {
+test('Codex on Windows: a different model or effort is made by the window that owns the chat, on condition it still has the settings just read; no menu is opened', async () => {
   const { bridge, calls, take } = fakeCodex();
+  bridge.platform = 'win32';
   const asked: unknown[] = [];
   let answer: { applied: boolean } | Error = { applied: true };
   bridge.desktop = fake<CodexDesktopIpc>({ updateSettings: async request => { asked.push(request); if (answer instanceof Error) throw answer; return answer; } });
@@ -124,10 +128,40 @@ test('Codex: a different model or effort is made by the window that owns the cha
   assert.match(String(errorField(silent, 'message')), /^没能在 Codex 桌面版里换模型或推理强度（Codex 桌面版没有响应），没有发送$/);
   assert.deepEqual(touched, []);
   // No window has the chat on Windows: nothing is sent, and the page says to open it in the desktop.
-  answer = Object.assign(new Error('no-client-found'), { code: 'no-client-found' }); bridge.platform = 'win32';
+  answer = Object.assign(new Error('no-client-found'), { code: 'no-client-found' });
   const closed: unknown = await settle(bridge.startTurn({ threadId: 'th', prompt: 'closed', reasoningEffort: 'low' })).catch((err: unknown) => err);
   assert.match(String(errorField(closed, 'message')), /没有打开这个会话.*没有发送/);
   assert.deepEqual(touched, []); assert.ok(!calls.some(([method]) => method === 'thread/queue/add'));
+});
+
+test('Codex: after a stopped turn, the window that owns the chat starts the next one (the desktop holds its queue then); with no window it is queued', async () => {
+  const { bridge, calls, thread, take } = fakeCodex();
+  thread.turns = [{ id: 't1', status: 'interrupted', completedAt: 2, items: [] }];
+  const started: unknown[] = [];
+  let answer: Error | null = null;
+  bridge.desktop = fake<CodexDesktopIpc>({ startTurn: async request => { started.push(request); if (answer) throw answer; return {}; } });
+  const emitter = bridge.startTurn({ threadId: 'th', prompt: 'try again' });
+  const done = settle(emitter);
+  await new Promise(resolve => setTimeout(resolve, 20)); take('try again');
+  assert.equal(get((await done).turn, 'id'), 't2');
+  assert.deepEqual(dig(started, 0, 'threadId'), 'th'); assert.equal(dig(started, 0, 'inputs', 0, 'text'), 'try again');
+  assert.deepEqual(calls.map(([method]) => method).filter(method => method !== 'thread/read'), [], 'nothing queued, no wake');
+  // The owner answered with an error of its own: nothing is sent, and the page says why.
+  thread.turns = [{ id: 't1', status: 'interrupted', completedAt: 2, items: [] }]; answer = new Error('Conversation is not being streamed');
+  const failed: unknown = await settle(bridge.startTurn({ threadId: 'th', prompt: 'again' })).catch((err: unknown) => err);
+  assert.match(String(errorField(failed, 'message')), /^没能让 Codex 桌面版开始这一轮（Conversation is not being streamed），没有发送$/); assert.equal(errorField(failed, 'terminal'), true);
+  assert.ok(!calls.some(([method]) => method === 'thread/queue/add'));
+  // No window has the chat: queued and woken as usual.
+  answer = Object.assign(new Error('no-client-found'), { code: 'no-client-found' });
+  const queued = bridge.startTurn({ threadId: 'th', prompt: 'later' });
+  await new Promise(resolve => setTimeout(resolve, 20)); queued.emit('interrupt');
+  assert.deepEqual(calls.map(([method]) => method).filter(method => method !== 'thread/read'), ['thread/queue/add', 'wake']);
+  // A chat whose last turn ended normally is queued, and the owner is not asked to start one.
+  calls.length = 0; started.length = 0; answer = null;
+  thread.turns = [{ id: 't1', status: 'completed', completedAt: 2, items: [] }];
+  const normal = bridge.startTurn({ threadId: 'th', prompt: 'next' });
+  await new Promise(resolve => setTimeout(resolve, 20)); normal.emit('interrupt');
+  assert.deepEqual(started, []); assert.deepEqual(calls.map(([method]) => method).filter(method => method !== 'thread/read'), ['thread/queue/add', 'wake']);
 });
 
 test('Codex: stopping takes back a message the desktop has not started, and stops a running turn through the desktop', async () => {

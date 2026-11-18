@@ -615,11 +615,13 @@ class CodexBridge extends EventEmitter {
   }
 
   // The model and effort the console picked, made in the desktop before the message goes, so the
-  // desktop runs the turn with them and keeps them. First the way that needs no window: the
-  // window that owns the chat is asked over the router (thread-follower-update-thread-settings),
-  // on condition that the chat still has the settings just read, so a change made in the desktop
-  // meanwhile is not overwritten. When no window has the chat, macOS picks them in the desktop's
-  // menus (Accessibility); Windows does not send (its window driver is not there yet).
+  // desktop runs the turn with them and keeps them.
+  //  - macOS picks them in the desktop's menus (Accessibility), the way measured there.
+  //  - Elsewhere (Windows) the menus are not used: the effort is a slider that takes only arrow
+  //    keys, and the console sends no keys there. The window that owns the chat is asked over the
+  //    router instead (thread-follower-update-thread-settings), on condition that the chat still has
+  //    the settings just read, so a change made in the desktop meanwhile is not overwritten. When no
+  //    window has the chat, nothing is sent.
   // Throws, with `terminal`, whenever the change was not made: nothing is sent then.
   async applySettings(threadId: string, thread: unknown, { model, reasoningEffort }: { model?: string | undefined; reasoningEffort?: string | undefined }): Promise<void> {
     const current = { model: get(thread, 'model'), reasoningEffort: get(thread, 'reasoningEffort') };
@@ -629,7 +631,7 @@ class CodexBridge extends EventEmitter {
     const change: ThreadSettingsChange = { ...(wanted.model ? { model } : {}), ...(wanted.effort ? { effort: reasoningEffort } : {}) };
     const condition = { model: typeof current.model === 'string' ? current.model : null, effort: typeof current.reasoningEffort === 'string' ? current.reasoningEffort : null };
     let reached = false;
-    if (this.desktop.updateSettings) {
+    if (this.platform !== 'darwin' && this.desktop.updateSettings) {
       try {
         const { applied } = await this.desktop.updateSettings({ threadId, settings: change, condition });
         reached = true;
@@ -655,10 +657,25 @@ class CodexBridge extends EventEmitter {
       // A different model or effort is made in the desktop first (applySettings).
       await this.applySettings(threadId, thread, { model, reasoningEffort });
       const inputs = this.buildCodexInputs(prompt, attachments);
+      // After a stopped turn the desktop holds its queue: every queued message shows as paused
+      // until the person sends one, so a queued message would wait there (measured on Windows; the
+      // desktop's own code, so the Mac's too). The window that owns the chat starts the turn
+      // instead, as its composer does when no turn runs. With no window on the chat it is queued.
+      const paused = get(list(get(thread, 'turns')).at(-1), 'status') === 'interrupted';
+      if (paused && this.desktop.startTurn) {
+        try {
+          await this.desktop.startTurn({ threadId, inputs });
+          this.follow(threadId, { prompt, known, emitter });
+          return;
+        } catch (err) {
+          if (errorField(err, 'code') === 'timeout') throw Object.assign(new Error('Codex 桌面版没有确认开始这一轮，请在桌面版里看一下这条消息有没有发出'), { terminal: true });
+          if (!codexDesktop.unreached(err)) throw Object.assign(new Error(`没能让 Codex 桌面版开始这一轮（${messageOf(err)}），没有发送`), { terminal: true });
+        }
+      }
       const queued = await this.send('thread/queue/add', { threadId, clientUserMessageId: randomUUID(), input: inputs });
       emitter.queuedId = get(queued, 'result', 'queuedSubmission', 'id');
       await this.wake(threadId);
-      this.follow(threadId, { prompt, known, emitter });
+      this.follow(threadId, { prompt, known, emitter, paused });
     })().catch((err: unknown) => {
       const error = err instanceof Error ? err : new Error(String(err));
       emitter.emit('error', Object.assign(error, { terminal: Boolean(errorField(error, 'terminal') ?? !errorField(error, 'transport')) }));
@@ -672,7 +689,8 @@ class CodexBridge extends EventEmitter {
   }
   // Follows the desktop's record of the thread: the first turn not in `known` that carries this
   // message, item by item, until the record says how it ended.
-  follow(threadId: string, { prompt, known, emitter }: { prompt: string; known: ReadonlySet<unknown>; emitter: CodexRun }): void {
+  // `paused`: queued after a stopped turn, where the desktop may hold it (startTurn).
+  follow(threadId: string, { prompt, known, emitter, paused = false }: { prompt: string; known: ReadonlySet<unknown>; emitter: CodexRun; paused?: boolean }): void {
     const seen = new Map<string, string>(), started = Date.now();
     let polling = false, warned = false;
     const asks = this.watchAsks(threadId, emitter);
@@ -688,7 +706,10 @@ class CodexBridge extends EventEmitter {
           return promptStarts(list(get(item, 'content')).map(part => text(get(part, 'text'))).join('\n'), prompt, 200);
         }));
         if (!turn) {
-          if (!warned && Date.now() - started > 20000) { warned = true; emitter.emit('warning', { message: '消息已排进 Codex 桌面版的队列，正在等桌面版接手', retrying: true }); }
+          if (!warned && Date.now() - started > 20000) {
+            warned = true;
+            emitter.emit('warning', { message: paused ? '消息已排进 Codex 桌面版的队列，但上一轮是被停止的，桌面版会先暂停它：在桌面版里打开这个会话把它发出去，或在这里停止撤回' : '消息已排进 Codex 桌面版的队列，正在等桌面版接手', retrying: true });
+          }
           return;
         }
         const turnId = text(get(turn, 'id'));

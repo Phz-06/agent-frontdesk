@@ -117,6 +117,18 @@ function steer({ threadId, prompt, inputs, cwd }: { threadId: string; prompt: st
   }, { version: STEER_VERSION, ...options });
 }
 
+// Starts a turn in the window that owns the thread, as its own composer does when no turn runs.
+// Only the message is given: the owner fills in the chat's cwd, model, effort, mode and
+// permissions as for a message typed there (measured on Windows: the turn's turn_context matched
+// the desktop's own turns).
+const START_VERSION = 2;
+function startTurn({ threadId, inputs }: { threadId: string; inputs: CodexInput[] }, options?: RequestOptions): Promise<unknown> {
+  return request('thread-follower-start-turn', {
+    conversationId: threadId,
+    turnStart: { request: { threadId, clientUserMessageId: randomUUID(), input: inputs }, context: {} },
+  }, { version: START_VERSION, timeoutMs: 20000, ...options });
+}
+
 // Stops the turn the desktop is running, as its own Stop button does ("user-stop"); only that
 // turn, so a turn that has already ended is not mistaken for the next one.
 function interrupt({ threadId, turnId }: { threadId: string; turnId: string }, options?: RequestOptions): Promise<unknown> {
@@ -223,6 +235,7 @@ const unreached = (err: unknown): boolean => NOT_REACHED.has(String(get(err, 'co
 /** What the bridge uses of the desktop's IPC; a stand-in replaces it in tests. */
 export interface CodexDesktopIpc {
   steer: typeof steer;
+  startTurn?: typeof startTurn;
   interrupt: typeof interrupt;
   updateSettings?: typeof updateSettings;
   readSettings?: typeof readSettings;
@@ -231,4 +244,4 @@ export interface CodexDesktopIpc {
   decideApproval: typeof decideApproval;
 }
 
-export { socketPath, frame, request, steer, interrupt, updateSettings, readSettings, unreached, applyPatches, watch, answerUserInput, decideApproval };
+export { socketPath, frame, request, steer, startTurn, interrupt, updateSettings, readSettings, unreached, applyPatches, watch, answerUserInput, decideApproval };
