@@ -12,7 +12,8 @@ function read<T>(storage: StoreLike | null | undefined, key: string, fallback: T
 
 /** A file the composer holds (an upload's answer), kept with the draft. */
 /** An uploaded file (POST /api/upload answers with these: no local path, the server finds it by `filename`), or the part of one a test gives. */
-export interface DraftAttachment { filename: string; originalname?: string; mimetype?: string; size?: number; url?: string }
+/** `reference`: the attachment is another chat the console wrote out (the composer's "+"), drawn as a card naming it. */
+export interface DraftAttachment { filename: string; originalname?: string; mimetype?: string; size?: number; url?: string; reference?: { agent: string; title: string; turns: number; tokens: number } }
 export interface Draft { text: string; attachments: DraftAttachment[]; model?: string; effort?: string; picks?: { model?: string; effort?: string }; selectionStart?: number | null; selectionEnd?: number | null }
 
 export class DraftBook {

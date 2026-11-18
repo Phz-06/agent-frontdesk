@@ -93,6 +93,11 @@ const EN: Record<string, string> = {
   '无法写入剪贴板，请在会话信息中手动复制': "Couldn't copy. You can copy it from Chat details.",
   // composer
   '跳到输入框': 'Skip to composer', '发送消息': 'Send message', '此会话当前只读': 'This chat is read-only', '发消息给': 'Message', '给当前引擎发送任务或后续指令…': 'Send a message…',
+  // referring to another chat (the composer's "+")
+  '添加文件，或引用另一个聊天': 'Add files, or refer to another chat', '引用另一个聊天…': 'Refer to another chat…', '引用另一个聊天': 'Refer to another chat',
+  '选一个聊天，工作台把它整理好附在这条消息上（不收附件的 Agent 会直接放进输入框）。不含思考过程和工具输出，聊天太长时较早的轮次会精简。': "Pick a chat. Frontdesk attaches it to your message (for an AI that takes no attachments, it goes into the text). Reasoning and tool output are left out, and the older turns of a long chat are shortened.",
+  '{n} 轮 · 约 {tokens} tokens': '{n} turn(s) · ~{tokens} tokens', '转成文字': 'Edit as text', '引用的内容已经不在了，请重新引用': "This reference isn't there any more. Refer to the chat again.",
+  '搜索所有 Agent 的聊天': "Search every agent's chats", '正在整理…': 'Preparing…', '没有找到匹配的聊天': 'No chats match', '还没有可以引用的聊天': 'No chats to refer to yet',
   '添加附件': 'Attach files', '添加文件或图片': 'Add files or photos', '待发送附件': 'Attachments', '松开以添加附件': 'Drop files to attach', '移除': 'Remove', '{n} 个附件': '{n} attached',
   '每条消息最多添加 10 个附件': 'You can attach up to 10 files per message', '上传失败': 'Upload failed', '正在上传附件…': 'Uploading…',
   '桌面端默认模型': 'Desktop default', '选择下一次任务的模型': 'Model for your next message', '使用引擎自身的默认模型': "Uses this AI's default model", '桌面端设置': 'Same as desktop',
@@ -131,6 +136,8 @@ const EN: Record<string, string> = {
 // They are written in Chinese where they arise; say() puts them into the interface language
 // where they are shown. Exact texts first, then the ones that carry a name or a reason.
 const REPORTS: Record<string, string> = {
+  // a chat written out for another agent to read (POST …/transcript)
+  '没有找到这个聊天': "Couldn't find this chat", '这个聊天还没有内容可以引用': "There's nothing in this chat to refer to yet",
   // an agent's name and faces (settings)
   '设置文件没有位置，图片存不下': "There's no settings file to keep pictures beside", '图片是空的': 'The picture is empty',
   '名称不能超过 40 个字': 'Names can be up to 40 characters',

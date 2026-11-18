@@ -32,6 +32,7 @@ import Info from 'lucide/dist/esm/icons/info.js';
 import ListChecks from 'lucide/dist/esm/icons/list-checks.js';
 import ListPlus from 'lucide/dist/esm/icons/list-plus.js';
 import Mail from 'lucide/dist/esm/icons/mail.js';
+import MessageSquareQuote from 'lucide/dist/esm/icons/message-square-quote.js';
 import MessagesSquare from 'lucide/dist/esm/icons/messages-square.js';
 import Mic from 'lucide/dist/esm/icons/mic.js';
 import MonitorSmartphone from 'lucide/dist/esm/icons/monitor-smartphone.js';
@@ -48,6 +49,7 @@ import Settings from 'lucide/dist/esm/icons/settings.js';
 import Square from 'lucide/dist/esm/icons/square.js';
 import SquarePen from 'lucide/dist/esm/icons/square-pen.js';
 import Terminal from 'lucide/dist/esm/icons/terminal.js';
+import TextCursorInput from 'lucide/dist/esm/icons/text-cursor-input.js';
 import Wrench from 'lucide/dist/esm/icons/wrench.js';
 import X from 'lucide/dist/esm/icons/x.js';
 
@@ -55,8 +57,8 @@ import X from 'lucide/dist/esm/icons/x.js';
 const drawn: Record<string, unknown> = {
   AppWindow, ArrowDown, ArrowUp, ArrowUpRight, BookOpen, Check, ChevronDown, ChevronRight, ChevronsRight, CircleAlert, CircleStop, Code, Copy,
   Download, Ellipsis, ExternalLink, File, FileCheck2, FileText, Folder, FolderOpen, FolderSearch, GripVertical, Info, ListChecks, ListPlus,
-  Mail, MessagesSquare, Mic, MonitorSmartphone, PanelLeft, PanelLeftClose, PanelRight, Pencil, Plus, RefreshCw, ScanLine, Search, Send,
-  Settings, Square, SquarePen, Terminal, Wrench, X,
+  Mail, MessageSquareQuote, MessagesSquare, Mic, MonitorSmartphone, PanelLeft, PanelLeftClose, PanelRight, Pencil, Plus, RefreshCw, ScanLine, Search, Send,
+  Settings, Square, SquarePen, Terminal, TextCursorInput, Wrench, X,
 };
 const named = (name: string): string => name.replace(/(\w)(\w*)(_|-|\s*)/g, (_all, first: string, rest: string) => first.toUpperCase() + rest.toLowerCase());
 export const hasIcon = (name: string): boolean => named(name) in drawn;

@@ -51,6 +51,7 @@ Agent Frontdesk puts those desktop apps into one web page. The apps still do the
 - Continue any chat, or start a new one in a project
 - Send, steer a running turn, queue, stop. Switching to another AI while one is running does not interrupt it
 - Change the model, reasoning effort and permissions, attach images and files, dictate
+- Refer to another AI's chat: Frontdesk attaches that chat to your message as a card you can also turn into text to edit, with the older turns of a long chat shortened
 - Answer the AI's questions and approval requests right in the page
 - Replies look the way each desktop app shows them, with code, maths, diagrams, tool steps and plans
 - A file mentioned in a reply opens in a preview on the right with one click, or shows in Finder
@@ -116,6 +117,7 @@ All optional. Frontdesk finds standard install locations by itself.
 | `HTTPS_PORT` | HTTPS port with a self-signed certificate, for the microphone on other devices; `0` turns it off | `PORT + 1` when `HOST` is not local |
 | `BRIDGE_DEFAULT_CWD` | Working folder for new chats | your home folder |
 | `BRIDGE_UPLOADS_DIR` | Where attachments are stored | `uploads/` in the project |
+| `BRIDGE_EXPORTS_DIR` | Where the whole record of a long chat you refer to is written as Markdown, when the message carries it shortened (kept 30 days) | `exports/` in the project |
 | `BRIDGE_SETTINGS_FILE` | Where it keeps which AIs are on, their names and order | `.frontdesk.json` in the project |
 | `BRIDGE_PLUGIN_DIR` | Folder the plugins are loaded from | `dist/server/plugins` |
 | `BRIDGE_MODEL_CATALOG` | JSON file of model IDs for AIs that cannot list their own | none |

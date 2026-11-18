@@ -20,6 +20,7 @@ import { DictationService } from './services/dictation.js';
 import { presentHistory } from './core/presentation.js';
 import { AttachmentStore, ATTACHMENTS_ONLY_PROMPT, isUploadError } from './core/attachments.js';
 import { previewFile, resolveFile } from './services/file-preview.js';
+import { TranscriptStore } from './services/transcript-export.js';
 import { revealFile, fileManager } from './services/reveal.js';
 import { arr, errorField, get, list, messageOf, str } from '../shared/guards.js';
 import { sameTurn } from '../shared/turn-match.js';
@@ -68,6 +69,7 @@ async function createApp({ config = loadConfig(), host: given, hub = new EventHu
   });
   // Attached files: kept, described and checked in one place (core/attachments.ts).
   const attachments = new AttachmentStore(config.uploadsDir);
+  const transcripts = new TranscriptStore(config.exportsDir);
   app.post('/api/upload', attachments.receive, (req, res) => {
     const files = Array.isArray(req.files) ? req.files : [];
     if (!files.length) return res.status(400).json({ error: '请选择文件' });
@@ -379,6 +381,21 @@ async function createApp({ config = loadConfig(), host: given, hub = new EventHu
     if (!engine.capabilities?.showInDesktop || typeof engine.show !== 'function') return res.status(404).json({ error: '这个 AI 的桌面版不支持打开会话' });
     try { await engine.show(req.params.id); res.json({ status: 'shown' }); }
     catch (err) { res.status(statusOf(err)).json({ error: errorField(err, 'status') ? messageOf(err) : '没能在桌面版里打开这个会话' }); }
+  });
+  // This chat as the text another chat's message carries to refer to it (services/transcript-export.ts),
+  // read from the desktop's own record at this moment. `file: true` is sent by a page whose agent can
+  // read this computer's files: a long chat, shortened in the text, is then also written whole as a
+  // file the text points to. `attach: true`, by a page whose agent takes files: the text is also kept
+  // as an attached file (core/attachments.ts), so it goes with the message as the agent's files do
+  // and the composer and the desktop's chat show a card, not the whole text. A chat with nothing in
+  // it is not referred to.
+  app.post('/api/sessions/:engine/:id/transcript', async (req, res) => {
+    const engine = engineOf(req), history = presentHistory(await engine.read(req.params.id));
+    if (!history.session) return res.status(404).json({ error: '没有找到这个聊天' });
+    if (!history.turns.length) return res.status(409).json({ error: history.session.metadata?.contentUnavailable || '这个聊天还没有内容可以引用' });
+    const reference = transcripts.reference(engine.id, history.session, history.turns, engine.label, { file: get(req.body, 'file') === true });
+    const attachment = get(req.body, 'attach') === true ? attachments.keep(reference.text, { stem: `chat-${engine.id}`, name: `${reference.title || 'chat'}.md` }) : undefined;
+    res.set('Cache-Control', 'no-store').json({ ...reference, ...(attachment ? { attachment } : {}) });
   });
   app.post('/api/sessions/:engine/:id/interrupt', async (req, res) => {
     const result = await runs.interrupt(req.params.engine, req.params.id); res.json({ status: get(result, 'pending') ? 'stopping' : 'interrupted' });

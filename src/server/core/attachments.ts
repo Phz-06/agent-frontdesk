@@ -70,6 +70,16 @@ export class AttachmentStore {
   describe(files: readonly Express.Multer.File[]): UploadedFile[] {
     return files.map(file => ({ filename: file.filename, originalname: labelOf(decoded(file.originalname), file.filename), mimetype: typeOf(file.filename), size: file.size, url: `/uploads/${file.filename}` }));
   }
+  /**
+   * Text the console made itself (another chat, referred to), kept as an attached file like an
+   * upload, so it reaches each engine the way its files do. `stem` starts the stored name.
+   */
+  keep(text: string, { stem, name }: { stem: string; name: string }): UploadedFile {
+    const filename = `${stem.replace(/[^\w-]/g, '').slice(0, 40) || 'note'}-${randomUUID().slice(0, 8)}.md`;
+    fs.mkdirSync(this.dir, { recursive: true });
+    fs.writeFileSync(path.join(this.dir, filename), text);
+    return { filename, originalname: labelOf(name, filename), mimetype: 'text/markdown', size: Buffer.byteLength(text), url: `/uploads/${filename}` };
+  }
   /** The stored file a name stands for; null when there is none (the name never leaves the folder). */
   locate(filename: unknown): string | null {
     const name = path.basename(String(filename || ''));
