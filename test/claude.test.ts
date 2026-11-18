@@ -565,6 +565,25 @@ test('Claude: a message sent during a desktop turn goes through the desktop queu
   fs.rmSync(home, { recursive: true, force: true });
 });
 
+test('Claude: a steer the desktop holds in its own queue is taken, though the record has it only later', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-home-'));
+  const indexDir = path.join(home, 'Library/Application Support/Claude/claude-code-sessions/acct/org');
+  const project = path.join(home, '.claude/projects/-work');
+  fs.mkdirSync(indexDir, { recursive: true }); fs.mkdirSync(project, { recursive: true });
+  fs.writeFileSync(path.join(indexDir, 'local_d1.json'), JSON.stringify({ sessionId: 'local_d1', cliSessionId: 'd-1', cwd: '/work', title: '桌面会话', lastTurnEdgeAt: 10 }));
+  fs.writeFileSync(path.join(project, 'd-1.jsonl'), [human('u0', 'earlier'), say('a0', 'earlier reply')].map(r => JSON.stringify(r)).join('\n') + '\n');
+  // (Windows: the enqueue record came 30 s after the press, on a turn with no steps to put it in at.)
+  let queued = true;
+  const desktop = fake<ClaudeDesktop>({ check: async () => ({ available: true }), steer: async () => ({ ok: true, queued }) });
+  const bridge = new ClaudeBridge({ home, desktopHome: macDesktopHome(home), env: {}, bin: '/bin/claude-test', desktop });
+  bridge.steerConfirmMs = 300;
+  assert.deepEqual(await bridge.steer('d-1', { prompt: 'also check the docs', attachments: [] }), {});
+  // Neither queued nor in the record: not taken.
+  queued = false;
+  await assert.rejects(bridge.steer('d-1', { prompt: 'again', attachments: [] }), /没有收到这条插话/);
+  bridge.dispose();
+  fs.rmSync(home, { recursive: true, force: true });
+});
 test('Claude: a new chat is created by the desktop app with its first message; without the desktop nothing is created', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-home-'));
   const indexDir = path.join(home, 'Library/Application Support/Claude/claude-code-sessions/acct/org');
@@ -1297,6 +1316,18 @@ test('Claude\'s question to the person is a card in the chat, answered by pickin
   bridge.dispose(); fs.rmSync(home, { recursive: true });
 });
 
+test('Windows: an engine can send through its window once its flow ports send', async () => {
+  const { ClaudeDesktop } = __claude_desktop;
+  let ported: string[] = [];
+  const desktop = new ClaudeDesktop({ platform: 'win32', warmEveryMs: 0, runner: async () => ({ ok: true, trusted: true, running: true, ported }) });
+  desktop.binary = 'C:\\helper.exe';
+  assert.deepEqual(await desktop.check(), { available: false, reason: 'Windows 上的桌面代发还在移植中，暂时不能通过窗口操作发送', code: 'not_ported' });
+  ported = ['send', 'settings']; desktop.state = null;
+  assert.deepEqual(await desktop.check(), { available: true });
+  // A desktop at a higher integrity level is still refused first.
+  desktop.runner = async () => ({ ok: true, trusted: false, running: true, ported }); desktop.state = null;
+  assert.equal((await desktop.check()).code, 'not_trusted');
+});
 test('Claude: a file from the chat is opened in the desktop, in its own session', async () => {
   const { ClaudeDesktop } = __claude_desktop;
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-home-'));

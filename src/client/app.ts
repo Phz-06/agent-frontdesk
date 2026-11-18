@@ -553,6 +553,9 @@ function renderControls() {
   $('dictate').title = dictating ? t('结束语音输入') : voice.label ? `${t('语音输入 ·')} ${voice.label}` : `${t('语音输入不可用：')}${voice.why}`;
   $('prompt').disabled = !!blocked || state.loading || !state.ready || state.creating;
   $('model').disabled = !!blocked || !(state.models[state.engine] || []).length || !capsOf().models;
+  // No models to pick from: say why where the engine's usage says (Claude: its CLI is not signed in).
+  const why = (state.models[state.engine] || []).length ? '' : state.usage[state.engine]?.reason || '';
+  if (why) $('model').title = say(why);
   // A mode whose own model applies (a chat mode) shows no model, effort or permission menus.
   $('model').hidden = capsOf().models === false;
   // The effort and permission menus follow the mode too (they are rebuilt when it changes).

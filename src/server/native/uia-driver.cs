@@ -9,21 +9,24 @@
 // and nothing has to be signed. UIA is reached through its COM interfaces (UIA3, as Narrator reaches
 // it), declared by hand below. The helper is run as
 //   AX_PROFILE=<profile.json> <helper> <command> [args…]
-// and prints one JSON object. The commands so far only look; none presses anything:
-//   check  → {"trusted":…, "running":…}: the app has a window, and this process may act on it
+// and prints one JSON object. The driver's own commands only look:
+//   check  → {"trusted":…, "running":…, "ported":[…]}: the app has a window, this process may act on
+//            it, and which commands the engine's flow (<engine>-desktop.cs) ports
 //   probe  → which of the profile's locators the page shows right now: found / ways / differ / drift / several
 //   inspect [<locator>…]  → what the controls those locators find go by besides their names
 //   warm [check]  → reads the page once so the desktop keeps its accessibility tree; with `check`,
 //            also whether the profile still matches that page
-// Any other command answers `not_ported` until its flow is ported.
+// The commands an engine's flow ports act on the page, with the window parked in a corner (below);
+// any other command answers `not_ported` until its flow is ported.
 //
 // The three things ax-driver.swift holds for every flow hold here too, written once below:
 // "one control, or none" (Sole), "a control found by its place" (Confirmed, against the profile's
 // menuSigns), and every answer naming the controls found by another way than their first (`via`).
 //
-// Nothing here may take the foreground or send global input (skills/add-desktop-engine/
-// references/philosophy.md). UIA's SetFocus takes the foreground, and keys can reach Chromium only
-// through the foreground, so neither is used: see probes/windows/PLAN.md for what that leaves.
+// No global input is sent, and UIA's SetFocus is not used. On Windows a page takes the foreground
+// whenever an action moves its focus, so the window is parked off screen but for a corner and the
+// foreground given straight back (skills/add-desktop-engine/references/philosophy.md's rule, bent as
+// little as measured: probes/windows/PLAN.md, "Parked in a corner").
 //
 // The COM declarations of IUIAutomation, IUIAutomationElement, IUIAutomationTreeWalker,
 // IUIAutomationCacheRequest and IUIAutomationElementArray follow vercel-labs/agent-desktop's
@@ -125,6 +128,61 @@ namespace Frontdesk.Driver
     [ComImport, Guid("a5cd92ff-29be-454c-8d04-d82879fb3f1b"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     public interface IVirtualDesktopManager { [PreserveSig] int IsWindowOnCurrentVirtualDesktop(IntPtr topLevelWindow, out int onCurrentDesktop); }
 
+    // The patterns the flows act through (ids from UIAutomationClient.h, as uia-probe.cs declares them).
+    [ComImport, Guid("fb377fbe-8ea6-46d5-9c73-6499642d3059"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IUIAutomationInvokePattern { void Invoke(); }
+
+    [ComImport, Guid("a94cd8b1-0844-4cd6-9d2d-640537ab39e9"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IUIAutomationValuePattern
+    {
+        void SetValue([MarshalAs(UnmanagedType.BStr)] string value);
+        [return: MarshalAs(UnmanagedType.BStr)] string GetCurrentValue();
+    }
+
+    [ComImport, Guid("619be086-1f4e-4ee4-bafa-210128738730"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IUIAutomationExpandCollapsePattern { void Expand(); void Collapse(); int GetCurrentExpandCollapseState(); }
+
+    [ComImport, Guid("b488300f-d015-4f19-9c29-bb595e3645ef"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IUIAutomationScrollItemPattern { void ScrollIntoView(); }
+
+    [ComImport, Guid("94cf8058-9b8d-4ab9-8bfd-4cd0a33c8c70"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IUIAutomationTogglePattern { void Toggle(); int GetCurrentToggleState(); }
+
+    [ComImport, Guid("a8efa66a-0fda-421a-9194-38021f3578ea"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IUIAutomationSelectionItemPattern { void Select(); }
+
+
+    // What the window parking (see "parked in a corner" below) calls: placement, z-order, foreground.
+    public static class Win
+    {
+        [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
+        [StructLayout(LayoutKind.Sequential)] public struct WINDOWPLACEMENT { public int length, flags, showCmd; public POINT ptMin, ptMax; public Native.RECT rcNormal; }
+        [StructLayout(LayoutKind.Sequential)] public struct MONITORINFO { public int cbSize; public Native.RECT rcMonitor, rcWork; public int dwFlags; }
+        [StructLayout(LayoutKind.Sequential)] public struct FLASHWINFO { public int cbSize; public IntPtr hwnd; public int dwFlags, uCount, dwTimeout; }
+        public delegate bool MonitorProc(IntPtr monitor, IntPtr dc, ref Native.RECT rect, IntPtr data);
+        [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr ctx);
+        [DllImport("user32.dll")] public static extern bool GetWindowPlacement(IntPtr h, ref WINDOWPLACEMENT wp);
+        [DllImport("user32.dll")] public static extern bool SetWindowPlacement(IntPtr h, ref WINDOWPLACEMENT wp);
+        [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+        [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint cmd);
+        [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+        [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
+        [DllImport("user32.dll")] public static extern void SwitchToThisWindow(IntPtr h, bool altTab);
+        [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool attach);
+        [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
+        [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h, uint flags);
+        [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int index);
+        [DllImport("user32.dll")] public static extern bool EnumDisplayMonitors(IntPtr dc, IntPtr clip, MonitorProc proc, IntPtr data);
+        [DllImport("user32.dll")] public static extern bool GetMonitorInfo(IntPtr m, ref MONITORINFO mi);
+        [DllImport("user32.dll")] public static extern IntPtr MonitorFromWindow(IntPtr h, uint flags);
+        [DllImport("user32.dll")] public static extern bool FlashWindowEx(ref FLASHWINFO fi);
+        [DllImport("shcore.dll")] public static extern int GetDpiForMonitor(IntPtr m, int type, out uint x, out uint y);
+        [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out Native.RECT r, int size);
+        [DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr h, int attr, ref int v, int size);
+        [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+    }
+
     public static class Native
     {
         public delegate bool EnumProc(IntPtr hwnd, IntPtr lParam);
@@ -151,9 +209,12 @@ namespace Frontdesk.Driver
     // fetched together, in one round trip for the whole page).
     public class Node
     {
-        public int Index, End, Parent = -1, ControlType;
+        public int Index, End, Parent = -1, ControlType, ExpandState = -1, ToggleState = -1;
+        public double Top, Bottom;   // on screen (physical pixels), for telling one block from the next
+        public List<int> Kids = new List<int>();
         public string Name = "", Accel = "", AutomationId = "", ClassName = "", AriaRole = "", AriaProps = "", Value = "", Help = "", FullDescription = "", Framework = "";
-        public bool IsDialog, PExpand, PValue, PText;
+        public bool IsDialog, PExpand, PValue, PText, Enabled = true;
+        public string Localized = "";
         public IUIAutomationElement Element;
         public bool HasPopupMark { get { return Regex.IsMatch(AriaProps, @"(^|;)\s*haspopup=(?!false)", RegexOptions.IgnoreCase); } }
         public bool ValueIsAddress { get { return Regex.IsMatch(Value, @"^(https?|file|about|chrome|app):", RegexOptions.IgnoreCase); } }
@@ -164,7 +225,7 @@ namespace Frontdesk.Driver
     // control"): the Mac roles (AXButton…) are mapped to what Chromium shows on Windows in RoleIs.
     public class Loc
     {
-        public string Key, Role, Name, Prefix, Contains, After, Inside, Has, Keys, Id, Subrole, Url;
+        public string Key, Role, Name, Prefix, Contains, After, Inside, Has, Keys, Id, Subrole, Url, Aria;
         public List<string> Roles = new List<string>(), Classes = new List<string>();
         public bool Named; public int? Index; public bool? Popup;
         public bool Worded { get { return Name != null || Prefix != null || Contains != null; } }
@@ -175,7 +236,7 @@ namespace Frontdesk.Driver
             Loc l = new Loc(); l.Key = key;
             l.Role = Str(spec, "role"); l.Name = Str(spec, "name"); l.Prefix = Str(spec, "prefix"); l.Contains = Str(spec, "contains");
             l.After = Str(spec, "after"); l.Inside = Str(spec, "inside"); l.Has = Str(spec, "has"); l.Keys = Str(spec, "keys");
-            l.Id = Str(spec, "id"); l.Subrole = Str(spec, "subrole"); l.Url = Str(spec, "url");
+            l.Id = Str(spec, "id"); l.Subrole = Str(spec, "subrole"); l.Url = Str(spec, "url"); l.Aria = Str(spec, "aria");
             object v;
             if (spec.TryGetValue("roles", out v) && v is object[]) l.Roles = ((object[])v).Select(o => Convert.ToString(o, CultureInfo.InvariantCulture)).ToList();
             if (spec.TryGetValue("class", out v)) { if (v is string) l.Classes.Add((string)v); else if (v is object[]) l.Classes = ((object[])v).Select(o => Convert.ToString(o, CultureInfo.InvariantCulture)).ToList(); }
@@ -192,7 +253,9 @@ namespace Frontdesk.Driver
         // ---- the ids UIAutomationClient.h gives ----
         const int P_ControlType = 30003, P_Name = 30005, P_Accel = 30006, P_AutomationId = 30011, P_ClassName = 30012, P_Help = 30013,
             P_Framework = 30024, P_IsExpand = 30028, P_IsText = 30040, P_IsValue = 30043, P_Value = 30045,
-            P_AriaRole = 30101, P_AriaProps = 30102, P_FullDescription = 30159, P_IsDialog = 30174;
+            P_AriaRole = 30101, P_AriaProps = 30102, P_FullDescription = 30159, P_IsDialog = 30174, P_ExpandState = 30070,
+            P_ToggleState = 30086, P_Bounds = 30001, P_Enabled = 30010, P_Localized = 30004;
+        const int Pat_Invoke = 10000, Pat_Value = 10002, Pat_Expand = 10005, Pat_SelItem = 10010, Pat_Toggle = 10015, Pat_ScrollItem = 10017;
         const int CT_Button = 50000, CT_CheckBox = 50002, CT_ComboBox = 50003, CT_Edit = 50004, CT_Hyperlink = 50005, CT_Image = 50006, CT_List = 50008,
             CT_Menu = 50009, CT_MenuItem = 50011, CT_RadioButton = 50013, CT_Slider = 50015, CT_Text = 50020, CT_Custom = 50025, CT_Group = 50026,
             CT_Document = 50030, CT_Pane = 50033;
@@ -216,6 +279,9 @@ namespace Frontdesk.Driver
         static List<string> args = new List<string>();
         static Dictionary<string, string> wanted = new Dictionary<string, string>();
         static string command { get { return args.Count > 0 ? args[0] : ""; } }
+        // The new-chat page's parking (desktop-automation.ts): the conversation the person had before
+        // the desktop was left on that page, and whether this command leaves it there.
+        static string parkedPrevious = ""; static bool staying;
 
         // ---- the answer ----
         // What the command learned about its own footing (see "one control, or none" and "a control
@@ -227,6 +293,12 @@ namespace Frontdesk.Driver
         class Done : Exception { public readonly int Code; public Done(int code) { Code = code; } }
         static void Out(Dictionary<string, object> answer)
         {
+            // Whatever the answer, the person's mode comes back and the window is put back first.
+            Func<string> exit = beforeExit; beforeExit = null;
+            if (exit != null) { string error = null; try { error = exit(); } catch { } if (error != null) answer["spaceNotRestored"] = error; }
+            Unpark();
+            if (parkReport != null) answer["parked"] = parkReport;
+            else if (Parking.Skipped != null) answer["parked"] = Parking.Skipped;
             Annotate(answer);
             answer["ms"] = (int)clock.ElapsedMilliseconds; answer["reads"] = reads;
             JavaScriptSerializer json = new JavaScriptSerializer(); json.MaxJsonLength = int.MaxValue; json.RecursionLimit = 100;
@@ -240,18 +312,21 @@ namespace Frontdesk.Driver
         public static int Main(string[] argv)
         {
             try { Console.OutputEncoding = new UTF8Encoding(false); } catch { }
+            // Per-monitor DPI aware (V2): window rects, frame bounds and points all in physical pixels.
+            try { Win.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { }
             for (int i = 0; i < argv.Length; i++)
             {
                 string a = argv[i];
                 if ((a == "--model" || a == "--effort" || a == "--mode" || a == "--space") && i + 1 < argv.Length) { wanted[a.Substring(2)] = argv[++i]; continue; }
-                if (a == "--previous" && i + 1 < argv.Length) { i++; continue; }
-                if (a == "--stay") continue;
+                if (a == "--previous" && i + 1 < argv.Length) { parkedPrevious = argv[++i]; continue; }
+                if (a == "--stay") { staying = true; continue; }
                 args.Add(a);
             }
             try { Run(); return 0; }
             catch (Done done) { return done.Code; }
             catch (Exception e)
             {
+                try { Unpark(); } catch { }
                 Console.WriteLine(new JavaScriptSerializer().Serialize(new Dictionary<string, object> { { "ok", false }, { "code", "crashed" }, { "error", e.GetType().Name + ": " + e.Message }, { "ms", (int)clock.ElapsedMilliseconds } }));
                 return 1;
             }
@@ -369,7 +444,7 @@ namespace Frontdesk.Driver
         // one: a cache request over the raw view (Stale() drops it after anything that could change it).
         static List<Node> nodes = new List<Node>();
         static bool pageRead;
-        static readonly int[] WalkProps = { P_ControlType, P_Name, P_Accel, P_AutomationId, P_ClassName, P_Help, P_Framework, P_IsExpand, P_IsText, P_IsValue, P_Value, P_AriaRole, P_AriaProps, P_FullDescription, P_IsDialog };
+        static readonly int[] WalkProps = { P_ControlType, P_Name, P_Accel, P_AutomationId, P_ClassName, P_Help, P_Framework, P_IsExpand, P_IsText, P_IsValue, P_Value, P_AriaRole, P_AriaProps, P_FullDescription, P_IsDialog, P_ExpandState, P_ToggleState, P_Bounds, P_Enabled, P_Localized };
         static void Stale() { pageRead = false; soleNow.Clear(); }
         static object ReadProp(IUIAutomationElement e, int id)
         {
@@ -387,6 +462,12 @@ namespace Frontdesk.Driver
             n.Value = S(ReadProp(e, P_Value)); n.AriaRole = S(ReadProp(e, P_AriaRole)); n.AriaProps = S(ReadProp(e, P_AriaProps));
             n.FullDescription = S(ReadProp(e, P_FullDescription)); n.IsDialog = B(ReadProp(e, P_IsDialog));
             n.PExpand = B(ReadProp(e, P_IsExpand)); n.PValue = B(ReadProp(e, P_IsValue)); n.PText = B(ReadProp(e, P_IsText));
+            object state = ReadProp(e, P_ExpandState); if (state is int) n.ExpandState = (int)state;
+            object toggle = ReadProp(e, P_ToggleState); if (toggle is int) n.ToggleState = (int)toggle;
+            double[] bounds = ReadProp(e, P_Bounds) as double[]; if (bounds != null && bounds.Length == 4) { n.Top = bounds[1]; n.Bottom = bounds[1] + bounds[3]; }
+            n.Enabled = !(ReadProp(e, P_Enabled) is bool) || (bool)ReadProp(e, P_Enabled);
+            n.Localized = S(ReadProp(e, P_Localized));
+            if (parent >= 0) nodes[parent].Kids.Add(n.Index);
             nodes.Add(n);
             IUIAutomationElementArray kids = null;
             try { kids = e.GetCachedChildren(); } catch { }
@@ -453,6 +534,9 @@ namespace Frontdesk.Driver
             if (l.Role != null && !RoleIs(n, l.Role)) return false;
             if (l.Roles.Count > 0 && !l.Roles.Any(r => RoleIs(n, r))) return false;
             if (l.Subrole != null) { string aria; if (!SubroleAria.TryGetValue(l.Subrole, out aria)) { unmappedRoles.Add(l.Subrole); return false; } if (n.AriaRole != aria) return false; }
+            // (Windows only, in a profile's "windows" section: the ARIA role Chromium reports, where it says
+            // more than the Mac subrole does, as for Claude's chat list, a "feed".)
+            if (l.Aria != null && n.AriaRole != l.Aria) return false;
             if (l.Id != null && n.AutomationId != l.Id) return false;
             if (l.Keys != null && n.Accel != WindowsKeys(l.Keys)) return false;
             foreach (string want in l.Classes) if (!HasClass(n, want)) return false;
@@ -626,9 +710,10 @@ namespace Frontdesk.Driver
             return new Dictionary<string, object> { { "found", found }, { "ways", waysOut }, { "differ", differ }, { "drift", drift }, { "several", several } };
         }
         // Which conversation is on screen: the page's title, as ax-driver.swift's current() reads it.
+        static string modeTitleSuffix;   // the mode a command acts in may name its pages its own way (spaces.titleSuffix)
         static string Current()
         {
-            string suffix = Setting("titleSuffix");
+            string suffix = modeTitleSuffix ?? Setting("titleSuffix");
             List<string> blank = Settings("blankTitles");
             ReadPage();
             foreach (Node page in nodes.Where(n => n.ControlType == CT_Document))
@@ -651,6 +736,1272 @@ namespace Frontdesk.Driver
             return f;
         }
 
+        // ---- actions ----
+        // Anything done to the page ends what was read from it (Stale). Nothing is done to a control
+        // that is not the only one its locator finds (Sole).
+        static T Pattern<T>(Node n, int id) where T : class { try { return n.Element.GetCurrentPattern(id) as T; } catch { return null; } }
+        static bool Press(Node n)
+        {
+            if (n == null || !Sole(n)) return false;
+            Trace("press " + (n.Name.Length > 40 ? n.Name.Substring(0, 40) : n.Name));
+            try
+            {
+                IUIAutomationInvokePattern invoke = Pattern<IUIAutomationInvokePattern>(n, Pat_Invoke);
+                if (invoke != null) { invoke.Invoke(); return true; }
+                IUIAutomationExpandCollapsePattern ec = Pattern<IUIAutomationExpandCollapsePattern>(n, Pat_Expand);
+                if (ec != null) { ec.Expand(); return true; }
+                return false;
+            }
+            catch (Exception e) { Trace("press failed: " + e.Message); return false; }
+            finally { Stale(); }
+        }
+        static bool Expand(Node n)
+        {
+            if (n == null || !Sole(n)) return false;
+            try { IUIAutomationExpandCollapsePattern ec = Pattern<IUIAutomationExpandCollapsePattern>(n, Pat_Expand); if (ec == null) return false; ec.Expand(); return true; }
+            catch (Exception e) { Trace("expand failed: " + e.Message); return false; }
+            finally { Stale(); }
+        }
+        static bool Collapse(Node n)
+        {
+            if (n == null) return false;
+            try { IUIAutomationExpandCollapsePattern ec = Pattern<IUIAutomationExpandCollapsePattern>(n, Pat_Expand); if (ec == null) return false; ec.Collapse(); return true; }
+            catch { return false; }
+            finally { Stale(); }
+        }
+        static bool SetValue(Node n, string text)
+        {
+            if (n == null || !Sole(n)) return false;
+            try { IUIAutomationValuePattern v = Pattern<IUIAutomationValuePattern>(n, Pat_Value); if (v == null) return false; v.SetValue(text); return true; }
+            catch (Exception e) { Trace("set value failed: " + e.Message); return false; }
+            finally { Stale(); }
+        }
+        static void Wait(double seconds) { Thread.Sleep((int)(seconds * 1000)); Stale(); }
+        // Looks again until `done` holds or `seconds` have passed (a look is one read of the page).
+        static bool Until(double seconds, Func<bool> done)
+        {
+            DateTime end = DateTime.UtcNow.AddSeconds(seconds);
+            while (true) { Stale(); if (done()) return true; if (DateTime.UtcNow >= end) return false; Thread.Sleep(40); }
+        }
+        static bool Named(Node n, string text) { return n.Name == text || n.Name.StartsWith(text + " ", StringComparison.Ordinal); }
+        static List<Node> Items() { ReadPage(); return nodes.Where(n => RoleIs(n, "AXMenuItem")).ToList(); }
+        static Node Item(string text) { return Items().FirstOrDefault(n => Named(n, text)); }
+        static int Menus() { ReadPage(); return nodes.Count(n => n.ControlType == CT_Menu || n.AriaRole == "menu"); }
+        static bool Expanded(Node n) { return n != null && (n.ExpandState == 1 || n.ExpandState == 2 || Regex.IsMatch(n.AriaProps, @"(^|;)\s*expanded=true", RegexOptions.IgnoreCase)); }
+        static bool Checked(Node n) { return n.ToggleState == 1 || Regex.IsMatch(n.AriaProps, @"(^|;)\s*(checked|selected|pressed)=(true|mixed)", RegexOptions.IgnoreCase); }
+        // A row or toggle that has a checked state at all (rows that open something else have none, like
+        // Claude's "Open folder…", which opens a folder picker). By what the page says (ARIA checked or
+        // pressed) or by being a checkbox or radio: UIA reports a toggle state (2, indeterminate) for every
+        // menu row, the ones without a check too.
+        static bool HasCheckState(Node n) { return n.ControlType == CT_CheckBox || n.ControlType == CT_RadioButton || Regex.IsMatch(n.AriaProps, @"(^|;)\s*(checked|pressed)=", RegexOptions.IgnoreCase); }
+        // Whatever the control offers: Invoke, Toggle, SelectionItem, ExpandCollapse (a checkbox or radio
+        // may offer only some of them).
+        static bool Activate(Node n)
+        {
+            if (n == null || !Sole(n)) return false;
+            try
+            {
+                IUIAutomationInvokePattern invoke = Pattern<IUIAutomationInvokePattern>(n, Pat_Invoke);
+                if (invoke != null) { invoke.Invoke(); return true; }
+                IUIAutomationTogglePattern toggle = Pattern<IUIAutomationTogglePattern>(n, Pat_Toggle);
+                if (toggle != null) { toggle.Toggle(); return true; }
+                IUIAutomationSelectionItemPattern select = Pattern<IUIAutomationSelectionItemPattern>(n, Pat_SelItem);
+                if (select != null) { select.Select(); return true; }
+                IUIAutomationExpandCollapsePattern ec = Pattern<IUIAutomationExpandCollapsePattern>(n, Pat_Expand);
+                if (ec != null) { ec.Expand(); return true; }
+                return false;
+            }
+            catch (Exception e) { Trace("activate failed: " + e.Message); return false; }
+            finally { Stale(); }
+        }
+        static bool Toggle(Node n)
+        {
+            if (n == null || !Sole(n)) return false;
+            try { IUIAutomationTogglePattern t = Pattern<IUIAutomationTogglePattern>(n, Pat_Toggle); if (t != null) { t.Toggle(); return true; } } catch { }
+            finally { Stale(); }
+            return Activate(n);
+        }
+        // The app's window takes the foreground (parked off screen, nothing of it shows) for the presses its
+        // page takes only while the window is active: a chat card's controls (measured on Claude's question
+        // card: from behind a press only moves the focus, and pressing again after the foreground was given
+        // back does not help; with the window active first, one press picks, one press submits). The caller
+        // holds the foreground (HoldForeground) for as long as those presses take.
+        static void Activate()
+        {
+            if (Root(Win.GetForegroundWindow()) == window) return;
+            GiveBack(window);
+            Until(0.3, () => Root(Win.GetForegroundWindow()) == window);
+            Thread.Sleep(80);
+            Trace("activated: " + (Root(Win.GetForegroundWindow()) == window));
+        }
+        static void ScrollIntoView(IUIAutomationElement e)
+        {
+            try { IUIAutomationScrollItemPattern s = e.GetCurrentPattern(Pat_ScrollItem) as IUIAutomationScrollItemPattern; if (s != null) s.ScrollIntoView(); } catch { }
+            Stale();
+        }
+        // A question the desktop puts over the page (the Mac's AXApplicationAlertDialog). Chromium on Windows
+        // reports an alertdialog as a dialog window whose ARIA role reads "alert" (measured: Claude's "Switch
+        // model?" is ControlType Window, AriaRole "alert", IsDialog true), so either is taken.
+        static Node Dialog() { ReadPage(); return nodes.FirstOrDefault(n => n.AriaRole == "alertdialog" || (n.IsDialog && n.AriaRole == "alert")); }
+        // A menu button says what it shows after what it is: "Model: Opus 5.5 High".
+        static string AfterColon(string text)
+        {
+            int at = -1; foreach (string colon in new[] { ": ", "：" }) { int i = text.IndexOf(colon, StringComparison.Ordinal); if (i >= 0 && (at < 0 || i < at)) at = i; }
+            if (at < 0) return text;
+            return text.Substring(at + (text[at] == '：' ? 1 : 2)).Trim();
+        }
+
+        // ---- parked in a corner (probes/windows/PLAN.md, "Parked in a corner") ----
+        // Chromium stops updating a window that is fully covered, and on Windows nothing reaches its
+        // page without the page taking the foreground for a moment. So while a flow acts, the window is
+        // moved off the screen but for a few pixels of one corner (a page with a pixel showing stays
+        // live), a watchdog gives the foreground straight back to the window the person was in and keeps
+        // that corner uncovered, and afterwards everything is put back exactly: placement (maximized or
+        // not, and the normal bounds), the z-order under the same window, the foreground.
+        // A menu needs the foreground while it is open (given back, its rows stop answering), so a flow
+        // holds it for the time a menu change takes (HoldForeground), and the watchdog gives it back after.
+        // The window is not parked when it is the foreground window itself (the person is in it).
+        const uint SWP_NOSIZE = 0x1, SWP_NOMOVE = 0x2, SWP_NOZORDER = 0x4, SWP_NOACTIVATE = 0x10;
+        static class Parking
+        {
+            public static bool Active, Front;
+            public static string Skipped;
+            // Original: the window the person is in, given the foreground back whenever the app takes it.
+            // It starts as the foreground window at park time and follows the person when they move to
+            // another one while parked (Followed counts those moves). Home: the monitor the window is on.
+            public static IntPtr Original, InsertAfter, Home;
+            public static int Followed;
+            public static Win.WINDOWPLACEMENT Placement;
+            public static Win.POINT Corner;
+            public static bool MaxMoved; public static Native.RECT MaxRect;
+            public static DateTime Began;
+            public static volatile bool Stop, KeepCorner, Held;
+            public static Thread Guard;
+            public static int Grabs, GiveBacks, Failed, ReRaises; public static long LongestGrabMs, HeldMs;
+            public static readonly object Lock = new object();
+        }
+        static string Hex(IntPtr h) { return "0x" + h.ToInt64().ToString("x", CultureInfo.InvariantCulture); }
+        static bool IsOurs(IntPtr h)
+        {
+            if (h == IntPtr.Zero) return false;
+            uint pid, own; Native.GetWindowThreadProcessId(h, out pid); Native.GetWindowThreadProcessId(window, out own);
+            return pid == own;
+        }
+        static bool Topmost(IntPtr h) { return (Win.GetWindowLong(h, -20) & 0x8) != 0; }
+        static IntPtr Root(IntPtr h) { IntPtr r = Win.GetAncestor(h, 2); return r == IntPtr.Zero ? h : r; }
+        // The nearest window above ours that the person can see and that is not the app's own: the one to put it back under.
+        static IntPtr AboveVisible(IntPtr h)
+        {
+            IntPtr p = Win.GetWindow(h, 3);
+            while (p != IntPtr.Zero && (!Native.IsWindowVisible(p) || Cloaked(p) || Topmost(p) || IsOurs(p))) p = Win.GetWindow(p, 3);
+            return p;
+        }
+        static Win.WINDOWPLACEMENT PlacementOf(IntPtr h) { Win.WINDOWPLACEMENT wp = new Win.WINDOWPLACEMENT(); wp.length = Marshal.SizeOf(typeof(Win.WINDOWPLACEMENT)); Win.GetWindowPlacement(h, ref wp); return wp; }
+        static bool CornerUp() { return Root(Win.WindowFromPoint(Parking.Corner)) == window; }
+        // Raised without being activated: HWND_TOP from a background process usually leaves it under the
+        // foreground window, so through the topmost band and back, which leaves it on top of the ordinary windows.
+        static bool RaiseCorner()
+        {
+            Win.SetWindowPos(window, IntPtr.Zero, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            if (CornerUp()) return true;
+            Win.SetWindowPos(window, new IntPtr(-1), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            Win.SetWindowPos(window, new IntPtr(-2), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            return CornerUp();
+        }
+        // The foreground back to `to`, with no input: attached to the foreground thread first; then to
+        // both threads with BringWindowToTop; then SwitchToThisWindow (each seen to be needed once).
+        static bool GiveBack(IntPtr to)
+        {
+            if (to == IntPtr.Zero) return true;
+            IntPtr fg = Win.GetForegroundWindow(); uint pid, fgThread = Native.GetWindowThreadProcessId(fg, out pid), me = Win.GetCurrentThreadId(), toThread = Native.GetWindowThreadProcessId(to, out pid);
+            bool a = fgThread != 0 && fgThread != me && Win.AttachThreadInput(me, fgThread, true);
+            Win.SetForegroundWindow(to);
+            if (a) Win.AttachThreadInput(me, fgThread, false);
+            if (Win.GetForegroundWindow() == to) return true;
+            bool a1 = fgThread != 0 && fgThread != me && Win.AttachThreadInput(me, fgThread, true), a2 = toThread != 0 && toThread != me && toThread != fgThread && Win.AttachThreadInput(me, toThread, true);
+            Win.BringWindowToTop(to); Win.SetForegroundWindow(to);
+            if (a2) Win.AttachThreadInput(me, toThread, false); if (a1) Win.AttachThreadInput(me, fgThread, false);
+            if (Win.GetForegroundWindow() == to) return true;
+            Win.SwitchToThisWindow(to, true);
+            return Win.GetForegroundWindow() == to;
+        }
+        // A window the person moved to while parked, to be given the foreground from then on: not the
+        // app's own, and not the shell's passing ones (the taskbar, Alt+Tab, Task View), which hold the
+        // foreground only on the way to another window.
+        static readonly string[] Passing = { "Shell_TrayWnd", "Shell_SecondaryTrayWnd", "XamlExplorerHostIslandWindow", "MultitaskingViewFrame", "TaskSwitcherWnd", "ForegroundStaging" };
+        static bool Followable(IntPtr h)
+        {
+            if (h == IntPtr.Zero || h == Parking.Original || IsOurs(h) || !Native.IsWindowVisible(h)) return false;
+            return Array.IndexOf(Passing, ClassOf(Root(h))) < 0;
+        }
+        static void Watchdog()
+        {
+            Stopwatch grab = null, held = null;
+            while (!Parking.Stop)
+            {
+                IntPtr fg = Win.GetForegroundWindow();
+                if (Followable(fg)) { lock (Parking.Lock) { Parking.Original = fg; Parking.Followed++; } Trace("followed the person to " + Hex(fg)); }
+                bool ours = fg != Parking.Original && IsOurs(fg);
+                if (ours && Parking.Held) { if (held == null) held = Stopwatch.StartNew(); }
+                else if (held != null) { lock (Parking.Lock) Parking.HeldMs += held.ElapsedMilliseconds; held = null; }
+                if (ours && !Parking.Held)
+                {
+                    if (grab == null) { grab = Stopwatch.StartNew(); lock (Parking.Lock) Parking.Grabs++; }
+                    bool back = GiveBack(Parking.Original);
+                    lock (Parking.Lock) { Parking.GiveBacks++; if (!back) Parking.Failed++; }
+                }
+                else if (grab != null) { lock (Parking.Lock) Parking.LongestGrabMs = Math.Max(Parking.LongestGrabMs, grab.ElapsedMilliseconds); grab = null; }
+                if (Parking.KeepCorner && !CornerUp()) { RaiseCorner(); lock (Parking.Lock) Parking.ReRaises++; }
+                Thread.Sleep(10);
+            }
+            if (held != null) lock (Parking.Lock) Parking.HeldMs += held.ElapsedMilliseconds;
+        }
+        // While a menu is open the page needs the foreground (on: the watchdog leaves it to the app;
+        // off: it is given back at once).
+        static void HoldForeground(bool on) { if (Parking.Active) Parking.Held = on; }
+        // Where the corner goes: a corner of a monitor's work area from which the rest of the window lies
+        // outside every monitor (the top left, with the taskbar at the bottom). The window's own monitor
+        // is tried first, then the others at its scale (primary first), then the rest: moved to a monitor
+        // at another scale, the page would get a DPI change, lay out again and may be resized.
+        static uint DpiOf(IntPtr m) { uint x, y; try { if (Win.GetDpiForMonitor(m, 0, out x, out y) == 0) return x; } catch { } return 0; }
+        static bool CornerFor(int width, int height, int keep, out Native.RECT frame, out Win.POINT probe)
+        {
+            List<KeyValuePair<IntPtr, Win.MONITORINFO>> found = new List<KeyValuePair<IntPtr, Win.MONITORINFO>>();
+            Win.EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, delegate (IntPtr m, IntPtr dc, ref Native.RECT r, IntPtr d)
+            {
+                Win.MONITORINFO mi = new Win.MONITORINFO(); mi.cbSize = Marshal.SizeOf(typeof(Win.MONITORINFO));
+                if (Win.GetMonitorInfo(m, ref mi)) found.Add(new KeyValuePair<IntPtr, Win.MONITORINFO>(m, mi));
+                return true;
+            }, IntPtr.Zero);
+            uint homeDpi = DpiOf(Parking.Home);
+            List<Win.MONITORINFO> monitors = found
+                .OrderBy(p => p.Key == Parking.Home ? 0 : DpiOf(p.Key) == homeDpi ? 1 : 2)
+                .ThenBy(p => (p.Value.dwFlags & 1) != 0 ? 0 : 1)
+                .Select(p => p.Value).ToList();
+            foreach (Win.MONITORINFO mi in monitors)
+            {
+                Native.RECT w = mi.rcWork;
+                // (x, y) of the corner pixel area's top left, and which way the window extends from it.
+                int[][] corners = { new[] { w.Left, w.Top, -1, -1 }, new[] { w.Right - keep, w.Top, 1, -1 }, new[] { w.Left, w.Bottom - keep, -1, 1 }, new[] { w.Right - keep, w.Bottom - keep, 1, 1 } };
+                foreach (int[] c in corners)
+                {
+                    Native.RECT f;
+                    f.Left = c[2] < 0 ? c[0] + keep - width : c[0]; f.Right = f.Left + width;
+                    f.Top = c[3] < 0 ? c[1] + keep - height : c[1]; f.Bottom = f.Top + height;
+                    Native.RECT kept; kept.Left = c[0]; kept.Top = c[1]; kept.Right = c[0] + keep; kept.Bottom = c[1] + keep;
+                    bool clear = monitors.All(other =>
+                    {
+                        Native.RECT o = other.rcMonitor;
+                        int l = Math.Max(f.Left, o.Left), t = Math.Max(f.Top, o.Top), r = Math.Min(f.Right, o.Right), b = Math.Min(f.Bottom, o.Bottom);
+                        if (l >= r || t >= b) return true;
+                        return l >= kept.Left && t >= kept.Top && r <= kept.Right && b <= kept.Bottom;
+                    });
+                    if (!clear) continue;
+                    frame = f; probe.X = c[0] + keep / 2; probe.Y = c[1] + keep / 2;
+                    return true;
+                }
+            }
+            frame = new Native.RECT(); probe = new Win.POINT();
+            return false;
+        }
+        // Parks the window for a flow that acts on the page. Returns false (and leaves it as it is) when
+        // the person is in the app themselves, or the window cannot be parked (minimized, another desktop).
+        static bool Park()
+        {
+            IntPtr fg = Win.GetForegroundWindow();
+            bool minimized = Native.IsIconic(window);
+            // The person is in the app: its own window is the one in front (not just some window of its process).
+            if (fg != IntPtr.Zero && Root(fg) == window && !minimized) { Parking.Front = true; Parking.Skipped = "front"; return false; }
+            if (Cloaked(window) || !Native.IsWindowVisible(window)) { Parking.Skipped = "hidden"; return false; }
+            Parking.Placement = PlacementOf(window);
+            Parking.Original = fg; Parking.InsertAfter = minimized ? IntPtr.Zero : AboveVisible(window);
+            Parking.Home = Win.MonitorFromWindow(window, 2);   // a minimized window: the monitor it comes back on
+            int off = 1; Win.DwmSetWindowAttribute(window, 3, ref off, 4);   // DWMWA_TRANSITIONS_FORCEDISABLED: no animation to show
+            Parking.Active = true; Parking.Began = DateTime.UtcNow; Parking.Stop = false;
+            Parking.Guard = new Thread(Watchdog); Parking.Guard.IsBackground = true; Parking.Guard.Start();
+            Native.RECT rect; Native.GetWindowRect(window, out rect);
+            if (minimized)
+            {
+                // Shown (not activated) at the size it comes back at: the work area when it restores to
+                // maximized (WPF_RESTORETOMAXIMIZED), else its normal bounds; then moved to the corner below.
+                Win.MONITORINFO mi = new Win.MONITORINFO(); mi.cbSize = Marshal.SizeOf(typeof(Win.MONITORINFO)); Win.GetMonitorInfo(Parking.Home, ref mi);
+                Win.WINDOWPLACEMENT wp = Parking.Placement; wp.showCmd = 4; wp.flags = 0;
+                int width = (Parking.Placement.flags & 2) != 0 ? mi.rcWork.Right - mi.rcWork.Left : wp.rcNormal.Right - wp.rcNormal.Left;
+                int height = (Parking.Placement.flags & 2) != 0 ? mi.rcWork.Bottom - mi.rcWork.Top : wp.rcNormal.Bottom - wp.rcNormal.Top;
+                // Shown straight at the corner (a window placed entirely off screen would be moved back onto
+                // a monitor), assuming Windows' usual invisible borders (8 px left, right and bottom); the move
+                // below then puts its visible frame exactly there.
+                Native.RECT at; Win.POINT unused;
+                if (!CornerFor(width - 16, height - 8, 4, out at, out unused)) { Unpark(); Parking.Skipped = "no corner"; return false; }
+                int ox = mi.rcWork.Left - mi.rcMonitor.Left, oy = mi.rcWork.Top - mi.rcMonitor.Top;
+                wp.rcNormal.Left = at.Left - 8 - ox; wp.rcNormal.Top = at.Top - oy; wp.rcNormal.Right = wp.rcNormal.Left + width; wp.rcNormal.Bottom = wp.rcNormal.Top + height;
+                Win.SetWindowPlacement(window, ref wp);
+                Native.GetWindowRect(window, out rect);
+            }
+            // A maximized window stays maximized and is only moved: its size does not change (the page does
+            // not lay out again) and neither do its normal bounds, so the app saves nothing off screen
+            // however long the park lasts. (Shown normal at the maximized rect instead, as first built,
+            // Claude lost its normal bounds to the maximized ones.) Measured: probes/windows/PLAN.md.
+            else if (Parking.Placement.showCmd == 3) { Parking.MaxMoved = true; Parking.MaxRect = rect; }
+            Native.RECT ef; if (Win.DwmGetWindowAttribute(window, 9, out ef, 16) != 0) ef = rect;
+            Native.RECT frame; Win.POINT probe;
+            if (!CornerFor(ef.Right - ef.Left, ef.Bottom - ef.Top, 4, out frame, out probe)) { Unpark(); Parking.Skipped = "no corner"; return false; }
+            Parking.Corner = probe;
+            // Moved first with the z-order unchanged (still covered), then raised once it is there.
+            Win.SetWindowPos(window, IntPtr.Zero, frame.Left - (ef.Left - rect.Left), frame.Top - (ef.Top - rect.Top), 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER);
+            Thread.Sleep(80);
+            bool up = RaiseCorner();
+            Parking.KeepCorner = true;
+            Trace("parked at " + probe.X + "," + probe.Y + (up ? "" : " (corner not raised)"));
+            Stale();
+            return true;
+        }
+        // Everything back as it was found: foreground first (a window that holds it would be put on top
+        // by a maximize), then the z-order while it is still off screen, the placement, the z-order again,
+        // the foreground; and the taskbar button's flash a refused grab leaves is stopped.
+        static Dictionary<string, object> parkReport;
+        static void Unpark()
+        {
+            if (!Parking.Active) return;
+            Parking.Active = false; Parking.KeepCorner = false; Parking.Held = false;
+            Thread.Sleep(30);
+            for (int i = 0; i < 60 && IsOurs(Win.GetForegroundWindow()) && Win.GetForegroundWindow() != Parking.Original; i++) { if (GiveBack(Parking.Original)) break; Thread.Sleep(15); }
+            if (Parking.Placement.showCmd != 2) Win.SetWindowPos(window, Parking.InsertAfter, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            Win.WINDOWPLACEMENT back = Parking.Placement;
+            if (back.showCmd == 1) back.showCmd = 4;   // normal, without activating it
+            if (back.showCmd == 2) back.showCmd = 7;   // minimized, without activating anything
+            // A maximized one is moved back where it was (it never stopped being maximized).
+            if (Parking.MaxMoved) Win.SetWindowPos(window, IntPtr.Zero, Parking.MaxRect.Left, Parking.MaxRect.Top, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER);
+            else Win.SetWindowPlacement(window, ref back);
+            if (back.showCmd != 7) Win.SetWindowPos(window, Parking.InsertAfter, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            // Only taken back from the app (or from nothing): a window the person went to stays in front.
+            IntPtr last = Win.GetForegroundWindow();
+            if (last != Parking.Original && (last == IntPtr.Zero || IsOurs(last))) GiveBack(Parking.Original);
+            Win.FLASHWINFO fi = new Win.FLASHWINFO(); fi.cbSize = Marshal.SizeOf(typeof(Win.FLASHWINFO)); fi.hwnd = window; Win.FlashWindowEx(ref fi);
+            int on = 0; Win.DwmSetWindowAttribute(window, 3, ref on, 4);
+            Parking.Stop = true; if (Parking.Guard != null) Parking.Guard.Join(500);
+            Win.WINDOWPLACEMENT now = PlacementOf(window), was = Parking.Placement;
+            bool same = now.showCmd == was.showCmd && now.rcNormal.Left == was.rcNormal.Left && now.rcNormal.Top == was.rcNormal.Top && now.rcNormal.Right == was.rcNormal.Right && now.rcNormal.Bottom == was.rcNormal.Bottom;
+            long ms = (long)(DateTime.UtcNow - Parking.Began).TotalMilliseconds;
+            if (Parking.MaxMoved) { Native.RECT r; Native.GetWindowRect(window, out r); same = same && r.Left == Parking.MaxRect.Left && r.Top == Parking.MaxRect.Top && r.Right == Parking.MaxRect.Right && r.Bottom == Parking.MaxRect.Bottom; }
+            lock (Parking.Lock) parkReport = new Dictionary<string, object> {
+                { "ms", ms }, { "grabs", Parking.Grabs }, { "longestGrabMs", Parking.LongestGrabMs }, { "failedGiveBacks", Parking.Failed }, { "heldMs", Parking.HeldMs },
+                { "cornerReRaises", Parking.ReRaises }, { "placementBack", same }, { "underSame", AboveVisible(window) == Parking.InsertAfter },
+                { "foregroundBack", Win.GetForegroundWindow() == Parking.Original }, { "followed", Parking.Followed } };
+            Trace("put back after " + ms + "ms");
+            RepairSavedBounds(ms);
+        }
+        // An app that saves its window's bounds (Claude: window-state.json, about 3.3 s after the window
+        // settles) saves the parked ones when a park lasts longer than that. A normal window saves its own
+        // again once it is back, and a maximized one is only moved (its normal bounds never change); a
+        // minimized one is shown normal in the corner, and minimizing it again saves nothing. The
+        // profile's windows.windowStateFile names that file; when it holds off-screen bounds after a
+        // minimized window was put back, the window is shown normal at its own bounds, behind every
+        // other window, until they are saved again, then minimized.
+        static void RepairSavedBounds(long parkedMs)
+        {
+            if (Parking.Placement.showCmd != 2 || parkedMs < 2500) return;
+            IntPtr under = Parking.InsertAfter != IntPtr.Zero ? Parking.InsertAfter : new IntPtr(1);   // HWND_BOTTOM for a minimized one
+            string pattern = Environment.ExpandEnvironmentVariables(Setting("windowStateFile"));
+            if (pattern.Length == 0) return;
+            string file = null;
+            try
+            {
+                string dir = Path.GetDirectoryName(pattern), parent = Path.GetDirectoryName(dir), leaf = Path.GetFileName(dir);
+                if (leaf.Contains("*")) { string[] dirs = Directory.GetDirectories(parent, leaf); if (dirs.Length == 1) file = Path.Combine(dirs[0], Path.GetFileName(pattern)); }
+                else file = pattern;
+            }
+            catch { return; }
+            if (file == null) return;
+            Func<bool> offScreen = () =>
+            {
+                try
+                {
+                    Dictionary<string, object> s = new JavaScriptSerializer().DeserializeObject(File.ReadAllText(file)) as Dictionary<string, object>;
+                    if (s == null || !s.ContainsKey("x") || !s.ContainsKey("width")) return false;
+                    int x = Convert.ToInt32(s["x"], CultureInfo.InvariantCulture), y = Convert.ToInt32(s["y"], CultureInfo.InvariantCulture);
+                    int w = Convert.ToInt32(s["width"], CultureInfo.InvariantCulture), h = Convert.ToInt32(s["height"], CultureInfo.InvariantCulture);
+                    return x + w < 80 || y + h < 80;
+                }
+                catch { return false; }
+            };
+            // The save may still be on its way: look for up to 4 s.
+            DateTime end = DateTime.UtcNow.AddSeconds(4);
+            bool bad = false; while (DateTime.UtcNow < end) { if (offScreen()) { bad = true; break; } Thread.Sleep(200); }
+            if (!bad) return;
+            Trace("saved bounds are off screen: showing the window normal until they are saved again");
+            Win.WINDOWPLACEMENT normal = Parking.Placement; normal.showCmd = 4;
+            int off = 1; Win.DwmSetWindowAttribute(window, 3, ref off, 4);
+            Win.SetWindowPos(window, under, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            Win.SetWindowPlacement(window, ref normal);
+            Win.SetWindowPos(window, under, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            end = DateTime.UtcNow.AddSeconds(6); while (DateTime.UtcNow < end && offScreen()) Thread.Sleep(200);
+            Win.WINDOWPLACEMENT back = Parking.Placement;
+            if (back.showCmd == 2) back.showCmd = 7;
+            Win.SetWindowPlacement(window, ref back);
+            if (back.showCmd != 7) Win.SetWindowPos(window, under, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            int on = 0; Win.DwmSetWindowAttribute(window, 3, ref on, 4);
+            if (parkReport != null) parkReport["savedBoundsRepaired"] = !offScreen();
+        }
+
+        // ---- the page, ready ----
+        // Chromium builds its page's tree once a UIA client asks, starting from a shell of a dozen nodes;
+        // until it has, every control would read as missing. So wait for one of the profile's
+        // "refreshAnchors" (up to `patience` seconds), as ax-driver.swift does.
+        static bool pageEmpty;
+        static bool WaitReady(double patience)
+        {
+            List<string> anchors = Settings("refreshAnchors");
+            DateTime end = DateTime.UtcNow.AddSeconds(patience);
+            bool ready;
+            while (true)
+            {
+                Stale(); ReadPage();
+                ready = anchors.Count == 0 ? nodes.Count >= 40 : anchors.Any(a => FindAll(a).Count > 0);
+                if (ready || DateTime.UtcNow >= end) break;
+                Thread.Sleep(150);
+            }
+            pageEmpty = !ready && nodes.Count < 40;
+            Trace("page " + (ready ? "ready" : pageEmpty ? "empty" : "not ready") + " (" + nodes.Count + " elements)");
+            return ready;
+        }
+        static void FailPageEmpty()
+        {
+            Fail("page_empty", OnScreen() && !Parking.Active && !Parking.Front
+                ? appName + "的窗口被别的窗口完全挡住，或者刚启动后还没显示过，页面没有接进 UI Automation：把它的窗口切到前台看一眼再发"
+                : OnScreen() ? appName + "的页面没有接进 UI Automation，工作台读不到它的界面：把它的窗口切到前台看一眼再发"
+                : appName + "的窗口不在屏幕上（最小化或在另一个桌面），页面没有接进 UI Automation：把窗口还原后再试");
+        }
+
+        // ---- which conversation is on screen, and going to one (ax-driver.swift's show) ----
+        // Sidebar rows are buttons named "<title>", or "<title> <state>" ("Running", "Unread response").
+        static Node Row(string title)
+        {
+            ReadPage();
+            Node box = Find("sidebar");
+            IEnumerable<Node> scope = box != null ? Within(box) : nodes;
+            List<Node> rows = scope.Where(n => RoleIs(n, "AXButton") && Label(n).StartsWith(title, StringComparison.Ordinal)).ToList();
+            return rows.FirstOrDefault(n => Label(n) == title || n.Name == title) ?? rows.FirstOrDefault(n => Label(n).StartsWith(title + " ", StringComparison.Ordinal)) ?? rows.FirstOrDefault();
+        }
+        static void OpenLink(string template, Dictionary<string, string> values)
+        {
+            string link = template;
+            foreach (KeyValuePair<string, string> kv in values) link = link.Replace("{" + kv.Key + "}", Uri.EscapeDataString(kv.Value));
+            try { Process.Start(new ProcessStartInfo("rundll32.exe", "url.dll,FileProtocolHandler " + link) { UseShellExecute = false, CreateNoWindow = true }).WaitForExit(5000); } catch { }
+            Stale();
+        }
+        // Its sidebar row, or the profile's sessionLink where the row is not there (the link brings the
+        // app forward: while parked the watchdog gives the foreground straight back).
+        static bool Show(string title, string localId)
+        {
+            if (Current() == title) return true;
+            string link = Setting("sessionLink");
+            for (int attempt = 0; attempt < 4; attempt++)
+            {
+                Node row = Row(title);
+                bool asked = false;
+                if (row != null) asked = Press(row);
+                else if (attempt == 1 && link.Length > 0 && !string.IsNullOrEmpty(localId)) { OpenLink(link, new Dictionary<string, string> { { "localId", localId } }); asked = true; }
+                // Nothing pressed (no row yet): look again soon rather than wait for a page that is not coming.
+                if (Until(asked ? 2 : 0.5, () => Current() == title)) { Trace("showing " + title); return true; }
+            }
+            return false;
+        }
+        // The conversation a command goes back to: the one on screen as it starts, or, with the desktop
+        // parked on its new-chat page, the one the person had before that.
+        static string StartedOn() { string now = Current(); return now.Length == 0 ? parkedPrevious : now; }
+        // Fills `field` and waits for the `ready` button (the send button) to show.
+        static bool Fill(string field, string text, string ready)
+        {
+            for (int attempt = 0; attempt < 2; attempt++)
+            {
+                Node box = Find(field);
+                if (box == null) { Wait(0.3); continue; }
+                SetValue(box, text);
+                if (Until(4, () => { Node now = Find(field); return now != null && now.Value.Trim() == text.Trim() && Find(ready) != null; })) return true;
+            }
+            return false;
+        }
+        static void Clear(string field) { Node box = Find(field); if (box != null && box.Value.Trim().Length > 0) SetValue(box, ""); }
+
+        // ---- modes: the desktop's own switch between its kinds of chat (ax-driver.swift's spaces) ----
+        static Dictionary<string, object> Spec(string key) { object v; return profile.TryGetValue(key, out v) && v is Dictionary<string, object> ? (Dictionary<string, object>)v : new Dictionary<string, object>(); }
+        static string Str(Dictionary<string, object> d, string key) { object v; return d.TryGetValue(key, out v) && v is string ? (string)v : ""; }
+        static Dictionary<string, string> StrMap(Dictionary<string, object> d, string key) { object v; return d.TryGetValue(key, out v) && v is Dictionary<string, object> ? ((Dictionary<string, object>)v).ToDictionary(kv => kv.Key, kv => Convert.ToString(kv.Value, CultureInfo.InvariantCulture)) : new Dictionary<string, string>(); }
+        static List<string> StrList(Dictionary<string, object> d, string key) { object v; return d.TryGetValue(key, out v) && v is object[] ? ((object[])v).Select(o => Convert.ToString(o, CultureInfo.InvariantCulture)).ToList() : new List<string>(); }
+        static Dictionary<string, object> spaceSpec { get { return Spec("spaces"); } }
+        // The mode on screen, as a space id; null when the switch is not there, "" for a word not in the profile.
+        static string ShownSpace()
+        {
+            Node control = Find(Str(spaceSpec, "control"));
+            if (control == null) return null;
+            string word;
+            if (Str(spaceSpec, "kind") == "menu") { string prefix = Str(spaceSpec, "currentPrefix"); word = prefix.Length > 0 && control.Name.StartsWith(prefix, StringComparison.Ordinal) ? control.Name.Substring(prefix.Length) : AfterColon(control.Name); }
+            else { Node on = Within(control).FirstOrDefault(n => n.ControlType == CT_RadioButton && Checked(n)); word = on == null ? "" : on.Name; }
+            foreach (KeyValuePair<string, string> kv in StrMap(spaceSpec, "names")) if (kv.Value == word) return kv.Key;
+            return "";
+        }
+        static bool ModeDrawn(string id)
+        {
+            Dictionary<string, string> suffixes = StrMap(spaceSpec, "titleSuffix");
+            string own = suffixes.ContainsKey(id) ? suffixes[id] : id == Str(spaceSpec, "home") ? Setting("titleSuffix") : "";
+            if (own.Length == 0) return true;
+            ReadPage();
+            return nodes.Any(n => n.ControlType == CT_Document && n.Name.EndsWith(own, StringComparison.Ordinal));
+        }
+        static string SwitchSpace(string id)
+        {
+            Dictionary<string, string> names = StrMap(spaceSpec, "names");
+            if (!names.ContainsKey(id)) return appName + "没有这个模式";
+            string word = names[id];
+            Func<Node> control = () => Find(Str(spaceSpec, "control"));
+            if (control() == null) return "没能在" + appName + "上找到切换模式的地方";
+            if (ShownSpace() == id) return null;
+            if (Str(spaceSpec, "kind") == "menu")
+            {
+                if (!OpenMenu(control)) { HoldForeground(false); return "没能打开" + appName + "切换模式的菜单"; }
+                Node entry = Item(word);
+                if (entry == null) { CloseMenus(control); HoldForeground(false); return appName + "切换模式的菜单里没有「" + word + "」"; }
+                Press(entry); HoldForeground(false);
+            }
+            else
+            {
+                Node box = control(), option = box == null ? null : Within(box).FirstOrDefault(n => n.ControlType == CT_RadioButton && n.Name == word);
+                if (option == null) return appName + "的模式切换里没有「" + word + "」";
+                Activate(option);
+            }
+            if (Until(3.2, () => ShownSpace() == id)) { Until(3.2, () => ModeDrawn(id)); Wait(0.4); Trace("mode " + id); return null; }
+            Trace("mode " + id + " not reached (shows " + ShownSpace() + ")");
+            return "在" + appName + "里切到「" + word + "」模式，但没有切过去";
+        }
+        // The mode a command acts in (--space, default the profile's home); the person's comes back at the end.
+        static Func<string> beforeExit;
+        static void PrepareSpace()
+        {
+            if (spaceSpec.Count == 0) return;
+            string target = wanted.ContainsKey("space") ? wanted["space"] : Str(spaceSpec, "home");
+            string before = ShownSpace();
+            if (command != "chat-status" && target.Length > 0 && before != null && before != target)
+            {
+                string error = SwitchSpace(target);
+                if (error != null) Fail("no_space_switch", error);
+                if (command != "open-file" && command != "show-session" && before.Length > 0) beforeExit = () => SwitchSpace(before);
+            }
+            Dictionary<string, string> suffixes = StrMap(spaceSpec, "titleSuffix");
+            if (target.Length > 0 && suffixes.ContainsKey(target)) modeTitleSuffix = suffixes[target];
+        }
+
+        // ---- a menu (only while the app holds the foreground: HoldForeground) ----
+        static bool OpenMenu(Func<Node> menu)
+        {
+            Node button = menu();
+            if (button == null) return false;
+            if (Expanded(button) && Menus() > 0) return true;
+            HoldForeground(true);
+            Expand(button);
+            // A press that came while the page was still settling (a chat just brought on screen) is
+            // lost: pressed once more if the button still says closed (ax-driver.swift's open).
+            DateTime began = DateTime.UtcNow; bool pressedAgain = false;
+            bool shown = Until(3, () =>
+            {
+                if (Menus() >= 1) return true;
+                if (!pressedAgain && (DateTime.UtcNow - began).TotalSeconds > 1.2) { Node now = menu(); if (now != null && !Expanded(now)) { pressedAgain = true; Expand(now); } }
+                return false;
+            });
+            if (shown) { Node again = menu(); if (again != null && !Confirmed(again)) { CloseMenus(menu); return false; } }
+            return shown;
+        }
+        // No key reaches the page, so a menu is closed by what closes it without a change: Collapse on its
+        // button, else picking the row it already has (a pick closes every menu).
+        static void CloseMenus(Func<Node> menu)
+        {
+            if (Menus() == 0) return;
+            Node button = menu();
+            if (button != null) Collapse(button);
+            if (!Until(0.6, () => Menus() == 0))
+            {
+                Node current = Items().LastOrDefault(Checked);
+                if (current != null) { Press(current); Until(1, () => Menus() == 0); }
+            }
+        }
+
+        // ---- a chat mode's chats (ax-driver.swift's read-chat, chat-status, chat-new, chat-send, chat-stop) ----
+        static Dictionary<string, object> chatSpec { get { return Spec("chatRead"); } }
+        static Dictionary<string, object> sendSpec { get { return Spec("chatSend"); } }
+        static string SendKey(string key) { return Str(sendSpec, key); }
+        static List<Loc> SpecList(Dictionary<string, object> d, string key) { object v; return d.TryGetValue(key, out v) ? LocatorList(key, v) : new List<Loc>(); }
+        static List<Loc> ChatBox()
+        {
+            object v; chatSpec.TryGetValue("container", out v);
+            List<Loc> ways; if (v is string && locators.TryGetValue((string)v, out ways)) return ways;
+            return v == null ? new List<Loc>() : LocatorList("chatRead", v);
+        }
+        static Node ChatRegion() { foreach (Loc l in ChatBox()) { List<Node> hits = Matches(l, 0); if (hits.Count > 0) return hits[0]; } return null; }
+        static string PageURL() { ReadPage(); Node page = nodes.FirstOrDefault(n => n.ControlType == CT_Document && n.Value.StartsWith("http", StringComparison.Ordinal)); return page == null ? "" : page.Value; }
+        static string ChatID()
+        {
+            Match m = Regex.Match(PageURL(), @"/chat/([0-9a-fA-F-]{36})(?:[/?#]|$)");
+            return m.Success ? m.Groups[1].Value.ToLowerInvariant() : "";
+        }
+        static bool SameId(string a, string b) { Guid x, y; return Guid.TryParse(a, out x) && Guid.TryParse(b, out y) && x == y; }
+        static bool Fits(Node n, List<Loc> ways) { return ways.Any(l => Fits(n, l)); }
+        static string TextOf(Node n) { return n.ControlType == CT_Text ? n.Name : ""; }
+        // The messages on the page now: (messages, total, read); total and read only with "article".
+        static List<Dictionary<string, object>> ChatMessages(out int total, out int read)
+        {
+            Dictionary<string, string> speakers = StrMap(chatSpec, "speakers");
+            string article = Str(chatSpec, "article"); List<string> ignore = StrList(chatSpec, "ignore");
+            List<Loc> anyHeading = SpecList(chatSpec, "speakerHeading"), userMessage = SpecList(chatSpec, "userMessage"), notChat = SpecList(chatSpec, "skip"),
+                assistantIn = SpecList(chatSpec, "assistantIn"), anyMessage = SpecList(chatSpec, "message");
+            List<Dictionary<string, object>> messages = new List<Dictionary<string, object>>();
+            SortedDictionary<int, Dictionary<string, object>> numbered = new SortedDictionary<int, Dictionary<string, object>>();
+            StringBuilder text = new StringBuilder(); string speaker = ""; double lastBottom = -1; int number = 0, most = 0;
+            IUIAutomationElement firstArticle = null;
+            Action flush = () =>
+            {
+                string body = text.ToString().Trim();
+                if (speaker.Length > 0 && body.Length > 0) { Dictionary<string, object> m = new Dictionary<string, object> { { "role", speaker }, { "text", body } }; if (number > 0) numbered[number] = m; else messages.Add(m); }
+                text.Clear();
+            };
+            Action<string, Node> add = (piece, e) =>
+            {
+                if (lastBottom >= 0 && e.Bottom > e.Top && e.Top > lastBottom + 1 && !text.ToString().EndsWith("\n", StringComparison.Ordinal)) text.Append("\n\n");
+                text.Append(piece);
+                if (e.Bottom > e.Top) lastBottom = Math.Max(lastBottom, e.Bottom);
+            };
+            Action<Node> visit = null;
+            visit = e =>
+            {
+                string n = e.Name;
+                int k = 0, of = 0;
+                if (article.Length > 0 && RoleIs(e, "AXGroup") && n.StartsWith(article, StringComparison.Ordinal))
+                {
+                    string[] parts = n.Substring(article.Length).Split(new[] { " of " }, StringSplitOptions.None);
+                    if (parts.Length == 2) { int.TryParse(parts[0], out k); int.TryParse(parts[1], out of); }
+                }
+                if (k == 0 && Fits(e, anyMessage))
+                {
+                    List<int> found = Regex.Matches(n, @"\d+").Cast<Match>().Select(x => int.Parse(x.Value, CultureInfo.InvariantCulture)).ToList();
+                    if (found.Count == 2 && found.Min() >= 1) { k = found.Min(); of = found.Max(); }
+                }
+                if (k > 0 && of > 0) { flush(); speaker = ""; number = k; most = Math.Max(most, of); if (firstArticle == null) firstArticle = e.Element; }
+                int ct = e.ControlType;
+                if (ct == CT_Button || ct == 50021 /* ToolBar */ || ct == CT_CheckBox || ct == CT_ComboBox || ct == CT_Edit || RoleIs(e, "AXPopUpButton") || e.AriaRole == "time") return;
+                if (ignore.Count > 0 && new[] { n, e.Value }.Any(t => t.Length > 0 && ignore.Any(p => t.StartsWith(p, StringComparison.Ordinal)))) return;
+                if (Fits(e, notChat)) return;
+                if (e.AriaRole == "heading")
+                {
+                    KeyValuePair<string, string> who = speakers.FirstOrDefault(kv => n.StartsWith(kv.Key, StringComparison.Ordinal));
+                    if (who.Key != null) { flush(); speaker = who.Value; lastBottom = -1; foreach (int c in e.Kids) visit(nodes[c]); return; }
+                    if (Fits(e, anyHeading))
+                    {
+                        flush(); lastBottom = -1;
+                        if (assistantIn.Count > 0) speaker = e.Parent >= 0 && Fits(nodes[e.Parent], assistantIn) ? "assistant" : "user";
+                        else
+                        {
+                            Node after = null;
+                            if (e.Parent >= 0) { List<int> sib = nodes[e.Parent].Kids; int at = sib.IndexOf(e.Index); if (at >= 0 && at + 1 < sib.Count) after = nodes[sib[at + 1]]; }
+                            speaker = after != null && Fits(after, userMessage) ? "user" : "assistant";
+                        }
+                        for (int place = 0; place < e.Kids.Count; place++)
+                        {
+                            Node child = nodes[e.Kids[place]];
+                            if (place == 0 && child.ControlType == CT_Text && child.Name.Length > 0 && n.StartsWith(child.Name, StringComparison.Ordinal)) continue;
+                            visit(child);
+                        }
+                        return;
+                    }
+                    if (speaker.Length > 0 && n.Length > 0) { text.Append((text.Length == 0 ? "" : "\n\n") + "### " + n + "\n\n"); lastBottom = e.Bottom; return; }
+                }
+                // A table, read by its rows as a Markdown table.
+                if (ct == 50036 /* Table */ || ct == 50028 /* DataGrid */ || e.AriaRole == "table" || e.AriaRole == "grid")
+                {
+                    if (speaker.Length == 0) return;
+                    List<Node> rows = Within(e).Where(r => r.AriaRole == "row" || r.ControlType == 50029 /* DataItem */).ToList();
+                    Func<Node, string> cellText = cell => string.Concat(Within(cell).Where(x => x.ControlType == CT_Text).Select(x => x.Name)).Replace("|", "\\|").Replace("\n", " ");
+                    List<string> lines = rows.Select(r => "| " + string.Join(" | ", r.Kids.Select(c => cellText(nodes[c]))) + " |").ToList();
+                    if (lines.Count > 0)
+                    {
+                        int columns = Math.Max(1, rows[0].Kids.Count);
+                        string sep = "|" + string.Concat(Enumerable.Repeat(" --- |", columns));
+                        text.Append((text.Length == 0 || text.ToString().EndsWith("\n\n", StringComparison.Ordinal) ? "" : "\n\n") + string.Join("\n", new[] { lines[0], sep }.Concat(lines.Skip(1))) + "\n\n");
+                        lastBottom = e.Bottom;
+                    }
+                    return;
+                }
+                // Code: a block (its class names the language, or it spans lines) as a fenced block.
+                string lang = e.Classes.Where(c => c.StartsWith("language-", StringComparison.Ordinal)).Select(c => c.Substring(9)).FirstOrDefault() ?? "";
+                if ((e.AriaRole == "code" || e.Localized == "code" || lang.Length > 0) && speaker.Length > 0)
+                {
+                    string raw = string.Concat(Within(e).Where(x => x.ControlType == CT_Text).Select(x => x.Name));
+                    if (lang.Length > 0 || raw.Contains("\n"))
+                    {
+                        string sofar = text.ToString();
+                        if (lang.Length > 0 && sofar.ToLowerInvariant().EndsWith(lang.ToLowerInvariant(), StringComparison.Ordinal)) { string cut = sofar.Substring(0, sofar.Length - lang.Length); if (cut.Length == 0 || cut.EndsWith("\n", StringComparison.Ordinal)) sofar = cut; }
+                        sofar = sofar.TrimEnd('\n', ' ');
+                        string fence = raw.Contains("```") ? "~~~~" : "```";
+                        text.Clear(); text.Append(sofar + (sofar.Length == 0 ? "" : "\n\n") + fence + lang + "\n" + raw.TrimEnd('\n') + "\n" + fence + "\n\n");
+                        lastBottom = e.Bottom;
+                    }
+                    else if (raw.Length > 0) { string tick = raw.Contains("`") ? "``" : "`"; add(tick + (raw.Contains("`") ? " " + raw + " " : raw) + tick, e); }
+                    return;
+                }
+                if (ct == 50007 /* ListItem */ && speaker.Length > 0)
+                {
+                    string sofar = text.ToString();
+                    text.Append((sofar.EndsWith("\n", StringComparison.Ordinal) || sofar.Length == 0 ? "" : "\n") + "- "); lastBottom = -1;
+                    foreach (int c in e.Kids) { Node child = nodes[c]; if (child.ControlType == CT_Text && Regex.IsMatch(child.Name, @"^\s*([•◦▪·‣-]|\d+[.)])\s*$")) continue; visit(child); }
+                    return;
+                }
+                if (ct == CT_Image && speaker.Length > 0 && n.Length > 0) { string sofar = text.ToString(); text.Append((sofar.Length == 0 || sofar.EndsWith("\n", StringComparison.Ordinal) ? "" : "\n") + "[" + n + "]\n"); lastBottom = e.Bottom; return; }
+                if (ct == CT_Text && speaker.Length > 0) { if (n.Length > 0 && !speakers.Keys.Any(p => n.StartsWith(p, StringComparison.Ordinal))) add(n, e); return; }
+                foreach (int c in e.Kids) visit(nodes[c]);
+            };
+            Node area = ChatRegion();
+            if (area != null) { visit(area); flush(); }
+            // A long chat opens at its end with only the last messages drawn. No key reaches the page on
+            // Windows, so the first drawn message is scrolled into view, which draws the ones above it,
+            // until message 1 is read or nothing new comes.
+            int still = 0;
+            while (area != null && most > 0 && !numbered.ContainsKey(1) && still < 3 && numbered.Count < most)
+            {
+                int before = numbered.Count;
+                if (firstArticle != null) ScrollIntoView(firstArticle);
+                Wait(0.8);
+                firstArticle = null; speaker = ""; number = 0;
+                area = ChatRegion();
+                if (area != null) { visit(area); flush(); }
+                still = numbered.Count > before ? 0 : still + 1;
+            }
+            if (numbered.Count > 0) messages = numbered.Values.ToList();
+            total = most; read = numbered.Count;
+            return messages;
+        }
+        // Whether a locator's worded ways find anything (the page names it in the profile's words).
+        static bool Spoken(string key) { List<Loc> ways; return locators.TryGetValue(key, out ways) && ways.Any(l => l.Worded && Matches(l, 0).Count > 0); }
+        static List<Node> StopButtons()
+        {
+            if (SendKey("stop").Length == 0) return new List<Node>();
+            List<Node> named = FindAll(SendKey("stop"));
+            if (named.Count > 0) return named;
+            if (SendKey("stopSlot").Length == 0 || Spoken(SendKey("send")) || Spoken(SendKey("stop")) || ChatRegion() == null) return new List<Node>();
+            Node button = Find(SendKey("stopSlot"));
+            if (button == null || FindAll(SendKey("send")).Contains(button)) return new List<Node>();
+            return new List<Node> { button };
+        }
+        static bool Answering() { return StopButtons().Count > 0; }
+        static Dictionary<string, object> ChatAnswer(Dictionary<string, object> extra)
+        {
+            int total, read; List<Dictionary<string, object>> messages = ChatMessages(out total, out read);
+            Dictionary<string, object> answer = new Dictionary<string, object> { { "ok", true }, { "messages", messages }, { "running", Answering() }, { "title", Current() }, { "url", PageURL() } };
+            if (total > 0) { answer["total"] = total; answer["read"] = read; }
+            if (extra != null) foreach (KeyValuePair<string, object> kv in extra) answer[kv.Key] = kv.Value;
+            return answer;
+        }
+        // The reply is done once the page stops showing its stop button and its last message is the assistant's.
+        static void AwaitReply(double seconds)
+        {
+            DateTime end = DateTime.UtcNow.AddSeconds(seconds);
+            Wait(1.5);
+            while (DateTime.UtcNow < end)
+            {
+                if (!Answering() && ChatRegion() != null)
+                {
+                    int t, r; List<Dictionary<string, object>> m = ChatMessages(out t, out r);
+                    if (m.Count > 0 && (string)m[m.Count - 1]["role"] == "assistant") { Wait(0.6); if (!Answering()) return; }
+                }
+                Wait(1);
+            }
+        }
+        static string[] SendText(string text)
+        {
+            if (SendKey("composer").Length == 0 || SendKey("send").Length == 0) return new[] { "usage", appName + "的配置里没有 chatSend" };
+            if (!Fill(SendKey("composer"), text, SendKey("send"))) { Clear(SendKey("composer")); return new[] { "fill_failed", "没能把消息填进" + appName + "的输入框" }; }
+            Node send = Find(SendKey("send"));
+            if (send == null || !Press(send)) { Clear(SendKey("composer")); return new[] { "no_send", appName + "没有出现发送按钮" }; }
+            for (int i = 0; i < 40; i++) { Wait(0.25); Node box = Find(SendKey("composer")); if ((box != null && box.Value.Trim().Length == 0) || Answering()) return null; }
+            return new[] { "not_sent", "按了" + appName + "的发送，但消息还留在输入框里" };
+        }
+        static string[] OpenChatPage(string project)
+        {
+            Func<bool> ready = () => Find(SendKey("composer")) != null && ChatRegion() == null;
+            string mode = ShownSpace();
+            Func<string[]> moved = () => mode != null && ShownSpace() != mode ? new[] { "space_moved", appName + "离开了这个模式，没有新建聊天" } : null;
+            if (project.Length == 0)
+            {
+                Node start = Find(SendKey("newChat"));
+                if (start == null) return new[] { "no_new_page", appName + "的侧栏里没有找到新建聊天的按钮" };
+                Press(start);
+                for (int attempt = 0; attempt < 24; attempt++)
+                {
+                    Wait(0.25);
+                    string[] error = moved(); if (error != null) return error;
+                    if (attempt == 10 && !ready()) { Node again = Find(SendKey("newChat")); if (again != null) Press(again); }
+                    if (!ready()) continue;
+                    if (SendKey("inProject").Length > 0 && Find(SendKey("inProject")) != null) { Node none = Find(SendKey("noProject")); if (none != null) { Press(none); Wait(0.4); } continue; }
+                    if (SendKey("newShown").Length == 0 || Find(SendKey("newShown")) != null) return null;
+                }
+                return new[] { "no_new_page", "没能在" + appName + "里打开新聊天的页面" };
+            }
+            List<string> names = StrList(sendSpec, "project").Select(p => p.Replace("{project}", project)).ToList();
+            Func<Node> button = () => { ReadPage(); return names.Select(w => nodes.FirstOrDefault(n => RoleIs(n, "AXButton") && n.Name == w)).FirstOrDefault(n => n != null); };
+            Node first = button();
+            if (first == null) return new[] { "no_project", appName + "的侧栏里没有「" + project + "」这个项目，没能在里面新建聊天" };
+            Press(first);
+            object shownSpecRaw; sendSpec.TryGetValue("projectShown", out shownSpecRaw);
+            Func<bool> shown = () =>
+            {
+                Dictionary<string, object> spec = shownSpecRaw as Dictionary<string, object>;
+                if (spec == null) return false;
+                Dictionary<string, object> filled = spec.ToDictionary(kv => kv.Key, kv => kv.Value is string ? (object)((string)kv.Value).Replace("{project}", project) : kv.Value);
+                Loc l = Loc.From("projectShown", filled); ReadPage(); return nodes.Any(n => Fits(n, l));
+            };
+            for (int attempt = 0; attempt < 24; attempt++)
+            {
+                Wait(0.25);
+                string[] error = moved(); if (error != null) return error;
+                if (ready() && shown()) return null;
+                if (attempt == 10) { Node again = button(); if (again != null) Press(again); }
+            }
+            return new[] { "no_new_page", "没能在" + appName + "里打开「" + project + "」的新聊天页面" };
+        }
+        static void RunChat()
+        {
+            if (ChatBox().Count == 0) Fail("usage", appName + "的配置里没有 chatRead");
+            string previous = Current(), target = args.Count > 1 ? args[1] : "";
+            Action back = () => { if (previous.Length > 0 && previous != target) Show(previous, ""); };
+            double seconds = 60; if (args.Count > 2) double.TryParse(args[2], NumberStyles.Float, CultureInfo.InvariantCulture, out seconds);
+            switch (command)
+            {
+                case "chat-stop":
+                    {
+                        string id = args.Count > 2 ? args[2] : ""; Guid g;
+                        if (target.Length == 0 || !Guid.TryParse(id, out g)) Fail("usage", "缺少有效的会话 ID 或标题");
+                        Func<bool> onTarget = () => SameId(ChatID(), id);
+                        if (!onTarget() && !Show(target, "")) { back(); Fail("not_found", "没能在" + appName + "的侧栏里找到这个聊天"); }
+                        Until(4, () => onTarget() && ChatRegion() != null);
+                        if (!onTarget() || ChatRegion() == null) { back(); Fail("wrong_chat", "没能在" + appName + "里确认打开的是要停止的聊天"); }
+                        List<Node> buttons = StopButtons();
+                        if (buttons.Count == 0) { back(); Fail("not_running", "这个会话在" + appName + "里已经没有在回复"); }
+                        if (buttons.Count != 1) { back(); Fail("ambiguous_stop", "没能在" + appName + "里确认哪个按钮会停止这条回复"); }
+                        if (!Press(buttons[0])) { back(); Fail("not_stopped", "没能按下" + appName + "的停止按钮"); }
+                        for (int i = 0; i < 12; i++)
+                        {
+                            Wait(0.25);
+                            if (!onTarget() || ChatRegion() == null) { back(); Fail("wrong_chat", "没能在" + appName + "里确认这条回复已停止"); }
+                            if (!Answering()) { Dictionary<string, object> answer = ChatAnswer(new Dictionary<string, object> { { "interrupted", true } }); back(); Out(answer); }
+                        }
+                        back(); Fail("not_stopped", "按了停止，但" + appName + "还在回复");
+                        break;
+                    }
+                case "chat-new":
+                    {
+                        string text = ReadInput(), project = target == "-" ? "" : target;
+                        if (text.Length == 0) Fail("usage", "消息是空的");
+                        target = "";
+                        string[] error = OpenChatPage(project);
+                        if (error != null) { back(); Fail(error[0], error[1]); }
+                        error = SendText(text);
+                        if (error != null) { back(); Fail(error[0], error[1]); }
+                        Until(10, () => ChatRegion() != null);
+                        if (seconds > 0) AwaitReply(seconds); else Until(10, () => Current().Length > 0);
+                        target = Current();
+                        Dictionary<string, object> answer = seconds > 0 ? ChatAnswer(new Dictionary<string, object> { { "sent", true } }) : new Dictionary<string, object> { { "ok", true }, { "sent", true }, { "running", Answering() }, { "title", target }, { "url", PageURL() } };
+                        back(); Out(answer);
+                        break;
+                    }
+                case "chat-send":
+                    {
+                        string text = ReadInput();
+                        if (target.Length == 0 || text.Length == 0) Fail("usage", "缺少会话标题或消息");
+                        if (!Show(target, "")) { back(); Fail("not_found", "没能在" + appName + "的侧栏里找到这个聊天"); }
+                        Until(4, () => ChatRegion() != null);
+                        if (Answering()) { back(); Fail("busy", "这个聊天正在" + appName + "里回复，等它回复完再发"); }
+                        string[] error = SendText(text);
+                        if (error != null) { back(); Fail(error[0], error[1]); }
+                        if (seconds > 0) AwaitReply(seconds);
+                        Dictionary<string, object> answer = seconds > 0 ? ChatAnswer(new Dictionary<string, object> { { "sent", true } }) : new Dictionary<string, object> { { "ok", true }, { "sent", true }, { "running", Answering() }, { "title", target }, { "url", PageURL() } };
+                        back(); Out(answer);
+                        break;
+                    }
+                default:
+                    {
+                        if (target.Length == 0) Fail("usage", "缺少会话标题");
+                        bool onIt = args.Count > 2 && SameId(ChatID(), args[2]);
+                        if (!onIt && !Show(target, "")) { back(); Fail("not_found", "没能在" + appName + "的侧栏里找到这个聊天"); }
+                        Until(4, () => ChatRegion() != null);
+                        if (ChatRegion() == null) { back(); Fail("no_messages", appName + "里这个聊天没有显示出消息"); }
+                        Wait(0.6);
+                        Dictionary<string, object> answer = ChatAnswer(null); back(); Out(answer);
+                        break;
+                    }
+            }
+        }
+
+        // ---- a question card in the chat: its question, its options, Submit and Skip ----
+        static List<Node> QuestionCards()
+        {
+            string submit = Setting("questionSubmit");
+            ReadPage();
+            // On Windows every box reports the ARIA role "group" (on the Mac only the card's own does), and the
+            // options are buttons ("A <description>"), not checkboxes. So a card is the nearest box around a
+            // Submit button that holds options and is named (by its question); else the nearest with options.
+            List<Node> cards = new List<Node>();
+            foreach (Node button in nodes.Where(b => RoleIs(b, "AXButton") && b.Name == submit))
+            {
+                Node withOptions = null;
+                for (int up = button.Parent, i = 0; up >= 0 && i < 6; up = nodes[up].Parent, i++)
+                {
+                    Node box = nodes[up];
+                    if (box.ControlType == CT_Document || box.AriaRole == "article") break;
+                    if (!QuestionOptions(box).Any()) continue;
+                    if (withOptions == null) withOptions = box;
+                    if (box.Name.Length > 0) { withOptions = box; break; }
+                }
+                if (withOptions != null && !cards.Contains(withOptions)) cards.Add(withOptions);
+            }
+            return cards;
+        }
+        static IEnumerable<Node> QuestionOptions(Node card)
+        {
+            string submit = Setting("questionSubmit"), skip = Setting("questionSkip");
+            return Within(card).Where(n => n.ControlType == CT_CheckBox || n.ControlType == CT_RadioButton || (RoleIs(n, "AXButton") && n.Name.Length > 0 && n.Name != submit && n.Name != skip));
+        }
+        static string[] AnswerCard(string question, string option)
+        {
+            List<Node> cards = QuestionCards();
+            for (int i = 0; i < 32 && cards.Count == 0; i++) { Wait(0.25); cards = QuestionCards(); }
+            Node card = cards.FirstOrDefault(c => c.Name == question) ?? (cards.Count == 1 ? cards[0] : null);
+            if (card == null)
+            {
+                if (tracing) foreach (Node b in nodes.Where(x => RoleIs(x, "AXButton") && x.Name == Setting("questionSubmit")))
+                    for (int up = b.Parent, i = 0; up >= 0 && i < 6; up = nodes[up].Parent, i++)
+                        Trace("around Submit, " + i + " up: " + string.Join(", ", Within(nodes[up]).Where(n => n.Index != up).GroupBy(n => (ControlTypeNames.ContainsKey(n.ControlType) ? ControlTypeNames[n.ControlType] : n.ControlType.ToString(CultureInfo.InvariantCulture)) + "/" + n.AriaRole).Select(g => g.Key + "×" + g.Count())) + " | named: " + string.Join(" ; ", Within(nodes[up]).Where(n => n.Name.Length > 0 && n.ControlType != CT_Text && n.Index != up).Take(8).Select(n => n.Name.Length > 30 ? n.Name.Substring(0, 30) : n.Name)));
+                return new[] { "no_question", appName + "里没有在等回答的这个问题" };
+            }
+            int count = cards.Count; string cardName = card.Name;
+            Func<Node> currentCard = () => QuestionCards().FirstOrDefault(c => c.Name == cardName) ?? (QuestionCards().Count == 1 ? QuestionCards()[0] : null);
+            if (option != null)
+            {
+                Func<Node> choice = () => { Node c = currentCard(); return c == null ? null : QuestionOptions(c).FirstOrDefault(n => Named(n, option) || Label(n) == option || Label(n).StartsWith(option + " ", StringComparison.Ordinal)); };
+                Node wantedOption = choice();
+                if (wantedOption == null)
+                {
+                    Node c = currentCard();
+                    if (c != null) Trace("the card holds: " + string.Join(" | ", Within(c).Where(n => n.Name.Length > 0 && n.ControlType != CT_Text).Take(30).Select(n => (ControlTypeNames.ContainsKey(n.ControlType) ? ControlTypeNames[n.ControlType] : n.ControlType.ToString(CultureInfo.InvariantCulture)) + "/" + n.AriaRole + " '" + n.Name + "' " + n.AriaProps)));
+                    return new[] { "no_option", appName + "的这个问题里没有「" + option + "」这个选项" };
+                }
+                // Another option may be picked already (the first is, by default): nothing is submitted until this
+                // one is. The card takes a press only while its window is active (Activate): the foreground is held
+                // from just before the pick until the card has gone (about half a second, the window off screen).
+                // The Mac picks with Space after a press that only focused; no key is sent here. A press that
+                // showed nothing is tried again (never one on an option already picked: on a card that lets
+                // several be picked it would take it back).
+                Func<bool> took = () => { Node now = choice(); return now != null && Checked(now); };
+                if (!took()) { HoldForeground(true); Activate(); }
+                for (int press = 0; press < 3 && !took(); press++)
+                {
+                    Node now = choice();
+                    if (now == null) break;
+                    Toggle(now);
+                    if (Until(0.35, took)) break;
+                }
+                Trace("options: " + string.Join(" | ", (currentCard() == null ? new List<Node>() : QuestionOptions(currentCard()).ToList()).Select(n => n.Name + (Checked(n) ? " [picked]" : ""))));
+                Node picked = choice();
+                if (picked == null || !Checked(picked)) { HoldForeground(false); return new[] { "not_picked", "没能在" + appName + "的问题卡片上选中「" + option + "」，没有提交" }; }
+            }
+            string doneName = Setting(option == null ? "questionSkip" : "questionSubmit");
+            Func<Node> done = () => { Node box = currentCard(); return box == null ? null : Within(box).FirstOrDefault(n => RoleIs(n, "AXButton") && n.Name == doneName); };
+            if (done() == null) return new[] { "no_submit", appName + "的问题卡片上没有找到提交按钮" };
+            // Submit (or Skip) the same way, still held. A press that was taken takes the card away: nothing is
+            // left to press twice.
+            HoldForeground(true); Activate();
+            try
+            {
+                for (int press = 0; press < 3; press++)
+                {
+                    Node button = done();
+                    if (button == null) break;
+                    Press(button);
+                    if (Until(press == 0 ? 0.35 : press == 1 ? 1.0 : 4, () => QuestionCards().Count < count)) return null;
+                }
+            }
+            finally { HoldForeground(false); }
+            return new[] { "not_taken", appName + "没有收下这个回答" };
+        }
+
+        // ---- open-file and show-session: the person asked to go there, so the app comes to the front ----
+        [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
+        static void BringForward()
+        {
+            if (Native.IsIconic(window)) ShowWindow(window, 9);   // SW_RESTORE
+            GiveBack(window);
+            Stale();
+        }
+        static List<KeyValuePair<Node, int>> FileLinks(string path, string absolute, string text)
+        {
+            string bare = Regex.Replace(path, @":\d+(:\d+)?$", "");
+            string baseName = Path.GetFileName(bare.Replace('/', '\\'));
+            List<KeyValuePair<Node, int>> hits = new List<KeyValuePair<Node, int>>();
+            ReadPage();
+            foreach (Node e in nodes.Where(n => n.ControlType == CT_Hyperlink || RoleIs(n, "AXButton")))
+            {
+                string url = Uri.UnescapeDataString(e.Value ?? "").Replace('\\', '/'), own = Label(e).Trim();
+                string abs = absolute.Replace('\\', '/'), bareSlash = bare.Replace('\\', '/');
+                int score = 0;
+                if (url.Length > 0 && ((abs.Length > 0 && url.EndsWith(abs, StringComparison.OrdinalIgnoreCase)) || url.EndsWith("/" + bareSlash, StringComparison.OrdinalIgnoreCase) || url == bareSlash)) score = 3;
+                else if (text.Length > 0 && own == text) score = 2;
+                else if (baseName.Length > 0 && (own == baseName || own == path || own == bare)) score = 1;
+                if (score > 0) hits.Add(new KeyValuePair<Node, int>(e, score));
+            }
+            return hits;
+        }
+
+        // ---- a new chat's page: what it asks for before the first message (ax-driver.swift's pageControls) ----
+        class PageControl { public Node Element; public string Kind, Label, Value, Title; }
+        class PageChoice { public Node Element; public string Label, Section; public bool Selected; }
+        static Func<string[]> newPageWatch = () => null;
+        static Func<bool> newPageInUse = () => false;
+        static Func<Dictionary<string, object>> newPageShown = () => new Dictionary<string, object>();
+        static int DocOf(Node n) { for (int i = n.Index; i >= 0; i = nodes[i].Parent) if (nodes[i].ControlType == CT_Document) return i; return -1; }
+        static string LabelPart(string text, out string value)
+        {
+            value = "";
+            int at = -1; foreach (string colon in new[] { ": ", "：" }) { int i = text.IndexOf(colon, StringComparison.Ordinal); if (i >= 0 && (at < 0 || i < at)) at = i; }
+            if (at < 0) return null;
+            value = text.Substring(at + (text[at] == '：' ? 1 : 2)).Trim();
+            return text.Substring(0, at);
+        }
+        static List<PageControl> PageControls()
+        {
+            ReadPage();
+            string heading = Setting("newPageHeading"); List<string> skip = Settings("newPageSkip"), skipToggles = Settings("newPageSkipToggles");
+            Node togglesAfter = Find(Setting("newPageTogglesAfter")), startAt = Find(Setting("newPageStart")), menusEnd = Find(Setting("newPageMenusBefore"));
+            Node toggleBox = Find(Setting("newPageSkipTogglesInside"));
+            HashSet<Node> composerToggles = toggleBox == null ? new HashSet<Node>() : new HashSet<Node>(Within(toggleBox).Where(n => n.ControlType == CT_CheckBox));
+            bool menusOver = false, started = false, afterPrompt = !locators.ContainsKey(Setting("newPageTogglesAfter"));
+            int page = -1;
+            List<PageControl> found = new List<PageControl>();
+            foreach (Node e in nodes)
+            {
+                if (!started && (startAt != null ? e == startAt : e.AriaRole == "heading" && Label(e).StartsWith(heading, StringComparison.Ordinal))) { started = true; page = DocOf(e); }
+                if (!started || DocOf(e) != page) continue;
+                if (togglesAfter != null && e == togglesAfter) afterPrompt = true;
+                if (menusEnd != null && e == menusEnd) menusOver = true;
+                string value = ""; string key = RoleIs(e, "AXPopUpButton") ? LabelPart(e.Name, out value) : null;
+                if (key != null) { if (!menusOver && !skip.Contains(key)) found.Add(new PageControl { Element = e, Kind = "menu", Label = key, Value = value, Title = e.Name }); }
+                else if (e.ControlType == CT_CheckBox && afterPrompt && !skipToggles.Any(s => e.Name.StartsWith(s, StringComparison.Ordinal)) && !composerToggles.Contains(e))
+                    found.Add(new PageControl { Element = e, Kind = "toggle", Label = e.Name, Value = Checked(e) ? "on" : "off", Title = e.Name });
+            }
+            return found;
+        }
+        static PageControl PageControlNamed(string label) { return PageControls().FirstOrDefault(c => c.Label == label); }
+        static List<PageChoice> PageChoices(PageControl control)
+        {
+            ReadPage();
+            Node box = nodes.FirstOrDefault(n => RoleIs(n, "AXGroup") && n.Name == control.Title) ?? nodes.FirstOrDefault(n => (n.ControlType == CT_Menu || n.AriaRole == "menu") && Within(n).Any(x => RoleIs(x, "AXMenuItem")));
+            List<PageChoice> list = new List<PageChoice>();
+            if (box == null) return list;
+            string header = "";
+            Action<Node, string> collect = null;
+            collect = (e, section) =>
+            {
+                foreach (int c in e.Kids)
+                {
+                    Node child = nodes[c];
+                    if (RoleIs(child, "AXMenuItem"))
+                    {
+                        if (!HasCheckState(child) || !child.Enabled) continue;
+                        string full = child.Name; int cut = full.IndexOf(" , ", StringComparison.Ordinal);
+                        list.Add(new PageChoice { Element = child, Label = (cut >= 0 ? full.Substring(0, cut) : full).Trim(), Section = section.Length == 0 ? header : section, Selected = Checked(child) });
+                    }
+                    else if (RoleIs(child, "AXGroup") && child.Name.Length > 0 && child.Name != control.Title)
+                    {
+                        if (Within(child).Any(x => RoleIs(x, "AXMenuItem"))) collect(child, child.Name); else header = child.Name;
+                    }
+                    else collect(child, section);
+                }
+            };
+            collect(box, "");
+            return list;
+        }
+        static Dictionary<string, object> Describe(PageControl control, List<PageChoice> options)
+        {
+            Dictionary<string, object> d = new Dictionary<string, object> { { "kind", control.Kind }, { "label", control.Label }, { "value", control.Value } };
+            if (options != null) d["options"] = options.Select(o => (object)new Dictionary<string, object> { { "label", o.Label }, { "section", o.Section }, { "selected", o.Selected } }).ToList();
+            return d;
+        }
+        static List<object> ListPageControls(Func<string, bool> read)
+        {
+            List<object> list = new List<object>();
+            foreach (PageControl item in PageControls())
+            {
+                if (item.Kind != "menu" || read == null || !read(item.Label)) { list.Add(Describe(item, null)); continue; }
+                string label = item.Label;
+                Func<Node> button = () => { PageControl now = PageControlNamed(label); return now == null ? null : now.Element; };
+                List<PageChoice> found = new List<PageChoice>();
+                for (int attempt = 0; attempt < 2 && found.Count == 0; attempt++)
+                {
+                    if (attempt > 0) { CloseMenus(button); Wait(0.4); }
+                    if (!OpenMenu(button)) continue;
+                    PageControl now = PageControlNamed(label);
+                    found = now == null ? new List<PageChoice>() : PageChoices(now);
+                }
+                CloseMenus(button); HoldForeground(false);
+                list.Add(Describe(PageControlNamed(label) ?? item, found));
+            }
+            return list;
+        }
+        // A folder is listed by its name and shown on its button as a path.
+        static bool IsPath(string v) { return Regex.IsMatch(v, @"^([A-Za-z]:[\\/]|\\\\|/|~[\\/]|~$)"); }
+        static string StandardPath(string v)
+        {
+            string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            if (v.StartsWith("~", StringComparison.Ordinal)) v = home + v.Substring(1);
+            try { return Path.GetFullPath(v).TrimEnd('\\', '/'); } catch { return v; }
+        }
+        static bool Shows(string value, string option) { return value == option || (IsPath(option) && IsPath(value) && string.Equals(StandardPath(value), StandardPath(option), StringComparison.OrdinalIgnoreCase)); }
+        static bool Lists(string label, string option) { return label == option || (IsPath(option) && string.Equals(label, Path.GetFileName(StandardPath(option)), StringComparison.OrdinalIgnoreCase)); }
+        static string[] PickOnPage(string label, string option)
+        {
+            PageControl item = PageControlNamed(label);
+            if (item == null) return new[] { "no_control", appName + "的新建会话页上现在没有「" + label + "」这一项" };
+            if (item.Kind == "toggle")
+            {
+                if (option != "on" && option != "off") return new[] { "usage", "开关只能选 on 或 off" };
+                if (item.Value != option) { Toggle(item.Element); Until(1.2, () => { PageControl now = PageControlNamed(label); return now != null && now.Value == option; }); }
+                PageControl after = PageControlNamed(label);
+                return after != null && after.Value == option ? null : new[] { "not_set", "在 " + appName + "里按了「" + label + "」，但它没有变" };
+            }
+            if (Shows(item.Value, option)) return null;
+            Func<Node> button = () => { PageControl now = PageControlNamed(label); return now == null ? null : now.Element; };
+            if (!OpenMenu(button)) { HoldForeground(false); return new[] { "no_menu", "没能打开 " + appName + "新建会话页上的「" + label + "」菜单" }; }
+            PageControl open = PageControlNamed(label);
+            List<PageChoice> found = open == null ? new List<PageChoice>() : PageChoices(open);
+            string shownName = IsPath(option) ? Path.GetFileName(StandardPath(option)) : option;
+            PageChoice choice = found.FirstOrDefault(c => Lists(c.Label, option));
+            if (choice == null) { CloseMenus(button); HoldForeground(false); return new[] { "unavailable", appName + "的「" + label + "」菜单里没有「" + shownName + "」" }; }
+            if (choice.Selected) { CloseMenus(button); HoldForeground(false); return null; }
+            Press(choice.Element);
+            string[] stopped = null;
+            bool took = Until(3.2, () =>
+            {
+                string[] error = newPageWatch(); if (error != null) { stopped = error; return true; }
+                PageControl now = PageControlNamed(label);
+                return now == null || now.Value != item.Value;
+            });
+            CloseMenus(button); HoldForeground(false);
+            if (stopped != null) return stopped;
+            return took ? null : new[] { "not_set", "在 " + appName + "里选了「" + shownName + "」，但「" + label + "」没有变" };
+        }
+        // new-controls / new-pick / new-leave, for a flow that can open its desktop's new-chat page.
+        static void NewPageCommands(Func<string[]> open)
+        {
+            if (command == "new-leave")
+            {
+                bool onPage = Current().Length == 0;
+                if (onPage && newPageInUse()) Out(new Dictionary<string, object> { { "ok", true }, { "left", false }, { "inUse", true } });
+                if (onPage && parkedPrevious.Length > 0) Show(parkedPrevious, "");
+                Out(new Dictionary<string, object> { { "ok", true }, { "left", onPage } });
+            }
+            string before = Current(), previous = before.Length == 0 ? parkedPrevious : before;
+            Action goBack = () => { if (!staying && previous.Length > 0) Show(previous, ""); };
+            string[] failed = open();
+            if (failed != null) { if (previous.Length > 0) Show(previous, ""); Fail(failed[0], failed[1]); }
+            // A page just opened fills in for a moment: read once its controls stop changing.
+            if (before.Length > 0)
+            {
+                string last = ""; DateTime since = DateTime.UtcNow;
+                Until(2.5, () => { string now = string.Join(" | ", PageControls().Select(c => c.Label + "=" + c.Value)); if (now != last) { last = now; since = DateTime.UtcNow; return false; } return (DateTime.UtcNow - since).TotalSeconds >= 0.4; });
+            }
+            if (command == "new-pick")
+            {
+                List<string> pairs = args.Skip(1).ToList();
+                if (pairs.Count < 2 || pairs.Count % 2 != 0) { if (previous.Length > 0) Show(previous, ""); Fail("usage", "缺少要选的项和选项"); }
+                List<string> picked = new List<string>(); bool moved = false;
+                Action<string[]> answer = error =>
+                {
+                    if (moved)
+                    {
+                        Func<string> words = () => string.Join(" | ", newPageShown().Select(kv => kv.Key + "=" + kv.Value).OrderBy(s => s, StringComparer.Ordinal));
+                        string last = words(); DateTime since = DateTime.UtcNow;
+                        Until(1.5, () => { string now = words(); if (now != last) { last = now; since = DateTime.UtcNow; return false; } return (DateTime.UtcNow - since).TotalSeconds >= 0.3; });
+                    }
+                    List<object> shown = ListPageControls(null); Dictionary<string, object> menus = newPageShown(); goBack();
+                    Dictionary<string, object> o = new Dictionary<string, object> { { "ok", error == null }, { "controls", shown }, { "picked", picked }, { "shown", menus }, { "previous", previous }, { "stayed", staying } };
+                    if (error != null) { o["code"] = error[0]; o["error"] = error[1]; }
+                    Out(o);
+                };
+                for (int i = 0; i + 1 < pairs.Count; i += 2)
+                {
+                    PageControl was = PageControlNamed(pairs[i]);
+                    string[] error = PickOnPage(pairs[i], pairs[i + 1]);
+                    if (error != null) answer(error);
+                    PageControl now = PageControlNamed(pairs[i]);
+                    if (was != null && was.Kind == "menu" && (now == null || now.Value != was.Value)) moved = true;
+                    picked.Add(pairs[i]);
+                }
+                answer(null);
+            }
+            List<string> named = args.Skip(1).ToList();
+            List<object> list = ListPageControls(label => named.Contains(label) || named.Contains("*"));
+            Dictionary<string, object> shownMenus = newPageShown();
+            goBack();
+            Out(new Dictionary<string, object> { { "ok", true }, { "controls", list }, { "shown", shownMenus }, { "previous", previous }, { "stayed", staying } });
+        }
+
+        // ---- the shared commands, for an engine that has a flow ----
+        // Each acting command parks the window first (chat-status only looks; open-file and show-session
+        // bring the app forward, which the person asked for), waits for the page, and acts in the mode
+        // the command is for.
+        static readonly HashSet<string> sharedCommands = new HashSet<string> { "read-chat", "chat-status", "chat-new", "chat-send", "chat-stop", "open-file", "show-session" };
+        // The opening every acting command shares.
+        static void Begin(bool park)
+        {
+            if (park) Park();
+            if (!WaitReady(3.0)) FailPageEmpty();
+            PrepareSpace();
+        }
+        static void RunShared()
+        {
+            if (command == "chat-status")
+            {
+                WaitReady(1.0);
+                if (args.Count < 2 || args[1].Length == 0) Fail("usage", "缺少有效的会话 ID");
+                bool shownChat = SameId(ChatID(), args[1]) && ChatRegion() != null;
+                Out(new Dictionary<string, object> { { "ok", true }, { "shown", shownChat }, { "running", shownChat && Answering() }, { "front", Root(Win.GetForegroundWindow()) == window && !Native.IsIconic(window) } });
+            }
+            if (command == "open-file" || command == "show-session")
+            {
+                BringForward();
+                Begin(false);
+                if (args.Count < 2 || args[1].Length == 0) Fail("usage", "缺少会话标题");
+                string localId = args.Count > 2 && args[2] != "-" ? args[2] : "";
+                if (!Show(args[1], localId)) Fail("not_found", "没能在" + appName + "里打开这个会话");
+                if (command == "show-session") Out(new Dictionary<string, object> { { "ok", true } });
+                if (args.Count < 5) Fail("usage", "缺少会话标题或文件");
+                string label = args.Count > 5 ? args[5] : "";
+                List<KeyValuePair<Node, int>> hits = FileLinks(args[3], args[4], label);
+                for (int i = 0; i < 12 && hits.Count == 0; i++) { Wait(0.25); hits = FileLinks(args[3], args[4], label); }
+                int best = hits.Count == 0 ? 0 : hits.Max(h => h.Value);
+                Node link = hits.Where(h => h.Value == best).Select(h => h.Key).LastOrDefault();
+                if (link != null) { Press(link); Wait(0.3); }
+                BringForward();
+                Out(new Dictionary<string, object> { { "ok", true }, { "pressed", link != null } });
+            }
+            Begin(true);
+            RunChat();
+        }
+
+        // ---- an engine's flow ----
+        // <engine>-desktop.cs, compiled with this file, names the commands it ports (DeclareFlow adds
+        // them to `flowCommands`) and runs them (RunFlow). Without one, every acting command answers
+        // `not_ported`.
+        static readonly HashSet<string> flowCommands = new HashSet<string>();
+        static partial void DeclareFlow();
+        static partial void RunFlow();
+        static string ReadInput() { using (StreamReader reader = new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false))) return reader.ReadToEnd(); }
+
         // ---- the commands ----
         static void Run()
         {
@@ -662,28 +2013,24 @@ namespace Frontdesk.Driver
             // Windows has no accessibility permission to ask for. What it has is integrity levels (UIPI):
             // a process may read a window of a higher level's process but not act on it.
             bool trusted = app < 0 || self >= app;
-            if (command == "check") Out(new Dictionary<string, object> { { "ok", true }, { "trusted", trusted }, { "running", window != IntPtr.Zero }, { "integrity", self }, { "appIntegrity", app } });
+            DeclareFlow();
+            if (command == "check") Out(new Dictionary<string, object> { { "ok", true }, { "trusted", trusted }, { "running", window != IntPtr.Zero }, { "integrity", self }, { "appIntegrity", app }, { "ported", flowCommands.Count == 0 ? new List<string>() : flowCommands.Concat(sharedCommands).ToList() } });
             if (Setting("exe").Length == 0) Fail("usage", "缺少桌面版在 Windows 上的配置（AX_PROFILE 的 windows.exe）");
             if (window == IntPtr.Zero) Fail("not_running", appName + "没有在运行");
             if (!trusted) Fail("not_trusted", appName + "以更高的权限运行（例如以管理员身份），工作台读得到它的界面但不能操作：请用相同的权限运行两者");
             try { uia = (IUIAutomation)Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("e22ad333-b25f-460c-83d0-0581107395c9"), true)); }
             catch { uia = (IUIAutomation)Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("ff48dba4-60ef-4201-aa87-54103eef594e"), true)); }
 
-            // Chromium builds its page's tree once a UIA client asks, starting from a shell of a dozen
-            // nodes; until it has, every control would read as missing. So wait for one of the profile's
-            // "refreshAnchors" (up to three seconds; warm only looks), as ax-driver.swift does.
-            List<string> anchors = Settings("refreshAnchors");
-            double patience = command == "warm" ? 0 : 3.0;
-            bool ready;
-            while (true)
+            // A command the engine's flow ports acts on the page: the flow parks the window first and
+            // waits for the page itself (RunFlow).
+            if (flowCommands.Count > 0 && sharedCommands.Contains(command)) RunShared();
+            if (flowCommands.Contains(command))
             {
-                Stale(); ReadPage();
-                ready = anchors.Count == 0 ? nodes.Count >= 40 : anchors.Any(a => FindAll(a).Count > 0);
-                if (ready || clock.Elapsed.TotalSeconds >= patience) break;
-                Thread.Sleep(150);
+                RunFlow();
+                Fail("not_ported", "Windows 上的桌面代发还在移植中，" + appName + "暂时不能通过窗口操作「" + command + "」");
             }
-            bool pageEmpty = !ready && nodes.Count < 40;
-            Trace("page " + (ready ? "ready" : pageEmpty ? "empty" : "not ready") + " (" + nodes.Count + " elements)");
+            // warm only looks; the others wait up to three seconds for the page.
+            bool ready = WaitReady(command == "warm" ? 0 : 3.0);
 
             if (command == "warm")
             {
@@ -721,9 +2068,7 @@ namespace Frontdesk.Driver
                 }
                 Out(new Dictionary<string, object> { { "ok", true }, { "current", Current() }, { "controls", report } });
             }
-            if (pageEmpty) Fail("page_empty", OnScreen()
-                ? appName + "的页面没有接进 UI Automation，工作台读不到它的界面"
-                : appName + "的窗口不在屏幕上（最小化或在另一个桌面），页面没有接进 UI Automation：把窗口还原后再试");
+            if (pageEmpty) FailPageEmpty();
             Fail("not_ported", "Windows 上的桌面代发还在移植中，" + appName + "暂时不能通过窗口操作「" + command + "」");
         }
     }

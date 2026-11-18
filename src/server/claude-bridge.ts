@@ -683,7 +683,7 @@ class ClaudeBridge {
   // ---------- Claude Code CLI: reads the model list and usage only ----------
   spawnCli(args: string[], cwd?: string): ChildProcessByStdio<Writable, Readable, Readable> {
     if (!this.bin) throw new Error(NO_CLI);
-    return spawn(this.bin, ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', ...args], { cwd: cwd && fs.existsSync(cwd) ? cwd : this.home, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: 'sdk-cli' } });
+    return spawn(this.bin, ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', ...args], { cwd: cwd && fs.existsSync(cwd) ? cwd : this.home, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: 'sdk-cli' }, windowsHide: true });
   }
   // Control requests that send no prompt and keep no session (list_models, get_usage).
   async control(subtypes: string[], timeoutMs = 15000): Promise<Record<string, unknown>> {
@@ -1023,6 +1023,8 @@ class ClaudeBridge {
     timer.unref?.();
     emitter.on('interrupt', () => { run.finished = true; clearInterval(timer); if (this.runs.get(id) === run) this.runs.delete(id); });
   }
+  // How long a steer waits for the record to show the desktop took it (a moment only, when the helper saw it queued).
+  steerConfirmMs = 12000;
   // Adds a message to the turn the desktop is running: typed into its composer and sent there,
   // the desktop queues it and puts it in at the next step (or at once with Send now).
   async steer(id: string, input: Partial<SendInput> = {}): Promise<Record<string, never>> {
@@ -1038,8 +1040,10 @@ class ClaudeBridge {
     const drop = () => { const index = run?.steers?.indexOf(message) ?? -1; if (index >= 0) run?.steers?.splice(index, 1); };
     if (!result.ok) { drop(); throw Object.assign(new Error(result.error || '没能由 Claude 桌面版插话'), { status: 409 }); }
     // Confirmed once the desktop records it: queued (enqueue) or already put in (a prompt).
-    const seen = await this.waitForRecord(route.file, offset, record => (get(record, 'type') === 'queue-operation' && get(record, 'operation') === 'enqueue') || (isHumanPrompt(record) && promptStarts(message, typedText(get(record, 'message', 'content')), 200)), 12000);
-    if (!seen) { drop(); throw Object.assign(new Error('Claude 桌面版没有收到这条插话'), { status: 409 }); }
+    const seen = await this.waitForRecord(route.file, offset, record => (get(record, 'type') === 'queue-operation' && get(record, 'operation') === 'enqueue') || (isHumanPrompt(record) && promptStarts(message, typedText(get(record, 'message', 'content')), 200)), result['queued'] === true ? Math.min(1500, this.steerConfirmMs) : this.steerConfirmMs);
+    // Still in the desktop's own queue (the helper saw its "Send now"): the desktop has it, and puts it in
+    // at the turn's next step; the run's follow takes its prompt as part of this turn then.
+    if (!seen && result['queued'] !== true) { drop(); throw Object.assign(new Error('Claude 桌面版没有收到这条插话'), { status: 409 }); }
     return {};
   }
   async sendNow(id: string): Promise<{ status: string }> {

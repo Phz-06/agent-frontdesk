@@ -83,14 +83,15 @@ function cscPath(windir = process.env['WINDIR'] || 'C:\\Windows'): string | null
 // Windows has no accessibility permission; what can stop the helper is a desktop app that runs at a
 // higher integrity level (as administrator) than the console: UIPI lets it read the window, not act on it.
 const WINDOWS_NOT_TRUSTED = '桌面版以更高的权限运行（例如以管理员身份），工作台能读到它的界面但不能操作：请用相同的权限运行两者';
-// Until the Windows flows land (probes/windows/PLAN.md, development step 3), nothing is pressed there.
+// An engine with no Windows flow yet (<engine>-desktop.cs) presses nothing there. One that has one
+// says which commands it ports (`check` → `ported`); the others answer `not_ported` themselves.
 const WINDOWS_NOT_PORTED = 'Windows 上的桌面代发还在移植中，暂时不能通过窗口操作发送';
 // One wording for every engine (the page translates it by this exact text).
 const NOT_TRUSTED = '桌面代发需要辅助功能权限：在「系统设置 → 隐私与安全性 → 辅助功能」里允许运行工作台服务的程序（例如终端），然后重启工作台';
 
 function run(file: string, args: string[], { input, timeout = 30000, env }: RunOptions = {}): Promise<HelperResult> {
   return new Promise(resolve => {
-    const child = execFile(file, args, { timeout, maxBuffer: 1 << 20, env: { ...process.env, ...env } }, (err, stdout, stderr) => {
+    const child = execFile(file, args, { timeout, maxBuffer: 1 << 20, env: { ...process.env, ...env }, windowsHide: true }, (err, stdout, stderr) => {
       if (TRACE && stderr) process.stderr.write(stderr);
       const crashed = (): HelperResult => ({ ok: false, code: 'crashed', error: err?.killed ? '桌面版没有及时响应' : '桌面代发程序没有正常返回' });
       let result: HelperResult;
@@ -191,8 +192,8 @@ class DesktopAutomation {
       state = !result.ok ? { available: false, ...(result.error !== undefined ? { reason: result.error } : {}) }
         : !result.trusted ? { available: false, reason: windows ? WINDOWS_NOT_TRUSTED : NOT_TRUSTED, code: 'not_trusted' }
         : !result.running ? { available: false, reason: `${this.label}没有在运行`, code: 'not_running' }
-        // Windows: the helper reads the page (warm, probe), but no flow presses anything there yet.
-        : windows ? { available: false, reason: WINDOWS_NOT_PORTED, code: 'not_ported' }
+        // Windows: available once the engine's flow ports sending.
+        : windows && !list(result['ported']).includes('send') ? { available: false, reason: WINDOWS_NOT_PORTED, code: 'not_ported' }
         : { available: true };
     }
     this.state = state; this.checkedAt = Date.now();

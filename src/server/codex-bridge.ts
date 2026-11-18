@@ -140,7 +140,7 @@ class CodexBridge extends EventEmitter {
     const bin = this.codexBin;
     if (!bin) throw new Error('未发现 Codex，请设置 CODEX_BIN');
     this.starting = (async () => {
-      const proc = spawn(bin, ['app-server', '--stdio']);
+      const proc = spawn(bin, ['app-server', '--stdio'], { windowsHide: true });
       this.proc = proc;
       proc.on('error', err => this.failPending(err));
       proc.on('exit', code => {

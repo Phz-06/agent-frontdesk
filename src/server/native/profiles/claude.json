@@ -3,11 +3,22 @@
   "bundleId": "com.anthropic.claudefordesktop",
   "windows": {
     "exe": "claude.exe",
+    "windowStateFile": "%LOCALAPPDATA%\\Claude-Data\\claude_*\\window-state.json",
     "locators": {
       "chromeBar": {
         "role": "AXGroup",
         "class": "dframe-chrome-bar"
       },
+      "transcript": [
+        {
+          "role": "AXGroup",
+          "aria": "feed"
+        },
+        {
+          "role": "AXGroup",
+          "name": "Chat messages"
+        }
+      ],
       "spaceSwitch": [
         {
           "role": "AXRadioGroup",

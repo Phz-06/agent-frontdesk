@@ -553,7 +553,7 @@ class AntigravityBridge extends EventEmitter {
       const bin = this.binPath;
       // Callers check sendBlockedReason() first; without agentapi there is nothing to run.
       if (!bin) { reject(new Error(NO_AGENTAPI)); return; }
-      execFile(bin, [...(this.config.agentapiArgs || []), ...args], { env: { ...this.env, ...this.lsEnv() }, timeout: 60000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+      execFile(bin, [...(this.config.agentapiArgs || []), ...args], { env: { ...this.env, ...this.lsEnv() }, timeout: 60000, maxBuffer: 4 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
         let data: unknown = null;
         try { data = parseJson(String(stdout).trim()); } catch {}
         const failed = get(data, 'error');
