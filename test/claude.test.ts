@@ -562,6 +562,24 @@ test('Claude: background commands, task notices, stops and compaction show as th
   assert.equal(at(open.steps, 0).status, 'running');
 });
 
+test('Claude: a message the person sent into the running turn shows where it joined, as their bubble; a subagent hand-back does not', () => {
+  const queued = (uuid: string, prompt: string, origin?: object, humanTurn?: boolean) => ({ type: 'attachment', uuid, attachment: { type: 'queued_command', prompt, commandMode: 'prompt', ...(origin ? { origin } : {}), ...(humanTurn ? { humanTurn } : {}) } });
+  const records = [
+    human('u1', 'start'),
+    say('a1', 'working'),
+    queued('q1', '然后快进重建提交重启', { kind: 'human' }, true),
+    queued('q2', '<agent-message from="abc">\n[Subagent hand-back] report\n</agent-message>', { kind: 'peer', from: 'abc' }),
+    queued('q3', '<system-reminder>ignored</system-reminder>\n插入：老版本没有 origin', undefined, true),
+    say('a2', 'done'),
+  ];
+  const turns = buildTurns(records, 's');
+  assert.equal(turns.length, 1, 'it continues the turn, it does not start one');
+  const turn = at(turns, 0);
+  assert.deepEqual(turn.steps.filter(step => step.type === 'user_message').map(step => [step.id, step.title]), [['q1', '然后快进重建提交重启'], ['q3', '插入：老版本没有 origin']]);
+  const order = turn.timeline.map(entry => entry.id);
+  assert.ok(order.indexOf('a1') < order.indexOf('q1') && order.indexOf('q1') < order.indexOf('a2'), 'between what Claude said before and after it');
+});
+
 test('Claude: a message sent during a desktop turn goes through the desktop queue and continues the turn', async t => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-home-'));
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));

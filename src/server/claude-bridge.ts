@@ -157,6 +157,11 @@ function isHumanPrompt(record: unknown): boolean {
   if (typed) return true;
   return hasImage && !INJECTED.test(textOf(content).replace(REMINDER, '').trim());
 }
+// A queued message the person sent (not a subagent's hand-back or another program's notice).
+function isPersonQueued(attachment: unknown): boolean {
+  const origin = get(attachment, 'origin', 'kind');
+  return origin === 'human' || (origin === undefined && get(attachment, 'humanTurn') === true);
+}
 // Messages the desktop is holding to put into the running turn: its queue-operation records
 // (enqueue, dequeue first-in-first-out, remove). Background-task notices queue there too.
 function desktopQueue(records: readonly unknown[]): DesktopQueueItem[] {
@@ -268,6 +273,15 @@ function buildTurns(records: readonly unknown[], sessionId: string): UnifiedTurn
       // Delivered as its own message it wakes Claude for a reply of its own, which the desktop
       // shows without a row; queued into a running turn it is listed with that turn's tools.
       if (type === 'attachment') add(new UnifiedStep({ id: uuid || randomUUID(), type: 'background_task', title: field('summary') || 'Background task finished', status }));
+      continue;
+    }
+    // A message the person sent while the turn ran, taken into it (the desktop's queue says
+    // `absorbed_mid_turn`): the record has it only as this attachment, and the desktop shows it
+    // where it joined, as their bubble. A subagent's hand-back comes the same way (`origin.kind`
+    // "peer") and is not the person's.
+    if (type === 'attachment' && get(record, 'attachment', 'type') === 'queued_command' && isPersonQueued(get(record, 'attachment'))) {
+      const said = promptText(typedText(notice));
+      add(new UnifiedStep({ id: uuid || randomUUID(), type: 'user_message', title: said || '（图片或附件）', status: 'completed' }));
       continue;
     }
     if (type === 'system' && get(record, 'subtype') === 'compact_boundary') {
