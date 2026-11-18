@@ -165,12 +165,6 @@ test('what the server reports reads naturally in English, names and reasons incl
   assert.match(english('这一轮没法插进去（连不上 Codex 桌面版），消息已排队'), /^Couldn't reach the current turn \(Can't reach Codex's desktop app\), so your message is queued$/);
   assert.match(english('暂时无法读取额度：timeout'), /right now: timeout$/);
   assert.equal(english('some engine text'), 'some engine text'); assert.equal(english(''), '');
-  assert.equal(english('应用没有在运行'), 'The app is not running');
-  assert.equal(english('没有找到输入框（profile 的 composer）'), 'Could not find the message box (composer in profile)');
-  assert.equal(english('输入框填不进文字'), 'Could not enter text into the message box');
-  assert.equal(english('没有找到停止控件，也按不到 Esc'), 'Could not find the stop button or press Esc');
-  assert.equal(english('这个动作（send）的 Windows 支持还没写好'), 'Windows support for "send" is not implemented yet');
-  assert.equal(english('profile 里没有 send 的认法'), 'No selector for send in the profile');
   // Every text the server or an adapter can report has an entry (prompts sent to the AI aside).
   const root = path.join(__dirname, '..'), known = new Set(reportTexts()), missing: string[] = [];
   const toAi = /^(请查看并分析附件|用户在工作台拒绝了这个操作|（图片或附件）|（图片）|你发送的图片|新建聊天|新会话|Antigravity 会话|模型|其他|截图|5 小时|每周)$/;

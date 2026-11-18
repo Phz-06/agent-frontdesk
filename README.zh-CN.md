@@ -59,13 +59,11 @@ Agent Frontdesk 把这些桌面应用放进同一个网页。干活的还是各�
 
 ## 快速开始
 
-需要 macOS 或 Windows 11 和 [Node.js](https://nodejs.org) 22.16 以上（在 Windows 上通过 Claude/Codex 发消息需安装 .NET 8 SDK 以便编译本地 UIA 驱动）。
+需要 macOS 或 Windows 11 和 [Node.js](https://nodejs.org) 22.16 以上，不用另外安装别的：操作桌面应用窗口的辅助程序在你的电脑上现场编译，macOS 用 Xcode 命令行工具，Windows 用系统自带的 C# 编译器（.NET Framework 4）。
 
 ```sh
 git clone https://github.com/Phz-06/agent-frontdesk.git
 cd agent-frontdesk
-# Windows 克隆后先关闭 CRLF 自动转换，确保源码匹配测试按 LF 运行：
-git config core.autocrlf false
 npm ci
 npm start
 ```
@@ -74,7 +72,7 @@ npm start
 
 目前已经接好的有 Codex、Claude 和 Antigravity，用之前先把对应的桌面应用打开并登录。
 
-在 macOS 上，给 Codex 和 Claude 发消息需要辅助功能权限：在「系统设置 → 隐私与安全性 → 辅助功能」里允许你运行 `npm start` 的那个终端应用，然后重新启动 Frontdesk。Windows 11 不需要此系统权限（会自动用 .NET 编译本机 UIA 驱动）。桌面应用的界面语言建议先用英文。
+在 macOS 上，给 Codex 和 Claude 发消息需要辅助功能权限：在「系统设置 → 隐私与安全性 → 辅助功能」里允许你运行 `npm start` 的那个终端应用，然后重新启动 Frontdesk。Windows 11 没有要授予的权限，但 Frontdesk 要和桌面应用以相同的权限运行（都以管理员身份，或都不是）：Windows 允许程序读取更高权限应用的窗口，但不允许操作它。桌面应用的界面语言建议先用英文。
 
 Claude 的模型列表、额度和语音输入还要登录一次 Claude Code，用和桌面版相同的账号。没登录时页面会给出要运行的命令，在终端跑一次就行。
 
@@ -88,7 +86,7 @@ Frontdesk 的目标是所有桌面版 AI，所以接入这件事交给 AI 自己
 
 ## 工作原理
 
-Frontdesk 是跑在你电脑上的一个小服务。它读各家桌面应用留在本机的记录来显示历史和进度。发消息时走桌面应用自己的通道：应用有接口的用接口，没有的在 macOS 通过辅助功能（在 Windows 11 通过 UI Automation）在后台操作应用的窗口，填好消息、按下发送，不会把窗口抢到前台。
+Frontdesk 是跑在你电脑上的一个小服务。它读各家桌面应用留在本机的记录来显示历史和进度。发消息时走桌面应用自己的通道：应用有接口的用接口，没有的在 macOS 通过辅助功能（在 Windows 11 通过 UI Automation）在后台操作应用的窗口，填好消息、按下发送，不会把窗口抢到前台。在 Windows 上，应用的页面里一有操作就会夺走键盘焦点，所以在操作的那一两秒里，Frontdesk 会把应用窗口移到屏幕外、只留一个角，焦点被夺走就立刻还给你正在用的窗口，结束后把一切原样放回；换模型或推理强度时，菜单打开的约半秒里焦点会留在应用那边。全程不发任何按键，也不碰剪贴板。
 
 ```
  浏览器 ──▶ Frontdesk 服务 ──▶ 每个 AI 一个插件 ──▶ 桌面应用
@@ -124,7 +122,7 @@ Frontdesk 是跑在你电脑上的一个小服务。它读各家桌面应用留�
 | `BRIDGE_DICTATION_ENGINE` | 语音输入先试哪个 AI 的识别，用不了时换其他 AI 的或浏览器的 | `claude` |
 | `CODEX_BIN` / `CODEX_HOME` | Codex 可执行文件和数据目录 | 从 `PATH`、ChatGPT.app、MSIX 包或 `~/.codex` 探测 |
 | `CLAUDE_BIN` / `CLAUDE_HOME` | Claude Code 可执行文件和会话目录 | 从 `PATH` 或 Claude 的应用数据里找 / `~/.claude` |
-| `CLAUDE_DESKTOP_HOME` | Claude 桌面应用的数据目录 | `~/Library/Application Support/Claude`（Windows 为 `%APPDATA%\Claude`） |
+| `CLAUDE_DESKTOP_HOME` | Claude 桌面应用的数据目录 | `~/Library/Application Support/Claude`（Windows 为 `%LOCALAPPDATA%\Claude-Data\claude_<id>`，没有时为 `%APPDATA%\Claude`） |
 | `AGENTAPI_BIN` / `ANTIGRAVITY_HOME` | Antigravity 的命令行工具和数据目录 | `~/.gemini/antigravity` |
 | `CHATGPT_APP_ASAR` / `CLAUDE_APP_ASAR` / `ANTIGRAVITY_APP_ICON` | 从这些已安装的应用里读图标、角色和字体 | macOS 在 `/Applications` 下，Windows 在 `%LOCALAPPDATA%\Programs` 或 MSIX 下 |
 
@@ -148,7 +146,7 @@ Frontdesk 是跑在你电脑上的一个小服务。它读各家桌面应用留�
 ## 开发
 
 ```sh
-npm run dev      # 页面热更新在 PORT，服务端在 PORT+1（POSIX shell；Windows 请在 Git Bash 中运行）
+npm run dev      # 页面热更新在 PORT，服务端在 PORT+1
 npm test
 npm run check    # 类型检查加构建
 ```

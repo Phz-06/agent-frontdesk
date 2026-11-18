@@ -59,13 +59,11 @@ Agent Frontdesk puts those desktop apps into one web page. The apps still do the
 
 ## Quick start
 
-You need macOS or Windows 11 and [Node.js](https://nodejs.org) 22.16 or later (sending through Claude/Codex on Windows builds a local .NET 8 SDK helper).
+You need macOS or Windows 11 and [Node.js](https://nodejs.org) 22.16 or later. Nothing else is installed: the helper that works the desktop apps' windows is compiled on your machine, with Xcode's command line tools on macOS and with the C# compiler that ships with Windows (.NET Framework 4) on Windows.
 
 ```sh
 git clone https://github.com/Phz-06/agent-frontdesk.git
 cd agent-frontdesk
-# On Windows, disable CRLF auto-conversion so source-matching tests see LF:
-git config core.autocrlf false
 npm ci
 npm start
 ```
@@ -74,7 +72,7 @@ Open <http://127.0.0.1:4100>. Every AI whose desktop app is installed shows up i
 
 Codex, Claude and Antigravity are connected so far. Open the desktop app and sign in before you use one.
 
-On macOS, sending to Codex and Claude needs the Accessibility permission. In System Settings → Privacy & Security → Accessibility, allow the terminal app you run `npm start` in, then start Frontdesk again. On Windows 11, no Accessibility permission is required (Frontdesk compiles a local .NET UIA helper automatically). For now, keep the desktop apps' interface in English.
+On macOS, sending to Codex and Claude needs the Accessibility permission. In System Settings → Privacy & Security → Accessibility, allow the terminal app you run `npm start` in, then start Frontdesk again. On Windows 11 there is no permission to grant; run Frontdesk with the same rights as the desktop apps (both as administrator, or neither), since Windows lets a program read a window of a higher-rights app but not act on it. For now, keep the desktop apps' interface in English.
 
 Claude's model list, quota and voice input also need Claude Code signed in once, with the account the desktop app uses. When it is not, the page shows the command to run in a terminal.
 
@@ -88,7 +86,7 @@ It does not build any pages. The sidebar, conversation, composer, cards, file pr
 
 ## How it works
 
-Frontdesk is a small server on your computer. It reads the records each desktop app keeps locally to show history and progress. To send, it uses the app's own channel: an interface where the app has one, and otherwise macOS Accessibility (or Windows UI Automation on Windows 11), which fills in the message and presses Send in the app's window in the background, without bringing it to the front.
+Frontdesk is a small server on your computer. It reads the records each desktop app keeps locally to show history and progress. To send, it uses the app's own channel: an interface where the app has one, and otherwise macOS Accessibility (or Windows UI Automation on Windows 11), which fills in the message and presses Send in the app's window in the background, without bringing it to the front. On Windows an app's page takes the keyboard focus whenever something is done in it, so for the second or so it takes, Frontdesk moves the app's window off the screen but for a corner, gives the focus straight back to the window you are in, and puts everything back exactly afterwards; a model or effort change keeps the focus with the app for about half a second while its menu is open. No key is sent and the clipboard is never touched.
 
 ```
  Browser ──▶ Frontdesk server ──▶ a plugin per AI ──▶ the desktop app
@@ -124,7 +122,7 @@ All optional. Frontdesk finds standard install locations by itself.
 | `BRIDGE_DICTATION_ENGINE` | Which AI's speech-to-text voice input tries first; it falls back to another AI's or the browser's | `claude` |
 | `CODEX_BIN` / `CODEX_HOME` | Codex executable and data folder | found on `PATH`, ChatGPT.app / MSIX package / `~/.codex` |
 | `CLAUDE_BIN` / `CLAUDE_HOME` | Claude Code executable and session folder | found on `PATH` or in Claude's app data / `~/.claude` |
-| `CLAUDE_DESKTOP_HOME` | Claude desktop app's data folder | `~/Library/Application Support/Claude` (Windows: `%APPDATA%\Claude`) |
+| `CLAUDE_DESKTOP_HOME` | Claude desktop app's data folder | `~/Library/Application Support/Claude` (Windows: `%LOCALAPPDATA%\Claude-Data\claude_<id>`, else `%APPDATA%\Claude`) |
 | `AGENTAPI_BIN` / `ANTIGRAVITY_HOME` | Antigravity's CLI and data folder | `~/.gemini/antigravity` |
 | `CHATGPT_APP_ASAR` / `CLAUDE_APP_ASAR` / `ANTIGRAVITY_APP_ICON` | Installed apps that icons, characters and fonts are read from | `/Applications` on macOS, `%LOCALAPPDATA%\Programs` or MSIX on Windows |
 
@@ -148,7 +146,7 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
 ## Development
 
 ```sh
-npm run dev      # page with hot reload on PORT, server on PORT+1 (POSIX shell; on Windows run in Git Bash)
+npm run dev      # page with hot reload on PORT, server on PORT+1
 npm test
 npm run check    # type check and build
 ```
