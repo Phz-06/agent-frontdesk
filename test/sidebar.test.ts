@@ -92,6 +92,16 @@ test('Codex threads resolve to the desktop project, a project root, or no projec
   assert.equal(index.resolve({ id: 'gone', cwd: '/elsewhere/2026/new-chat' }), null);
   assert.equal(index.resolve({ id: 't5', projectId: 'P3', cwd: '/w/one' })?.name, 'new'); // the app-server's own field wins
   assert.equal(new CodexProjects({ codexHome: path.join(home, 'missing') }).index([]).resolve({ id: 'x', cwd: '/w' }), null);
+  // A whole disk is no project's root (it would hold every chat); a Windows root is matched with
+  // either separator and a drive letter of either case.
+  const disks = new CodexProjects({ codexHome: path.join(home, 'missing') }).index([
+    { id: 'R', name: 'root', position: 0, roots: [{ path: '/' }, { path: 'C:\\' }] },
+    { id: 'W', name: 'win', position: 1, roots: [{ path: 'D:\\af\\codex-test\\' }] },
+  ]);
+  assert.deepEqual(disks.projects.find(item => item.id === 'R')?.roots, []);
+  assert.equal(disks.resolve({ id: 'u1', cwd: '/elsewhere' }), null);
+  assert.equal(disks.resolve({ id: 'u2', cwd: 'd:/af/codex-test/src' })?.name, 'win');
+  assert.equal(disks.resolve({ id: 'u3', cwd: 'D:\\af\\codex-testing' }), null);
 });
 
 test('Codex lists every page of threads once, each with its project', async t => {

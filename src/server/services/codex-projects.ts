@@ -32,14 +32,13 @@ class CodexProjects {
   // rows: project/list data. Returns the projects in the desktop's order and resolve(thread).
   index(rows: unknown[] = []): { projects: CodexProject[]; resolve: (thread: { id: string; projectId?: unknown; cwd?: unknown }) => CodexProject | null | undefined } {
     const desktop = this.desktop();
-    const stripTrail = (raw: string): string => {
-      if (raw === '/' || /^[a-zA-Z]:[\\/]+$/.test(raw)) return `${raw.slice(0, 2)}${raw[2] === '\\' ? '\\' : '/'}`;
-      return raw.replace(/[\\/]+$/, '');
-    };
+    // A root without its trailing separator. A whole disk ("/", "C:\") is no project's root and is
+    // dropped, as "/" always was: it would hold every chat on the machine.
+    const stripTrail = (raw: string): string => { const trimmed = raw.replace(/[\\/]+$/, ''); return /^[a-zA-Z]:$/.test(trimmed) ? '' : trimmed; };
+    // Compared with "/" for "\" and a lower-case drive letter; on Windows, whole paths case-insensitively.
     const normPath = (raw: string): string => {
-      const p = raw.replace(/\\/g, '/').replace(/^([A-Z]):/, (_, d: string) => `${d.toLowerCase()}:`);
-      const trimmed = p === '/' || /^[a-z]:\/+$/.test(p) ? (p === '/' ? '/' : `${p.slice(0, 2)}/`) : p.replace(/\/+$/, '');
-      return process.platform === 'win32' ? trimmed.toLowerCase() : trimmed;
+      const p = raw.replace(/\\/g, '/').replace(/^([A-Z]):/, (_, d: string) => `${d.toLowerCase()}:`).replace(/\/+$/, '');
+      return process.platform === 'win32' ? p.toLowerCase() : p;
     };
     const projects = rows.filter(row => get(row, 'id')).map((row): CodexProject => ({ id: String(get(row, 'id')), name: String(get(row, 'name') || ''), roots: list(get(row, 'roots')).map(root => stripTrail(String(get(root, 'path') || ''))).filter(Boolean), position: Number(get(row, 'position') ?? 0), legacyId: String(get(row, 'metadata', 'codex.localProjectId') || '') }));
     const byId = new Map(projects.map(project => [project.id, project]));
@@ -56,7 +55,7 @@ class CodexProjects {
       let best: CodexProject | null = null, length = -1;
       for (const project of byRoot) for (const root of project.roots) {
         const r = normPath(root);
-        if ((c === r || c.startsWith(r.endsWith('/') ? r : `${r}/`)) && r.length > length) { best = project; length = r.length; }
+        if (r && (c === r || c.startsWith(`${r}/`)) && r.length > length) { best = project; length = r.length; }
       }
       return best;
     };
