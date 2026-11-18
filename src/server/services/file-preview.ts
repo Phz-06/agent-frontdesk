@@ -41,8 +41,13 @@ function resolveFile(cwd: string, requested: unknown, roots: string[] = []): { f
   const real = (base: string): string | null => { try { return fs.realpathSync(base); } catch { return null; } };
   const reals = bases.map(real).filter((base): base is string => !!base);
   if (!reals.length) throw refuse(404, '会话的工作目录已经不存在');
-  let file: string;
-  try { file = fs.realpathSync(path.isAbsolute(named) ? named : path.join(reals[0] ?? '', named)); } catch { throw refuse(404, '找不到这个文件'); }
+  // A relative path is read in the working directory first, then in each folder the engine names
+  // (fileRoots): a session that moved names files relative to where it was.
+  let file = '';
+  for (const base of path.isAbsolute(named) ? [''] : reals) {
+    try { file = fs.realpathSync(path.isAbsolute(named) ? named : path.join(base, named)); break; } catch {}
+  }
+  if (!file) throw refuse(404, '找不到这个文件');
   for (const root of reals) {
     const native = path.relative(root, file);
     // Written with "/" on every platform: the page shows it, and SECRET / INTERNAL below match on "/"

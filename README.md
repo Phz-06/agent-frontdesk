@@ -79,6 +79,18 @@ Claude's model list, quota and voice input also need Claude Code signed in once,
 
 If the port is taken, run `PORT=4200 npm start` (or in Windows PowerShell: `$env:PORT=4200; npm start`).
 
+## What to expect on Windows
+
+On macOS, Frontdesk presses buttons in a desktop app's window without that window taking the keyboard. Windows doesn't allow it: whenever Frontdesk fills in a message or presses Send in Claude's or Codex's window, that window takes the keyboard focus for a moment. We keep that moment short and put everything back afterwards, but you may still notice it:
+
+- **Typing elsewhere while a message goes out.** One message takes the focus 2–3 times, 20–90 ms each. Frontdesk waits for a pause when you type in its own page, but in other apps a word you're composing with an input method can be cut off, or a key lost.
+- **Changing the model or effort.** The app's menu only works while the app has the focus, so for about half a second your keystrokes go to the app.
+- **Full screen.** If the program in front runs in exclusive full screen, Frontdesk holds the message until you leave it. A borderless full-screen window may stutter for a moment.
+- **A few pixels in a corner.** While it works, the app's window sits off screen except for a corner, and goes back where it was afterwards. If the server stops halfway, the next start puts it back.
+- Codex's regular messages, steers, stops and most model changes use its own channel and aren't affected. A new Codex chat, and a model change for a chat Codex has not opened yet, go through its window like Claude's.
+
+If you know a way to act on a Chromium/Electron window on Windows without it taking the focus, please get in touch. What we've tried and measured is in [docs/windows.md](docs/windows.md).
+
 ## Add an AI
 
 Frontdesk is meant for every desktop AI, so connecting one is a job for the AI itself. Click **+** in the rail, copy the prompt and send it to the AI you want to add. It follows [the onboarding guide](skills/add-desktop-engine/SKILL.md) and writes its own plugin: it reads its own data, picks a channel for sending, and declares what it can do.
@@ -87,7 +99,7 @@ It does not build any pages. The sidebar, conversation, composer, cards, file pr
 
 ## How it works
 
-Frontdesk is a small server on your computer. It reads the records each desktop app keeps locally to show history and progress. To send, it uses the app's own channel: an interface where the app has one, and otherwise macOS Accessibility (or Windows UI Automation on Windows 11), which fills in the message and presses Send in the app's window in the background, without bringing it to the front. On Windows an app's page takes the keyboard focus whenever something is done in it, so for the second or so it takes, Frontdesk moves the app's window off the screen but for a corner, gives the focus straight back to the window you are in, and puts everything back exactly afterwards; a model or effort change keeps the focus with the app for about half a second while its menu is open. No key is sent and the clipboard is never touched.
+Frontdesk is a small server on your computer. It reads the records each desktop app keeps locally to show history and progress. To send, it uses the app's own channel: an interface where the app has one, and otherwise macOS Accessibility (or Windows UI Automation on Windows 11), which fills in the message and presses Send in the app's window in the background, without bringing it to the front. On Windows the app's window takes the keyboard focus for a moment each time; Frontdesk gives it straight back and puts the window back where it was (see [What to expect on Windows](#what-to-expect-on-windows)). No key is sent and the clipboard is never touched.
 
 ```
  Browser ──▶ Frontdesk server ──▶ a plugin per AI ──▶ the desktop app

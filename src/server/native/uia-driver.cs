@@ -300,13 +300,16 @@ namespace Frontdesk.Driver
             // Whatever the answer, the person's mode comes back and the window is put back first.
             Func<string> exit = beforeExit; beforeExit = null;
             if (exit != null) { string error = null; try { error = exit(); } catch { } if (error != null) answer["spaceNotRestored"] = error; }
-            Unpark();
+            Unpark(false);
             if (parkReport != null) answer["parked"] = parkReport;
             else if (Parking.Skipped != null) answer["parked"] = Parking.Skipped;
             Annotate(answer);
             answer["ms"] = (int)clock.ElapsedMilliseconds; answer["reads"] = reads;
             JavaScriptSerializer json = new JavaScriptSerializer(); json.MaxJsonLength = int.MaxValue; json.RecursionLimit = 100;
             Console.WriteLine(json.Serialize(answer));
+            Console.Out.Flush();
+            // What is left of the park (a minimized window's saved bounds), after the answer is out.
+            FinishPark();
             object ok;
             throw new Done(answer.TryGetValue("ok", out ok) && ok is bool && !(bool)ok ? 1 : 0);
         }
@@ -742,11 +745,13 @@ namespace Frontdesk.Driver
 
         // ---- actions ----
         // Anything done to the page ends what was read from it (Stale). Nothing is done to a control
-        // that is not the only one its locator finds (Sole).
+        // that is not the only one its locator finds (Sole). Each action that can make the page take the
+        // foreground waits first for a parked page to be live and for the person to finish a word (BeforeAct).
         static T Pattern<T>(Node n, int id) where T : class { try { return n.Element.GetCurrentPattern(id) as T; } catch { return null; } }
         static bool Press(Node n)
         {
             if (n == null || !Sole(n)) return false;
+            BeforeAct();
             Trace("press " + (n.Name.Length > 40 ? n.Name.Substring(0, 40) : n.Name));
             try
             {
@@ -762,6 +767,7 @@ namespace Frontdesk.Driver
         static bool Expand(Node n)
         {
             if (n == null || !Sole(n)) return false;
+            BeforeAct();
             try { IUIAutomationExpandCollapsePattern ec = Pattern<IUIAutomationExpandCollapsePattern>(n, Pat_Expand); if (ec == null) return false; ec.Expand(); return true; }
             catch (Exception e) { Trace("expand failed: " + e.Message); return false; }
             finally { Stale(); }
@@ -769,6 +775,7 @@ namespace Frontdesk.Driver
         static bool Collapse(Node n)
         {
             if (n == null) return false;
+            BeforeAct();
             try { IUIAutomationExpandCollapsePattern ec = Pattern<IUIAutomationExpandCollapsePattern>(n, Pat_Expand); if (ec == null) return false; ec.Collapse(); return true; }
             catch { return false; }
             finally { Stale(); }
@@ -776,6 +783,7 @@ namespace Frontdesk.Driver
         static bool SetValue(Node n, string text)
         {
             if (n == null || !Sole(n)) return false;
+            BeforeAct();
             try { IUIAutomationValuePattern v = Pattern<IUIAutomationValuePattern>(n, Pat_Value); if (v == null) return false; v.SetValue(text); return true; }
             catch (Exception e) { Trace("set value failed: " + e.Message); return false; }
             finally { Stale(); }
@@ -784,8 +792,8 @@ namespace Frontdesk.Driver
         // Looks again until `done` holds or `seconds` have passed (a look is one read of the page).
         static bool Until(double seconds, Func<bool> done)
         {
-            DateTime end = DateTime.UtcNow.AddSeconds(seconds);
-            while (true) { Stale(); if (done()) return true; if (DateTime.UtcNow >= end) return false; Thread.Sleep(40); }
+            DateTime end = ActClock.AddSeconds(seconds);
+            while (true) { Stale(); if (done()) return true; if (ActClock >= end) return false; Thread.Sleep(40); }
         }
         static bool Named(Node n, string text) { return n.Name == text || n.Name.StartsWith(text + " ", StringComparison.Ordinal); }
         static List<Node> Items() { ReadPage(); return nodes.Where(n => RoleIs(n, "AXMenuItem")).ToList(); }
@@ -803,6 +811,7 @@ namespace Frontdesk.Driver
         static bool Activate(Node n)
         {
             if (n == null || !Sole(n)) return false;
+            BeforeAct();
             try
             {
                 IUIAutomationInvokePattern invoke = Pattern<IUIAutomationInvokePattern>(n, Pat_Invoke);
@@ -821,12 +830,14 @@ namespace Frontdesk.Driver
         static bool Toggle(Node n)
         {
             if (n == null || !Sole(n)) return false;
+            BeforeAct();
             try { IUIAutomationTogglePattern t = Pattern<IUIAutomationTogglePattern>(n, Pat_Toggle); if (t != null) { t.Toggle(); return true; } } catch { }
             finally { Stale(); }
             return Activate(n);
         }
         static void ScrollIntoView(IUIAutomationElement e)
         {
+            BeforeAct();
             try { IUIAutomationScrollItemPattern s = e.GetCurrentPattern(Pat_ScrollItem) as IUIAutomationScrollItemPattern; if (s != null) s.ScrollIntoView(); } catch { }
             Stale();
         }
@@ -874,6 +885,9 @@ namespace Frontdesk.Driver
             public static volatile bool Stop, KeepCorner, Held;
             public static Thread Guard;
             public static int Grabs, GiveBacks, Failed, ReRaises; public static long LongestGrabMs, HeldMs;
+            // SettledMs and PersonMs: how long actions waited for the page to be shown again and for the person
+            // to finish a word (BeforeAct); NotLive: actions that went ahead on a page still stopped.
+            public static long SettledMs, PersonMs; public static int NotLive;
             public static readonly object Lock = new object();
         }
         static string Hex(IntPtr h) { return "0x" + h.ToInt64().ToString("x", CultureInfo.InvariantCulture); }
@@ -895,14 +909,43 @@ namespace Frontdesk.Driver
         static Win.WINDOWPLACEMENT PlacementOf(IntPtr h) { Win.WINDOWPLACEMENT wp = new Win.WINDOWPLACEMENT(); wp.length = Marshal.SizeOf(typeof(Win.WINDOWPLACEMENT)); Win.GetWindowPlacement(h, ref wp); return wp; }
         static bool CornerUp() { return Root(Win.WindowFromPoint(Parking.Corner)) == window; }
         // Raised without being activated: HWND_TOP from a background process usually leaves it under the
-        // foreground window, so through the topmost band and back, which leaves it on top of the ordinary windows.
+        // foreground window, so through the topmost band and back, which leaves it on top of the ordinary
+        // windows. Then nudged (Nudge), so the page shows again at once.
         static bool RaiseCorner()
         {
             Win.SetWindowPos(window, IntPtr.Zero, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            if (CornerUp()) return true;
-            Win.SetWindowPos(window, new IntPtr(-1), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            Win.SetWindowPos(window, new IntPtr(-2), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            if (!CornerUp())
+            {
+                Win.SetWindowPos(window, new IntPtr(-1), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                Win.SetWindowPos(window, new IntPtr(-2), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            }
+            Nudge();
             return CornerUp();
+        }
+        // Chromium stops a page whose window it counts as covered (it takes no press, its tree does not
+        // change) and counts again on some window events only. A move is one, a change of z-order made by
+        // another process is not: raised into its corner, Claude's page came back 0.85 to more than 4 s
+        // later, and a press before that was lost; moved a pixel and back, within 0.1 s (measured,
+        // probes/windows/PLAN.md "The page is stopped while Chromium counts it covered"). Whether it is back
+        // shows in the window Chromium keeps for its page (PageLive).
+        static void Nudge()
+        {
+            Native.RECT r; Native.GetWindowRect(window, out r);
+            Win.SetWindowPos(window, IntPtr.Zero, r.Left + 1, r.Top, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER);
+            Win.SetWindowPos(window, IntPtr.Zero, r.Left, r.Top, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER);
+        }
+        [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr parent, Native.EnumProc proc, IntPtr lParam);
+        // The page is shown: Chromium's window for it (Chrome_RenderWidgetHostHWND, a child of the app's
+        // window) exists and is visible. It is not there while Chromium has the page stopped.
+        static bool PageLive()
+        {
+            bool live = false;
+            EnumChildWindows(window, delegate (IntPtr h, IntPtr l)
+            {
+                if (Native.IsWindowVisible(h) && ClassOf(h).StartsWith("Chrome_RenderWidgetHostHWND", StringComparison.Ordinal)) { live = true; return false; }
+                return true;
+            }, IntPtr.Zero);
+            return live;
         }
         // The foreground back to `to`, with no input: attached to the foreground thread first; then to
         // both threads with BringWindowToTop; then SwitchToThisWindow (each seen to be needed once).
@@ -954,7 +997,60 @@ namespace Frontdesk.Driver
         }
         // While a menu is open the page needs the foreground (on: the watchdog leaves it to the app;
         // off: it is given back at once).
-        static void HoldForeground(bool on) { if (Parking.Active) Parking.Held = on; }
+        static void HoldForeground(bool on) { if (Parking.Active) { if (on && !Parking.Held) BeforeAct(); Parking.Held = on; } }
+        // Before an action that can make a parked page take the foreground (Press, SetValue, Expand…):
+        // - The page has to be shown (PageLive). A press on a page Chromium has stopped is lost, and only the
+        //   retry seconds later is taken: a second grab, and the seconds (measured, probes/windows/PLAN.md
+        //   "Live before the first press"). The corner is nudged whenever it is raised (RaiseCorner), so the
+        //   page is usually back within a tenth of a second; an action that finds it stopped nudges it again
+        //   and waits for it, at most the profile's windows.settleMs (default 2500), then acts anyway.
+        // - Each grab takes the foreground from the person's window for a moment, and a browser that loses
+        //   it ends the word an input method is composing (the pinyin typed so far is dropped); while the app
+        //   holds the foreground (a menu open) the keys the person types go to its page, and a page redrawn
+        //   under them lost the menu button (UIA_E_ELEMENTNOTAVAILABLE, measured: the person typed on through
+        //   a model and effort change). The console's page says while the person is typing (POST /api/typing
+        //   writes the time until which they are into "person-typing" next to the helper: a word being
+        //   composed, or until a pause in keys), and each action, and the start of a hold, waits until they
+        //   are not: up to 3 s for one action and 10 s for a command, so a person who never stops typing
+        //   still gets the message sent.
+        // Neither applies while the app holds the foreground (a menu is open) or when nothing is parked.
+        static readonly string TypingFile = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "person-typing");
+        static int SettleMs()
+        {
+            object v; int ms;
+            return windowsSpec.TryGetValue("settleMs", out v) && v != null && int.TryParse(Convert.ToString(v, CultureInfo.InvariantCulture), out ms) && ms >= 0 ? ms : 2500;
+        }
+        static long TypingUntil()
+        {
+            try { long until; return File.Exists(TypingFile) && long.TryParse(File.ReadAllText(TypingFile).Trim(), out until) ? until : 0; } catch { return 0; }
+        }
+        // The clock every deadline outside this section is kept by (Until, Put, Fill, WaitReady, menus…): the
+        // time since the command began, less what BeforeAct waited. A wait for the page or for the person
+        // is not time the page had to answer, and counted against a fill's few seconds it failed the fill
+        // (measured: a send while the person kept typing waited 3 s for them, and the fill had no time left).
+        static DateTime ActClock { get { return DateTime.UtcNow.AddMilliseconds(-(Parking.SettledMs + Parking.PersonMs)); } }
+        static long NowMs() { return (long)(DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds; }
+        static void BeforeAct()
+        {
+            if (!Parking.Active || Parking.Held) return;
+            Stopwatch waited = null;
+            while (TypingUntil() > NowMs())
+            {
+                if (waited == null) { waited = Stopwatch.StartNew(); Trace("the person is typing: waiting"); }
+                if (waited.ElapsedMilliseconds >= 3000 || Parking.PersonMs + waited.ElapsedMilliseconds >= 10000) break;
+                Thread.Sleep(40);
+            }
+            if (waited != null) { lock (Parking.Lock) Parking.PersonMs += waited.ElapsedMilliseconds; Trace("waited " + waited.ElapsedMilliseconds + "ms for the person"); Stale(); }
+            // Then the page, right before the action (a wait for the person may have let it be covered again).
+            if (PageLive()) return;
+            Stopwatch shown = Stopwatch.StartNew();
+            Nudge();
+            while (!PageLive() && shown.ElapsedMilliseconds < SettleMs()) Thread.Sleep(20);
+            bool live = PageLive();
+            lock (Parking.Lock) { Parking.SettledMs += shown.ElapsedMilliseconds; if (!live) Parking.NotLive++; }
+            Trace((live ? "page shown again after " : "page still stopped after ") + shown.ElapsedMilliseconds + "ms");
+            Stale();
+        }
         // The app's window takes the foreground (parked off screen, nothing of it shows) for the presses its
         // page takes only while the window is active: a chat card's controls (measured on Claude's question
         // card: from behind a press only moves the focus, and pressing again after the foreground was given
@@ -1117,6 +1213,16 @@ namespace Frontdesk.Driver
             int on = 0; Win.DwmSetWindowAttribute(h, 3, ref on, 4);
         }
 
+        // Whether the program in front runs exclusive full screen (a game, Windows' own QUNS_RUNNING_D3D_FULL_SCREEN,
+        // which it uses to hold back notifications). Each grab of the foreground a park causes would take the
+        // foreground from it, which such a program takes as being switched away from: it goes black, changes
+        // mode and is often minimized, and a give-back does not restore a minimized window. So a command that
+        // would park does nothing then and says so ("fullscreen"); the console waits and tries again (the
+        // Claude bridge, sendViaDesktop). A borderless full-screen window, or one that leaves the taskbar in
+        // view, is not this: a grab costs it a moment's stutter, and the command goes ahead. A command already
+        // parked when the person goes into a game finishes (a second or two), rather than stop half done.
+        [DllImport("shell32.dll")] static extern int SHQueryUserNotificationState(out int state);
+        static bool ExclusiveFullscreen() { int state; try { return SHQueryUserNotificationState(out state) == 0 && state == 3; } catch { return false; } }
         // Parks the window for a flow that acts on the page. Returns false (and leaves it as it is) when
         // the person is in the app themselves, or the window cannot be parked (minimized, another desktop).
         // Another park on the machine is waited for; one that does not end in time stops the command.
@@ -1127,6 +1233,8 @@ namespace Frontdesk.Driver
             // The person is in the app: its own window is the one in front (not just some window of its process).
             if (fg != IntPtr.Zero && Root(fg) == window && !minimized) { Parking.Front = true; Parking.Skipped = "front"; return false; }
             FailIfHidden();
+            // An exclusive full-screen program in front (a game): nothing is done (ExclusiveFullscreen).
+            if (ExclusiveFullscreen()) { Parking.Skipped = "fullscreen"; Fail("fullscreen", "前台的程序独占全屏：工作台先不操作" + appName + "，等你离开它再发"); }
             // On another virtual desktop: not parked, acted on where it is (measured: probes/windows/PLAN.md).
             if (Cloaked(window)) { Parking.Skipped = "cloaked"; return false; }
             // Not "busy": a flow's "busy" means the chat is running (the Claude bridge then steers).
@@ -1178,12 +1286,17 @@ namespace Frontdesk.Driver
             Stale();
             return true;
         }
-        // The window back as it was found (PutWindowBack), the park's report, its record removed and the
-        // machine's park lock let go. Also runs when the command fails or crashes.
+        // The window back as it was found (PutWindowBack) and the park's report; then (FinishPark) the
+        // saved bounds repaired, its record removed and the machine's park lock let go. Also runs when the
+        // command fails or crashes. Out puts the window back, writes the answer and only then finishes:
+        // the repair of a minimized window's saved bounds takes up to a few seconds (RepairSavedBounds),
+        // and the console reads the answer as soon as it is written (desktop-automation.ts, run), so the
+        // person is not kept waiting for it. A park that comes meanwhile waits for the park lock.
         static Dictionary<string, object> parkReport;
-        static void Unpark()
+        static long parkedMs = -1;
+        static void Unpark(bool finish = true)
         {
-            if (!Parking.Active) { DropParkLock(); return; }
+            if (!Parking.Active) { if (finish) FinishPark(); return; }
             Parking.Active = false; Parking.KeepCorner = false; Parking.Held = false;
             Thread.Sleep(30);
             PutWindowBack(window, PidOf(window), Parking.Placement, Parking.MaxMoved, Parking.MaxRect, Parking.InsertAfter, Parking.Original);
@@ -1196,10 +1309,20 @@ namespace Frontdesk.Driver
                 { "ms", ms }, { "grabs", Parking.Grabs }, { "longestGrabMs", Parking.LongestGrabMs }, { "failedGiveBacks", Parking.Failed }, { "heldMs", Parking.HeldMs },
                 // (a minimized window has no place in the visible z-order to go back to)
                 { "cornerReRaises", Parking.ReRaises }, { "placementBack", same }, { "underSame", Parking.Placement.showCmd == 2 || AboveVisible(window) == Parking.InsertAfter },
-                { "foregroundBack", Win.GetForegroundWindow() == Parking.Original }, { "followed", Parking.Followed } };
+                { "foregroundBack", Win.GetForegroundWindow() == Parking.Original }, { "followed", Parking.Followed },
+                { "settledMs", Parking.SettledMs }, { "personMs", Parking.PersonMs }, { "notLive", Parking.NotLive } };
             Trace("put back after " + ms + "ms");
-            RepairSavedBounds(ms);
-            try { File.Delete(RecordOf(window)); } catch { }
+            parkedMs = ms;
+            if (finish) FinishPark();
+        }
+        static void FinishPark()
+        {
+            if (parkedMs >= 0)
+            {
+                long ms = parkedMs; parkedMs = -1;
+                try { RepairSavedBounds(ms); } catch (Exception e) { Trace("saved bounds not repaired: " + e.Message); }
+                try { File.Delete(RecordOf(window)); } catch { }
+            }
             DropParkLock();
         }
         // An app that saves its window's bounds (Claude: window-state.json, about 3.3 s after the window
@@ -1288,13 +1411,13 @@ namespace Frontdesk.Driver
         static bool WaitReady(double patience)
         {
             List<string> anchors = Settings("refreshAnchors");
-            DateTime end = DateTime.UtcNow.AddSeconds(patience);
+            DateTime end = ActClock.AddSeconds(patience);
             bool ready;
             while (true)
             {
                 Stale(); ReadPage();
                 ready = anchors.Count == 0 ? nodes.Count >= 40 : anchors.Any(a => FindAll(a).Count > 0);
-                if (ready || DateTime.UtcNow >= end) break;
+                if (ready || ActClock >= end) break;
                 Thread.Sleep(150);
             }
             pageEmpty = !ready && nodes.Count < 40;
@@ -1311,19 +1434,24 @@ namespace Frontdesk.Driver
         }
 
         // ---- which conversation is on screen, and going to one (ax-driver.swift's show) ----
-        // Sidebar rows are buttons named "<title>", or "<title> <state>" ("Running", "Unread response").
-        static Node Row(string title)
+        // Sidebar rows are buttons named "<title>", or "<title> <state>" ("Running", "Unread response"):
+        // every row that may be the conversation, the likeliest first (its exact name, then with a state).
+        static List<Node> TitledRows(string title)
         {
             ReadPage();
             Node box = Find("sidebar");
             IEnumerable<Node> scope = box != null ? Within(box) : nodes;
             List<Node> rows = scope.Where(n => RoleIs(n, "AXButton") && Label(n).StartsWith(title, StringComparison.Ordinal)).ToList();
-            return rows.FirstOrDefault(n => Label(n) == title || n.Name == title) ?? rows.FirstOrDefault(n => Label(n).StartsWith(title + " ", StringComparison.Ordinal)) ?? rows.FirstOrDefault();
+            Func<Node, bool> exact = n => Label(n) == title || n.Name == title;
+            Func<Node, bool> stated = n => !exact(n) && Label(n).StartsWith(title + " ", StringComparison.Ordinal);
+            return rows.Where(exact).Concat(rows.Where(stated)).Concat(rows.Where(n => !exact(n) && !stated(n))).ToList();
         }
+        static Node Row(string title) { return TitledRows(title).FirstOrDefault(); }
         static void OpenLink(string template, Dictionary<string, string> values)
         {
             string link = template;
             foreach (KeyValuePair<string, string> kv in values) link = link.Replace("{" + kv.Key + "}", Uri.EscapeDataString(kv.Value));
+            BeforeAct();
             try { Process.Start(new ProcessStartInfo("rundll32.exe", "url.dll,FileProtocolHandler " + link) { UseShellExecute = false, CreateNoWindow = true }).WaitForExit(5000); } catch { }
             Stale();
         }
@@ -1383,18 +1511,74 @@ namespace Frontdesk.Driver
             Trace("no row for " + path + " among " + seen.Count);
             return null;
         }
-        // Its sidebar row (by its address where the profile has one), or the profile's sessionLink where
-        // the row is not there (the link brings the app forward: while parked the watchdog gives the
-        // foreground straight back).
-        static bool Show(string title, string localId)
+        // The address of the conversation on screen: the path of the document that has the template's
+        // shape ("" with no "sessionAddress", or on a page that is not a conversation).
+        static string ShownAddress()
         {
-            string at = Address(localId);
-            Func<bool> here = () => at.Length == 0 ? Current() == title : Showing(at);
+            Regex shape = RowShape();
+            if (shape == null) return "";
+            ReadPage();
+            foreach (Node page in nodes.Where(n => n.ControlType == CT_Document)) { string path = PathOf(page); if (path.Length > 0 && shape.IsMatch(path)) return path; }
+            return "";
+        }
+        // Is this conversation the one on screen: by its address when the page has one, else by its title.
+        static bool IsShown(string title, string at) { return at.Length == 0 ? Current() == title : Showing(at); }
+        // A deep link ("sessionLink") brings the desktop to the front (Claude's does, measured on the Mac),
+        // so only the commands that bring it there anyway, because the person asked to go there, use it.
+        static bool MayFront { get { return command == "open-file" || command == "show-session"; } }
+        // Its sidebar row (by its address where the profile has one; rows the sidebar keeps folded away
+        // are unfolded first), or, for a command that may bring the desktop to the front, the profile's
+        // sessionLink. ax-driver.swift's show.
+        static bool Show(string title, string localId) { return ShowAt(title, Address(localId), localId); }
+        static bool ShowAt(string title, string at, string localId)
+        {
+            Func<bool> here = () => IsShown(title, at);
             if (here()) return true;
             string link = Setting("sessionLink");
+            bool linkable = MayFront && link.Length > 0 && !string.IsNullOrEmpty(localId);
+            // A desktop whose page has an address but whose rows are known only by title (profile
+            // "sessionRowsBy": "title"; Claude's rows are plain buttons, its page "/epitaxy/local_..."): two
+            // conversations may share the title, so each row with it is pressed in turn until the page's
+            // address is this conversation's. None of them: not shown, and the command does nothing to
+            // whatever conversation is on screen instead. A press after which nothing changed at all was
+            // lost (a page not yet taking presses: BeforeAct), and that row is pressed once more.
+            if (at.Length > 0 && Setting("sessionRowsBy") == "title")
+            {
+                Func<bool> byRows = () =>
+                {
+                    int index = 0; bool again = false;
+                    while (true)
+                    {
+                        List<Node> rows = TitledRows(title);
+                        if (index >= rows.Count) return false;
+                        string before = ShownAddress();
+                        Press(rows[index]);
+                        bool moved = Until(1.2, () => here() || ShownAddress() != before);
+                        if (Until(0.5, here)) { Trace("showing " + title + " by row " + (index + 1)); return true; }
+                        if (!moved && !again) { again = true; continue; }
+                        again = false; index++;
+                    }
+                };
+                if (byRows()) return true;
+                // Rows the sidebar folds away (profile "moreSessions": a project's "Show 20 more";
+                // "nestedSessions": the sessions under another) are unfolded where they are, and the rows
+                // with the title are tried again each time more of them are drawn.
+                int tried = TitledRows(title).Count;
+                for (int i = 0; i < 16; i++)
+                {
+                    Node more = FindAll("moreSessions").FirstOrDefault() ?? FindAll("nestedSessions").FirstOrDefault();
+                    if (more == null) break;
+                    Press(more); Wait(0.4);
+                    int count = TitledRows(title).Count;
+                    if (count > tried) { tried = count; if (byRows()) return true; }
+                }
+                if (linkable) { OpenLink(link, new Dictionary<string, string> { { "localId", localId } }); if (Until(3, here)) { Trace("showing " + title + " by link"); return true; } }
+                Trace("no row shows " + at);
+                return false;
+            }
             for (int attempt = 0; attempt < 4; attempt++)
             {
-                bool asked = false;
+                bool asked = false, linked = false;
                 if (at.Length > 0)
                 {
                     // Every row of the list was looked through: another try finds no more.
@@ -1406,21 +1590,41 @@ namespace Frontdesk.Driver
                 {
                     Node row = Row(title);
                     if (row != null) asked = Press(row);
-                    else if (attempt == 1 && link.Length > 0 && !string.IsNullOrEmpty(localId)) { OpenLink(link, new Dictionary<string, string> { { "localId", localId } }); asked = true; }
+                    else if (attempt == 1 && linkable) { OpenLink(link, new Dictionary<string, string> { { "localId", localId } }); asked = linked = true; }
                 }
-                // Nothing pressed (no row yet): look again soon rather than wait for a page that is not coming.
-                if (Until(asked ? 2 : 0.5, here)) { Trace("showing " + title); return true; }
+                // A press the page took shows the conversation within a few tenths of a second (measured:
+                // 0.1 to 0.35 s once the page is live, BeforeAct), so one not shown after 1.2 s was lost and is
+                // pressed again; a link goes through the shell and is given 2 s. Nothing pressed (no row
+                // yet): look again soon rather than wait for a page that is not coming.
+                if (Until(linked ? 2 : asked ? 1.2 : 0.5, here)) { Trace("showing " + title); return true; }
             }
             return false;
+        }
+        // Back to the conversation a command started on (`previous`), once it has done its work. Not while
+        // the window is parked: the person was not in the app (it was behind their window, or minimized),
+        // so the conversation it shows was not in front of them, and going back costs a press (a grab of
+        // the foreground, which ends a word the person is composing) and, after a lost press, seconds. The
+        // desktop then stays on the conversation the console used last, and the next command for it finds
+        // it already shown (Show presses nothing). The desktop's new-chat page is never left on: a command
+        // that ends there (a failed new chat, the new-page commands) goes back as before.
+        static readonly HashSet<string> newPageNames = new HashSet<string> { "new-controls", "new-pick", "new-leave", "new-shown" };
+        // `previousAt`: its address, when the page has one (it may share the title and still be another).
+        static void ReturnTo(string previous, string previousAt = "")
+        {
+            if (previous.Length == 0) return;
+            if (Parking.Active && !staying && !newPageNames.Contains(command) && Current().Length > 0) { Trace("left on " + Current() + " (parked: not going back to " + previous + ")"); return; }
+            ShowAt(previous, previousAt, "");
         }
         // The conversation a command goes back to: the one on screen as it starts, or, with the desktop
         // parked on its new-chat page, the one the person had before that.
         static string StartedOn() { string now = Current(); return now.Length == 0 ? parkedPrevious : now; }
+        // Its address, when the page has one (a conversation parked away from has none here: by title).
+        static string StartedAddress() { return Current().Length == 0 ? "" : ShownAddress(); }
         // Whether a box holds text: an empty one reads as its placeholder, which is its name ("Do anything").
         static bool HoldsText(Node box) { string own = (box == null ? "" : box.Value).Trim(); return own.Length > 0 && own != box.Name.Trim(); }
         // Whether `field` reads as `text` (an empty text: as holding none).
         static bool Holds(string field, string text) { Node now = Find(field); return now != null && (text.Trim().Length == 0 ? !HoldsText(now) : now.Value.Trim() == text.Trim()); }
-        static double Left(DateTime end, double most) { return Math.Max(0, Math.Min(most, (end - DateTime.UtcNow).TotalSeconds)); }
+        static double Left(DateTime end, double most) { return Math.Max(0, Math.Min(most, (end - ActClock).TotalSeconds)); }
         // Sets `field` to `text` and waits until it reads so. A set the page reports done is sometimes not
         // taken: the box keeps what it held (measured in Codex's ChatGPT mode and Claude's chat mode, in
         // about one fill in five, and in Codex nearly always when the box already held text). Set again,
@@ -1428,28 +1632,28 @@ namespace Frontdesk.Driver
         // have passed; a set replaces the text, so one taken late is not doubled.
         static bool Put(string field, string text, double seconds)
         {
-            DateTime end = DateTime.UtcNow.AddSeconds(seconds);
+            DateTime end = ActClock.AddSeconds(seconds);
             while (true)
             {
                 if (Holds(field, text)) return true;
                 Node box = Find(field);
-                if (box == null) { if (DateTime.UtcNow >= end) return false; Wait(0.3); continue; }
+                if (box == null) { if (ActClock >= end) return false; Wait(0.3); continue; }
                 SetValue(box, text);
                 if (Until(Left(end, 0.6), () => Holds(field, text))) return true;
-                if (DateTime.UtcNow >= end) return false;
+                if (ActClock >= end) return false;
             }
         }
         // Fills `field` and waits for the `ready` button (the send button) to show.
         static bool Fill(string field, string text, string ready)
         {
-            DateTime end = DateTime.UtcNow.AddSeconds(4);
+            DateTime end = ActClock.AddSeconds(4);
             do
             {
                 if (!Put(field, text, Left(end, 4))) return false;
                 // Taken: Send shows, unless the page drops the text again (then it is set again).
                 Until(Left(end, 4), () => Find(ready) != null || !Holds(field, text));
                 if (Holds(field, text) && Find(ready) != null) return true;
-            } while (DateTime.UtcNow < end);
+            } while (ActClock < end);
             return false;
         }
         static void Clear(string field) { Put(field, "", 2.4); }
@@ -1535,14 +1739,17 @@ namespace Frontdesk.Driver
             if (button == null) return false;
             if (Expanded(button) && open()) return true;
             HoldForeground(true);
-            Expand(button);
+            // A button the page has just drawn anew is gone by the time it is pressed (UIA_E_ELEMENTNOTAVAILABLE,
+            // seen right after a "Switch model?" was confirmed): found again and pressed at once.
+            bool expanded = Expand(button);
+            for (int i = 0; i < 2 && !expanded; i++) { Wait(0.15); Node now = menu(); if (now == null) break; expanded = Expand(now); }
             // A press that came while the page was still settling (a chat just brought on screen) is
             // lost: pressed once more if the button still says closed (ax-driver.swift's open).
-            DateTime began = DateTime.UtcNow; bool pressedAgain = false;
+            DateTime began = ActClock; bool pressedAgain = false;
             bool shown = Until(3, () =>
             {
                 if (open()) return true;
-                if (!pressedAgain && (DateTime.UtcNow - began).TotalSeconds > 1.2) { Node now = menu(); if (now != null && !Expanded(now)) { pressedAgain = true; Expand(now); } }
+                if (!pressedAgain && (ActClock - began).TotalSeconds > 1.2) { Node now = menu(); if (now != null && !Expanded(now)) { pressedAgain = true; Expand(now); } }
                 return false;
             });
             if (shown) { Node again = menu(); if (again != null && !Confirmed(again)) { CloseMenus(menu); return false; } }
@@ -1738,9 +1945,9 @@ namespace Frontdesk.Driver
         // The reply is done once the page stops showing its stop button and its last message is the assistant's.
         static void AwaitReply(double seconds)
         {
-            DateTime end = DateTime.UtcNow.AddSeconds(seconds);
+            DateTime end = ActClock.AddSeconds(seconds);
             Wait(1.5);
-            while (DateTime.UtcNow < end)
+            while (ActClock < end)
             {
                 if (!Answering() && ChatRegion() != null)
                 {
@@ -1838,7 +2045,7 @@ namespace Frontdesk.Driver
         {
             if (ChatBox().Count == 0) Fail("usage", appName + "的配置里没有 chatRead");
             string previous = Current(), target = args.Count > 1 ? args[1] : "";
-            Action back = () => { if (previous.Length > 0 && previous != target) Show(previous, ""); };
+            Action back = () => { if (previous != target) ReturnTo(previous); };
             double seconds = 60; if (args.Count > 2) double.TryParse(args[2], NumberStyles.Float, CultureInfo.InvariantCulture, out seconds);
             switch (command)
             {
@@ -2012,6 +2219,9 @@ namespace Frontdesk.Driver
             foreach (Node e in nodes.Where(n => n.ControlType == CT_Hyperlink || RoleIs(n, "AXButton")))
             {
                 if (shaped != null && !Fits(e, shaped)) continue;
+                // A control that folds or opens something (a diff's header naming its file, Codex's
+                // changes panel) is not a link to the file. A profile's "fileLink" says it for itself.
+                if (shaped == null && e.ControlType != CT_Hyperlink && e.PExpand) continue;
                 string url = Uri.UnescapeDataString(e.Value ?? "").Replace('\\', '/'), own = Label(e).Trim();
                 string abs = absolute.Replace('\\', '/'), bareSlash = bare.Replace('\\', '/');
                 int score = 0;
@@ -2019,12 +2229,67 @@ namespace Frontdesk.Driver
                 // "ScreenSwitch.cs", described "c:\…\ScreenSwitch.cs"), which Label joins to the name:
                 // the description is matched as a path, and the name alone as the link's text.
                 string named = e.Name.Trim(), aside = (e.FullDescription.Length > 0 ? e.FullDescription : e.Help).Trim().Replace('\\', '/');
-                if (url.Length > 0 && ((abs.Length > 0 && url.EndsWith(abs, StringComparison.OrdinalIgnoreCase)) || url.EndsWith("/" + bareSlash, StringComparison.OrdinalIgnoreCase) || url == bareSlash)) score = 3;
-                else if (abs.Length > 0 && aside.Equals(abs, StringComparison.OrdinalIgnoreCase)) score = 3;
-                else if (text.Length > 0 && (own == text || named == text)) score = 2;
-                else if (baseName.Length > 0 && new[] { own, named }.Any(o => o == baseName || o == path || o == bare)) score = 1;
+                string[] names = { own, named };
+                string[] paths = new[] { baseName, path, bare }.Where(p => p.Length > 0).ToArray();
+                if (url.Length > 0 && ((abs.Length > 0 && url.EndsWith(abs, StringComparison.OrdinalIgnoreCase)) || url.EndsWith("/" + bareSlash, StringComparison.OrdinalIgnoreCase) || url == bareSlash)) score = 5;
+                else if (abs.Length > 0 && aside.Equals(abs, StringComparison.OrdinalIgnoreCase)) score = 5;
+                else if (text.Length > 0 && names.Contains(text)) score = 4;
+                else if (text.Length > 0 && names.Any(o => Leads(o, text))) score = 3;
+                else if (baseName.Length > 0 && names.Any(o => paths.Contains(o))) score = 2;
+                else if (baseName.Length > 0 && names.Any(o => paths.Any(p => Leads(o, p)))) score = 1;
                 if (score > 0) hits.Add(new KeyValuePair<Node, int>(e, score));
             }
+            return hits;
+        }
+        // A link named for the file and then what the desktop says about it, after a space: Codex's
+        // changed-file rows ("src/app.ts +10 -2") and file mentions ("app.ts (line 12)").
+        static bool Leads(string name, string file) { return name.Length > file.Length && name.StartsWith(file + " ", StringComparison.Ordinal); }
+        // The file's link, waited for while the chat is drawn. Two things can keep a link off the page:
+        // - The box holding it draws it only once it has been on screen (Codex's "Edited N files" card on
+        //   an earlier turn shows its rows only then): the profile's "fileCard" boxes are brought on
+        //   screen, newest first.
+        // - A long chat draws only its last messages (Claude, Antigravity): the first of the profile's
+        //   "messageMark" (what each message carries: its box, or its speaker line) is brought on
+        //   screen, which draws the messages above it, until nothing new comes.
+        // Each stops once the link is drawn, and both within the helper's time (the command's timeout is 30 s).
+        static List<KeyValuePair<Node, int>> DrawnFileLinks(string path, string absolute, string text)
+        {
+            Func<bool> late = () => clock.ElapsedMilliseconds > 22000;
+            List<KeyValuePair<Node, int>> hits = FileLinks(path, absolute, text);
+            for (int i = 0; i < 12 && hits.Count == 0; i++) { Wait(0.25); hits = FileLinks(path, absolute, text); }
+            if (hits.Count > 0) return hits;
+            Action settle = () => { for (int i = 0; i < 6 && hits.Count == 0; i++) { Wait(0.25); hits = FileLinks(path, absolute, text); } };
+            Func<List<Node>> messages = () => FindAll("messageMark");
+            // Where the chat was, to go back to when the link is not drawn after all.
+            List<Node> drawn = messages(), cardsNow = FindAll("fileCard");
+            IUIAutomationElement back = drawn.Count > 0 ? drawn[drawn.Count - 1].Element : cardsNow.Count > 0 ? cardsNow[cardsNow.Count - 1].Element : null;
+            bool moved = false;
+            if (locators.ContainsKey("fileCard"))
+            {
+                int cards = FindAll("fileCard").Count;
+                for (int index = cards - 1; index >= 0 && index >= cards - 40 && hits.Count == 0 && !late(); index--)
+                {
+                    List<Node> found = FindAll("fileCard");
+                    if (index >= found.Count) continue;
+                    ScrollIntoView(found[index].Element); moved = true;
+                    settle();
+                }
+            }
+            string before = null; int still = 0;
+            while (hits.Count == 0 && still < 2 && !late())
+            {
+                List<Node> now = messages();
+                if (now.Count == 0) break;
+                // What the top of the chat is now: the first mark, the text that follows it, and how
+                // many marks there are (a speaker line reads the same on every message).
+                Node next = nodes.Skip(now[0].Index + 1).FirstOrDefault(n => n.ControlType == CT_Text && n.Name.Trim().Length > 0);
+                string mark = now[0].Name + "\n" + (next == null ? "" : next.Name) + "\n" + now.Count;
+                still = mark == before ? still + 1 : 0; before = mark;
+                if (still >= 2) break;
+                ScrollIntoView(now[0].Element); moved = true;
+                settle();
+            }
+            if (hits.Count == 0 && moved && back != null) ScrollIntoView(back);
             return hits;
         }
 
@@ -2182,8 +2447,8 @@ namespace Frontdesk.Driver
             // A page just opened fills in for a moment: read once its controls stop changing.
             if (before.Length > 0)
             {
-                string last = ""; DateTime since = DateTime.UtcNow;
-                Until(2.5, () => { string now = string.Join(" | ", PageControls().Select(c => c.Label + "=" + c.Value)); if (now != last) { last = now; since = DateTime.UtcNow; return false; } return (DateTime.UtcNow - since).TotalSeconds >= 0.4; });
+                string last = ""; DateTime since = ActClock;
+                Until(2.5, () => { string now = string.Join(" | ", PageControls().Select(c => c.Label + "=" + c.Value)); if (now != last) { last = now; since = ActClock; return false; } return (ActClock - since).TotalSeconds >= 0.4; });
             }
             if (command == "new-pick")
             {
@@ -2195,8 +2460,8 @@ namespace Frontdesk.Driver
                     if (moved)
                     {
                         Func<string> words = () => string.Join(" | ", newPageShown().Select(kv => kv.Key + "=" + kv.Value).OrderBy(s => s, StringComparer.Ordinal));
-                        string last = words(); DateTime since = DateTime.UtcNow;
-                        Until(1.5, () => { string now = words(); if (now != last) { last = now; since = DateTime.UtcNow; return false; } return (DateTime.UtcNow - since).TotalSeconds >= 0.3; });
+                        string last = words(); DateTime since = ActClock;
+                        Until(1.5, () => { string now = words(); if (now != last) { last = now; since = ActClock; return false; } return (ActClock - since).TotalSeconds >= 0.3; });
                     }
                     List<object> shown = ListPageControls(null); Dictionary<string, object> menus = newPageShown(); goBack();
                     Dictionary<string, object> o = new Dictionary<string, object> { { "ok", error == null }, { "controls", shown }, { "picked", picked }, { "shown", menus }, { "previous", previous }, { "stayed", staying } };
@@ -2256,8 +2521,7 @@ namespace Frontdesk.Driver
                 if (command == "show-session") Out(new Dictionary<string, object> { { "ok", true } });
                 if (args.Count < 5) Fail("usage", "缺少会话标题或文件");
                 string label = args.Count > 5 ? args[5] : "";
-                List<KeyValuePair<Node, int>> hits = FileLinks(args[3], args[4], label);
-                for (int i = 0; i < 12 && hits.Count == 0; i++) { Wait(0.25); hits = FileLinks(args[3], args[4], label); }
+                List<KeyValuePair<Node, int>> hits = DrawnFileLinks(args[3], args[4], label);
                 int best = hits.Count == 0 ? 0 : hits.Max(h => h.Value);
                 Node link = hits.Where(h => h.Value == best).Select(h => h.Key).LastOrDefault();
                 if (link != null) { Press(link); Wait(0.3); }

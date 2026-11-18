@@ -138,7 +138,9 @@ export const setup: PluginSetup = ({ config = {}, registerEngine, registerAsset 
       // with what that page asks for picked there first (newOptions). A chat started from a
       // project's "+" has its folder picked there too: the page shows a Folder menu once its
       // Environment is "This computer" (newFolder, the desktop's own names).
-      createRequiresPrompt: true, newOptions: true, openFile: true, showInDesktop: true, newFolder: { control: 'Folder', via: { control: 'Environment', option: 'This computer' } } },
+      createRequiresPrompt: true, newOptions: true, openFile: true, showInDesktop: true, newFolder: { control: 'Folder', via: { control: 'Environment', option: 'This computer' } },
+      // Every message goes through the desktop's window, which on Windows takes the focus for a moment (uia-driver.cs).
+      takesFocus: process.platform === 'win32' },
     status: () => bridge.getStatus(), models: () => bridge.getModels(), usage: () => bridge.getUsage(),
     dictate: options => bridge.dictate(options), dictationReady: () => bridge.dictationReady(),
     list: async () => { const { projects } = chatSessions(); return [...await bridge.list(), ...mode.chats().map(chat => asSession(chat, projects))]; },

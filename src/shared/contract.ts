@@ -56,6 +56,8 @@ export interface Capabilities {
   sendBlocked?: string;
   /** true: interrupt can stop a desktop turn without a Frontdesk run record. */
   desktopInterrupt?: boolean;
+  /** true: a message is sent by working the desktop app's window, which on this platform takes the keyboard focus for a moment (Windows: docs/windows.md). The page says so once, at the first send. */
+  takesFocus?: boolean;
 }
 /** The flags of Capabilities only: what a desktop mode (space) or a session may narrow. */
 export type CapabilityFlags = { [K in keyof Capabilities as NonNullable<Capabilities[K]> extends boolean ? K : never]?: boolean };

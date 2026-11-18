@@ -200,7 +200,7 @@ namespace Frontdesk.Driver
             if (command == "new" && text.Length == 0) Fail("usage", "消息是空的");
             Begin(true);
             string previous = StartedOn();
-            Action back = () => { if (previous.Length > 0) Show(previous, ""); };
+            Action back = () => ReturnTo(previous);
 
             if (command == "new-shown")
             {

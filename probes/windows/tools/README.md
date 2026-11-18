@@ -42,3 +42,13 @@ Each runner beeps, waits so the person can set the scene (Claude showing its tes
 | `screencap.cs` | Every frame DWM presents (DXGI Desktop Duplication; GDI as a fallback), compared with a baseline. The frames show the person's screen: keep them under `probes\windows\out\` |
 | `fgtool.cs` | `fg`; `restore <hwnd>` (`AttachThreadInput` + `SetForegroundWindow`, no input); `watch <ms> <hwnd>`; `guard <ms> <original> <claude>` |
 | `plans/*.json` | The plans the recorded rounds used |
+
+## Other ways to act without the focus
+
+Probes for routes Frontdesk does not use yet (`docs/windows.md`, "What has been tried"). Run them with Windows PowerShell.
+
+| File | What it is |
+| --- | --- |
+| `hidden-desktop-test.ps1` | Makes a desktop of its own (`CreateDesktop`), starts Chrome or Edge on it (`-BrowserName`) with a local test page and a temporary profile, fills in and presses Send through UI Automation, and counts the person's foreground changes meanwhile. `-LibraryOnly` only declares its Win32 helpers, for the script below |
+| `claude-hidden-test.ps1` | The same with the real Claude: Claude must be fully quit first; it is started on the hidden desktop with a new chat whose message asks for "OK", and Send is pressed once. **Sends a real message** (a little quota, a test chat left in Claude): only with the person's agreement. Afterwards start Claude again on the normal desktop |
+| `child-session-test.ps1` | Switches child sessions on (`WTSEnableChildSessions`), tries to connect the RDP control to one, logs off only the child it made and switches the setting off again. Refuses to run when child sessions are already on. Run with `-STA` |

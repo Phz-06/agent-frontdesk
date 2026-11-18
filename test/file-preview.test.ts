@@ -110,6 +110,22 @@ test('an engine may name folders it keeps for a chat; files there can be read, n
   assert.throws(() => previewFile('', 'guide.md'), withStatus(404));
 });
 
+test('a relative path is read in the working directory first, then in each folder the session moved to', (t) => {
+  const { resolveFile } = __services_file_preview;
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'preview-moved-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  // The session started in `root` and then worked in `root/repo` (Claude: `cd repo`).
+  const repo = path.join(root, 'repo');
+  fs.mkdirSync(path.join(repo, 'docs'), { recursive: true });
+  fs.writeFileSync(path.join(repo, 'docs', 'PLAN.md'), '# plan');
+  fs.writeFileSync(path.join(root, 'both.md'), 'start'); fs.writeFileSync(path.join(repo, 'both.md'), 'moved');
+  assert.throws(() => resolveFile(root, 'docs/PLAN.md'), withStatus(404));
+  assert.deepEqual(resolveFile(root, 'docs/PLAN.md', [repo]), { file: path.join(repo, 'docs', 'PLAN.md'), relative: 'repo/docs/PLAN.md' });
+  assert.equal(previewFile(root, 'docs/PLAN.md:3', [repo]).text, '# plan');
+  // Found in both: the working directory wins.
+  assert.equal(previewFile(root, 'both.md', [repo]).text, 'start');
+});
+
 test("an app's icon is read from its .icns as the PNG nearest the asked size, and a missing or foreign file gives none", async t => {
   const { readAppIcon } = await import('../src/server/services/app-assets.js');
   const png = (width: number) => { const out = Buffer.alloc(32); Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(out); out.writeUInt32BE(width, 16); return out; };

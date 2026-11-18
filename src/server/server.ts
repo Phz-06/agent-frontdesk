@@ -22,6 +22,7 @@ import { AttachmentStore, ATTACHMENTS_ONLY_PROMPT, isUploadError } from './core/
 import { previewFile, resolveFile } from './services/file-preview.js';
 import { TranscriptStore } from './services/transcript-export.js';
 import { revealFile, fileManager } from './services/reveal.js';
+import { markTyping } from './core/desktop-automation.js';
 import { arr, errorField, get, list, messageOf, str } from '../shared/guards.js';
 import { sameTurn } from '../shared/turn-match.js';
 import type { BridgeConfig, CreateInput, EnginesResponse, CreateResult, DesktopSettings, Engine, NewControl, SendInput, UnifiedSession, WrapUpCard } from '../shared/contract.js';
@@ -104,6 +105,14 @@ async function createApp({ config = loadConfig(), host: given, hub = new EventHu
   ));
   app.get('/api/usage', async (req, res) => res.json(await usage.all()));
   app.get('/api/activity', (req, res) => res.json(activity.snapshot()));
+  // The person typing in the page (desktop-automation.ts, markTyping). Only a page on this machine
+  // counts: the foreground a Windows helper's action takes is this machine's.
+  app.post('/api/typing', (req, res) => {
+    const local = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress || '');
+    const typing = get(req.body, 'typing');
+    if (local && process.platform === 'win32' && (typing === 'composing' || typing === 'keys')) markTyping(typing);
+    res.json({ ok: true });
+  });
   app.get('/api/activity/events', (req, res) => {
     res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
     res.flushHeaders(); streams.add(res);

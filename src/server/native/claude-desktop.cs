@@ -214,8 +214,16 @@ namespace Frontdesk.Driver
             if ((command == "send" || command == "new") && text.Length == 0) Fail("usage", "消息是空的");
 
             Begin(true);
-            string previous = StartedOn();
-            Action back = () => { if (previous.Length > 0 && previous != title) Show(previous, ""); };
+            string previous = StartedOn(), previousAt = StartedAddress();
+            // The session the command acts on, by its page's address ("/epitaxy/local_..."): two sessions may share a title.
+            string target = localId.StartsWith("local_", StringComparison.Ordinal) ? Address(localId) : "";
+            // Back to the session the person had on screen, by its address when both are known (it may
+            // have the same title as this one and still be another session). ReturnTo: not while parked.
+            Action back = () =>
+            {
+                if (previousAt.Length > 0 && target.Length > 0) { if (previousAt != target) ReturnTo(previous, previousAt); }
+                else if (previous != title) ReturnTo(previous);
+            };
             List<string> changed = new List<string>(), notes = new List<string>();
 
             if (command == "new")
@@ -269,7 +277,7 @@ namespace Frontdesk.Driver
                         if (stopButton == null) { back(); Fail("not_running", "这个会话在 Claude 桌面版里没有在运行"); }
                         if (!Press(stopButton)) { back(); Fail("not_stopped", "没能按下 Claude 桌面版的停止按钮"); }
                         bool stopped = false;
-                        for (int i = 0; i < 12; i++) { Wait(0.25); if (Current() != title) break; if (Find("stop") == null) { stopped = true; break; } }
+                        for (int i = 0; i < 12; i++) { Wait(0.25); if (!IsShown(title, target)) break; if (Find("stop") == null) { stopped = true; break; } }
                         back();
                         if (!stopped) Fail("not_stopped", "按了停止，但 Claude 桌面版还在运行");
                         Out(new Dictionary<string, object> { { "ok", true } });
@@ -331,7 +339,9 @@ namespace Frontdesk.Driver
             Node send = Find("send");
             if (send == null || !Press(send)) { Put("composer", draft, 2.4); back(); Fail("no_send", "Claude 桌面版没有出现发送按钮"); }
             // The record, not this, says whether it went out; this only hints.
+            System.Diagnostics.Stopwatch sentFor = System.Diagnostics.Stopwatch.StartNew();
             bool cleared = Until(3, () => Find("send") == null || Find("stop") != null || Composer() == null || !HoldsText(Composer()));
+            Trace("sent: " + (cleared ? "the composer cleared after " : "the composer did not clear in ") + sentFor.ElapsedMilliseconds + "ms");
             // A message sent into a running turn waits in the desktop's own queue (its "Send now" shows) until
             // the turn's next step; the record has it only then (seen 30 s later on a turn with no steps).
             bool queued = steer && running && Until(1.5, () => FindAll("sendNow").Count > 0);

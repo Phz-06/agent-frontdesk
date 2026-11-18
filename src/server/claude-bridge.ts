@@ -78,7 +78,7 @@ export interface SessionMeta extends DesktopSession {
 }
 /** A transcript, parsed once per change. */
 export interface ParsedTranscript {
-  file: string; size: number; mtimeMs: number; writtenAt?: number; turns: UnifiedTurn[]; cwd: string; title: string; queue: DesktopQueueItem[]; queuedAt?: number[]; lastStop?: unknown;
+  file: string; size: number; mtimeMs: number; writtenAt?: number; turns: UnifiedTurn[]; cwd: string; cwds?: string[]; title: string; queue: DesktopQueueItem[]; queuedAt?: number[]; lastStop?: unknown;
   /** Kept only while the transcript is being written (see ClaudeBridge.parse): its records so far, and how far into the file they reach. */
   tail?: { records: unknown[]; offset: number };
 }
@@ -93,6 +93,8 @@ export interface StreamRun {
 export interface DesktopRun extends StreamRun {
   desktop?: boolean; meta: SessionMeta; finished?: boolean; started?: number | null; steers?: string[]; error?: string;
   finish?: (status: string) => void; timer?: ReturnType<typeof setInterval>; stopRequested?: boolean; stopReason?: unknown; endedAt?: number; waiting?: string;
+  // Not sent yet: waiting for an exclusive full-screen program to leave the front (sendViaDesktop); `cancelled` by Stop meanwhile.
+  deferred?: boolean; cancelled?: boolean;
 }
 type Route = { error: string } | { desktop: true; meta: SessionMeta; file: string };
 
@@ -551,14 +553,24 @@ class ClaudeBridge {
   // macOS: /tmp/claude-<uid>/<project folder>/<id>. Windows has no uid: Claude Code keeps it under
   // %TEMP%\claude\<hash>\<id>, one hash for the scratchpad and another for task output, so every
   // folder there named after the session counts.
+  // And every folder the session moved to inside the one it started in (its transcript's `cwd`,
+  // newest first): a reply names a file relative to where the session was then, as the desktop's
+  // own links do. A folder outside the starting one (`cd ~`) does not widen what can be read.
   fileRoots(id: string, platform: NodeJS.Platform = process.platform): string[] {
     const transcript = this.transcriptPath(id), uid = typeof process.getuid === 'function' ? process.getuid() : null;
     if (!transcript) return [];
+    let worked: string[] = [];
+    try {
+      const cwds = this.parse(id)?.cwds || [], start = this.metaFor(id)?.cwd || cwds[cwds.length - 1] || '';
+      const paths = platform === 'win32' ? path.win32 : path.posix;
+      worked = start ? cwds.filter(dir => { const inner = paths.relative(start, dir); return !!inner && !inner.startsWith('..') && !paths.isAbsolute(inner); }) : [];
+    } catch {}
+    let own: string[] = [];
     if (platform === 'win32') {
       const base = path.join(this.tmpDir, 'claude');
-      try { return fs.readdirSync(base).map(hash => path.join(base, hash, id)).filter(dir => fs.existsSync(dir)); } catch { return []; }
-    }
-    return uid !== null ? [path.join(this.tmpDir, `claude-${uid}`, path.basename(path.dirname(transcript)), id)] : [];
+      try { own = fs.readdirSync(base).map(hash => path.join(base, hash, id)).filter(dir => fs.existsSync(dir)); } catch {}
+    } else if (uid !== null) own = [path.join(this.tmpDir, `claude-${uid}`, path.basename(path.dirname(transcript)), id)];
+    return [...worked, ...own];
   }
   // A session's transcript as turns, kept until the file changes. The list asks for every session
   // every few seconds (the activity feed), so every session the desktop lists stays in the cache:
@@ -586,8 +598,12 @@ class ClaudeBridge {
     const turns = buildTurns(records, id);
     const last = <T>(pick: (record: unknown) => T | undefined | null | false | ''): T | undefined => { for (let index = records.length - 1; index >= 0; index--) { const found = pick(records[index]); if (found) return found; } return undefined; };
     const cwd = asText(last(record => get(record, 'cwd')) || '');
+    // Every folder the session worked in, newest first: a session that moved (`cd` into a
+    // repository) names files relative to where it was when it wrote them.
+    const cwds: string[] = [];
+    for (let index = records.length - 1; index >= 0; index--) { const dir = asText(get(records[index], 'cwd') || ''); if (dir && !cwds.includes(dir)) cwds.push(dir); }
     const title = asText(last(record => get(record, 'type') === 'custom-title' && get(record, 'customTitle')) || '');
-    const entry: ParsedTranscript = { file, size: stat.size, mtimeMs: stat.mtimeMs, writtenAt: last(record => Date.parse(String(get(record, 'timestamp'))) || 0) || 0, turns, cwd, title, queue: desktopQueue(records), queuedAt: queueTimes(records), lastStop: last(record => get(record, 'type') === 'assistant' && !get(record, 'isSidechain') && get(record, 'message', 'stop_reason')) };
+    const entry: ParsedTranscript = { file, size: stat.size, mtimeMs: stat.mtimeMs, writtenAt: last(record => Date.parse(String(get(record, 'timestamp'))) || 0) || 0, turns, cwd, cwds, title, queue: desktopQueue(records), queuedAt: queueTimes(records), lastStop: last(record => get(record, 'type') === 'assistant' && !get(record, 'isSidechain') && get(record, 'message', 'stop_reason')) };
     // Changed since it was last read: its records stay for the next append. Only the transcripts
     // changed most recently keep theirs (HOT_TRANSCRIPTS): records are the bulk of the memory.
     if (cached) {
@@ -1006,7 +1022,7 @@ class ClaudeBridge {
   // `sent`: the desktop already has the message (a session it has just created with it);
   // `note`: what it changed in its settings for that message.
   async sendViaDesktop(id: string, { meta, file }: { meta: SessionMeta; file: string }, input: Partial<SendInput>, emitter: EngineEmitter, { sent = false, note = '' }: { sent?: boolean; note?: string } = {}): Promise<void> {
-    const offset = sent ? 0 : fs.statSync(file).size;
+    let offset = sent ? 0 : fs.statSync(file).size;
     const run: DesktopRun = { desktop: true, meta, emitter, interrupted: false, lastMessage: null, plan: (this.parse(id)?.turns || []).flatMap(turn => turn.steps).filter(step => step.plan).at(-1)?.plan || null, finished: false, started: null };
     this.runs.set(id, run);
     const message = withAttachments(input.prompt, input.attachments, 'mention');
@@ -1014,12 +1030,30 @@ class ClaudeBridge {
     // Model, effort and permissions picked here are picked in the desktop app before it sends.
     let wanted: DesktopFlags = {};
     if (!sent) { try { wanted = await this.desktopSettings(input, meta); } catch (err) { fail(messageOf(err)); return; } }
-    let result: HelperResult = sent ? { ok: true } : await this.desktop.send(meta, message, wanted), joined = false;
-    if (sent) await new Promise(resolve => setTimeout(resolve, 50)); // let the caller subscribe first
+    let result: HelperResult = { ok: true }, joined = false;
     // The desktop is still running a turn the page took for finished (its index can mark the
     // turn's edge before the reply has ended). Do what the desktop's own composer does then:
     // hand it the message, which it puts into the running turn.
-    if (!sent && !result.ok && result.code === 'busy') { result = await this.desktop.steer(meta, message, wanted); joined = !!result.ok; }
+    const attempt = async () => {
+      joined = false; result = await this.desktop.send(meta, message, wanted);
+      if (!result.ok && result.code === 'busy') { result = await this.desktop.steer(meta, message, wanted); joined = !!result.ok; }
+    };
+    if (sent) await new Promise(resolve => setTimeout(resolve, 50)); // let the caller subscribe first
+    else await attempt();
+    // An exclusive full-screen program (a game) is in front: the helper did nothing (uia-driver.cs,
+    // ExclusiveFullscreen). The message waits here, shown as waiting, and goes out once the person has
+    // left it; Stop takes it back meanwhile (interrupt).
+    if (!sent && !result.ok && result.code === 'fullscreen') {
+      run.deferred = true;
+      emitter.emit('warning', { message: '前台的程序独占全屏，消息先留在工作台，你离开它后自动发出', retrying: true });
+      while (!result.ok && result.code === 'fullscreen') {
+        await new Promise(resolve => setTimeout(resolve, this.fullscreenRetryMs));
+        if (run.cancelled || this.runs.get(id) !== run) return;
+        offset = fs.statSync(file).size;
+        await attempt();
+      }
+      run.deferred = false;
+    }
     // Nothing was sent: the helper stops before typing when a setting could not be changed.
     if (!result.ok) { fail(result.error || '桌面代发失败'); return; }
     if (joined) emitter.emit('warning', { message: 'Claude 桌面版里这一轮还没结束，消息已交给桌面版，它会插进正在执行的这一轮', retrying: false });
@@ -1105,6 +1139,8 @@ class ClaudeBridge {
   }
   // How long a steer waits for the record to show the desktop took it (a moment only, when the helper saw it queued).
   steerConfirmMs = 12000;
+  // How often a message held back by an exclusive full-screen program is tried again (sendViaDesktop).
+  fullscreenRetryMs = 3000;
   // Adds a message to the turn the desktop is running: typed into its composer and sent there,
   // the desktop queues it and puts it in at the next step (or at once with Send now).
   async steer(id: string, input: Partial<SendInput> = {}): Promise<Record<string, never>> {
@@ -1118,6 +1154,8 @@ class ClaudeBridge {
     try { wanted = await this.desktopSettings(input, route.meta); } catch (err) { throw Object.assign(errorOf(err), { status: 409 }); }
     const result = await this.desktop.steer(route.meta, message, wanted);
     const drop = () => { const index = run?.steers?.indexOf(message) ?? -1; if (index >= 0) run?.steers?.splice(index, 1); };
+    // An exclusive full-screen program in front: the console's queue keeps it, and sends it after this turn (then waiting for the person to leave it).
+    if (!result.ok && result.code === 'fullscreen') { drop(); throw Object.assign(new Error(result.error || '前台的程序独占全屏'), { fallback: 'queue' }); }
     if (!result.ok) { drop(); throw Object.assign(new Error(result.error || '没能由 Claude 桌面版插话'), { status: 409 }); }
     // Confirmed once the desktop records it: queued (enqueue) or already put in (a prompt).
     const seen = await this.waitForRecord(route.file, offset, record => (get(record, 'type') === 'queue-operation' && get(record, 'operation') === 'enqueue') || (isHumanPrompt(record) && promptStarts(message, typedText(get(record, 'message', 'content')), 200)), result['queued'] === true ? Math.min(1500, this.steerConfirmMs) : this.steerConfirmMs);
@@ -1221,6 +1259,8 @@ class ClaudeBridge {
   }
   async interrupt(id: string): Promise<{ pending: boolean }> {
     const run = this.runs.get(id);
+    // A message still waiting for a full-screen program to leave the front never reached the desktop: taken back here.
+    if (run?.deferred) { run.cancelled = true; this.runs.delete(id); return { pending: false }; }
     const sessions = this.desktopIndex();
     const meta = sessions.find(session => session.id === id) ?? run?.meta;
     if (!meta?.title) throw Object.assign(new Error('这个会话不在 Claude 桌面版里'), { status: 409 });

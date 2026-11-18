@@ -64,6 +64,14 @@ const EN: Record<string, string> = {
   '关闭会话列表': 'Close sidebar', '关闭侧栏': 'Close sidebar', '切换会话列表': 'Toggle sidebar', '拖动调整会话列表宽度，双击恢复默认': 'Drag to resize. Double-click to reset.',
   '引擎已就绪': 'Connected', '桌面版界面有改动': 'Desktop app changed', '{n} 个控件的认法要更新：{keys}': '{n} controls need a new locator: {keys}', '上次在后台操作后，窗口没有回到原位': "After the last action from behind, the window didn't go back where it was", '仅可查看历史': 'Read-only', '引擎未连接': 'Not connected', '正在连接': 'Connecting…', '同步中': 'Syncing',
   '我的': 'Profile', '我的头像': 'Your avatar', '设置': 'Settings',
+  // sending on Windows takes the focus for a moment (said once at the first send; Settings shows it again)
+  '在 Windows 上代发消息时会短暂拿走焦点…': 'Sending on Windows takes the focus for a moment…',
+  '在 Windows 上代发消息': 'Sending on Windows',
+  'Windows 不允许程序在后台按桌面版的按钮而不让它拿到焦点。所以每发一条消息，桌面版的窗口会短暂拿走焦点几次，每次不到 0.1 秒。': "Windows doesn't let a program press a button in a desktop app's window from behind without that window taking the focus. So each message makes the app's window take the focus a few times, for less than 0.1 s each.",
+  '这时你如果在别的程序里打字，正在拼的字可能会被打断。在工作台里打字时，它会等你停顿再动手。': "If you're typing in another app at that moment, a word you're composing may be cut off. When you type in Frontdesk, it waits for a pause.",
+  '改模型或推理强度时，大约半秒内你打的字会进到桌面版里。': 'When a message changes the model or effort, what you type for about half a second goes to the app.',
+  '前台的程序独占全屏时，消息会等你离开它再发。': 'If the program in front runs in exclusive full screen, the message waits until you leave it.',
+  '了解详情': 'Learn more', '知道了': 'Got it',
   // settings
   '语言': 'Language', '主题': 'Theme', '跟随系统': 'System', '浅色': 'Light', '深色': 'Dark', 'AI 对话框位置': 'Speech bubbles', '头像下方': 'Below', '头像右侧': 'Beside',
   'Agent 栏': 'Agent rail', '紧凑': 'Compact', '展开': 'Wide', '展开 Agent 栏': 'Widen the agent rail', '收起 Agent 栏': 'Narrow the agent rail', '在 {name} 打开': 'Open in {name}', '聊天数': 'Chats', '窗口宽度超过 1100 像素时才会展开': 'The rail widens once the window is wider than 1100 px.',
@@ -129,7 +137,7 @@ const EN: Record<string, string> = {
   // adding an AI (the prompt itself has its own English edition, onboardingPromptEn in app.ts)
   '把下面这段话发给你的桌面版 AI（Claude、Codex、Antigravity 或其他）。它会复用工作台现成的页面和能力，只接自己的数据、选好把消息送进它桌面版的通道。': 'Paste this prompt into your desktop AI (Claude, Codex, Antigravity, or another). It reuses the pages and features Frontdesk already has, connects only its own data, and picks how messages reach its desktop app.',
   '读工作台的接入手册': 'Read the Frontdesk guide', '选好进桌面版的通道': 'Pick how messages reach its desktop app', '分阶段接数据、补能力': 'Connect its data, one capability at a time', '真实走一遍后交付': 'Try it for real, then ship',
-  '提示词': 'Prompt', '复制手册路径': 'Copy guide path', '复制提示词': 'Copy prompt', '已选中，按 ⌘C 复制': 'Selected. Press ⌘C to copy.', '已复制路径': 'Path copied', '手册位置：': 'Guide: ', '工作台项目目录': 'Frontdesk project folder',
+  '提示词': 'Prompt', '复制手册路径': 'Copy guide path', '复制提示词': 'Copy prompt', '已选中，按 ⌘C 复制': 'Selected. Press ⌘C to copy.', '已选中，按 Ctrl+C 复制': 'Selected. Press Ctrl+C to copy.', '已复制路径': 'Path copied', '手册位置：': 'Guide: ', '工作台项目目录': 'Frontdesk project folder',
 };
 
 // What the server and the engines' adapters report (errors, status notes, approval prompts).
@@ -199,6 +207,9 @@ const REPORTS: Record<string, string> = {
   'Claude 桌面版没有及时响应': "Claude's desktop app didn't respond in time", '桌面代发程序没有正常返回': 'The desktop helper stopped unexpectedly', '桌面代发只支持 macOS': 'Sending through the desktop app only works on macOS', '桌面代发只支持 macOS 和 Windows': 'Sending through the desktop app works on macOS and Windows', '桌面版以更高的权限运行（例如以管理员身份），工作台能读到它的界面但不能操作：请用相同的权限运行两者': 'The desktop app runs with higher rights (as administrator, say): the console can read its window but not act on it. Run both with the same rights.', '桌面代发程序编译失败（需要 Windows 自带的 .NET Framework 4 的 csc.exe）': "The desktop helper didn't compile (it needs the csc.exe of .NET Framework 4, which comes with Windows)", 'Windows 上的桌面代发还在移植中，暂时不能通过窗口操作发送': "Sending through the desktop app's window isn't available on Windows yet: it is still being ported",
   '缺少桌面版在 Windows 上的配置（AX_PROFILE 的 windows.exe）': "The desktop app's Windows settings are missing (windows.exe in AX_PROFILE)",
   '另一个桌面版正在后台操作，稍后再试': 'Another desktop app is being worked from behind right now. Try again in a moment.',
+  '前台的程序独占全屏，消息先留在工作台，你离开它后自动发出': 'The program in front runs in exclusive full screen: the message waits in the console and goes out once you leave it',
+  '前台的程序独占全屏': 'The program in front runs in exclusive full screen',
+  '前台的程序独占全屏：工作台先不操作{x}，等你离开它再发': "The program in front runs in exclusive full screen: the console leaves {x} alone until you leave it",
   'Codex 桌面版的项目菜单没有关上，没有发送：请到桌面版里关掉它': "Codex's project menu didn't close, so nothing was sent. Close it in the desktop app.", 'Codex 桌面版的模型菜单没有关上，没有发送：请到桌面版里关掉它': "Codex's model menu didn't close, so nothing was sent. Close it in the desktop app.",
   'Codex 桌面版里这个会话的模型或推理强度刚刚变了，没有发送：请刷新后重新选择': "This chat's model or effort just changed in Codex's desktop app, so nothing was sent. Refresh and pick again.", 'Codex 桌面版现在没有打开这个会话，没法给它换模型或推理强度，没有发送：请先在桌面版里打开这个会话': "Codex's desktop app doesn't have this chat open, so its model or effort can't be changed and nothing was sent. Open the chat in the desktop app first.",
   '桌面代发程序编译失败（需要 Xcode 命令行工具：xcode-select --install）': "Couldn't build the desktop helper. Install the Xcode command line tools: xcode-select --install", 'Claude 桌面版没有在运行': "Claude's desktop app isn't running",

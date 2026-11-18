@@ -89,18 +89,48 @@ const WINDOWS_NOT_PORTED = 'Windows 上的桌面代发还在移植中，暂时�
 // One wording for every engine (the page translates it by this exact text).
 const NOT_TRUSTED = '桌面代发需要辅助功能权限：在「系统设置 → 隐私与安全性 → 辅助功能」里允许运行工作台服务的程序（例如终端），然后重启工作台';
 
+// The helper's answer is read as soon as its line is written, not when the process ends: the Windows
+// helper finishes a park after answering (a minimized window's saved bounds, up to a few seconds:
+// uia-driver.cs, FinishPark), and the person need not wait for that. A park the next command makes
+// meanwhile waits for the machine's park lock, which the finishing helper still holds.
 function run(file: string, args: string[], { input, timeout = 30000, env }: RunOptions = {}): Promise<HelperResult> {
   return new Promise(resolve => {
+    let answered = false, pending = '';
+    const answer = (result: HelperResult) => { if (!answered) { answered = true; resolve(result); } };
     const child = execFile(file, args, { timeout, maxBuffer: 1 << 20, env: { ...process.env, ...env }, windowsHide: true }, (err, stdout, stderr) => {
       if (TRACE && stderr) process.stderr.write(stderr);
       // `unanswered`: the helper was stopped (its timeout) or ended without its answer, so ran no clean-up.
       const crashed = (): HelperResult => ({ ok: false, code: 'crashed', unanswered: true, error: err?.killed ? '桌面版没有及时响应' : '桌面代发程序没有正常返回' });
       let result: HelperResult;
       try { result = helperResultOf(parseJson(String(stdout).trim().split('\n').at(-1) ?? ''), crashed); } catch { result = crashed(); }
-      resolve(result);
+      answer(result);
+    });
+    child.stdout?.on('data', (chunk: string | Buffer) => {
+      pending += String(chunk);
+      const lines = pending.split('\n'); pending = lines.pop() ?? '';
+      for (const line of lines) {
+        // Only an answer with a park report: any other helper ends right after answering.
+        let value: unknown; try { value = parseJson(line.trim()); } catch { continue; }
+        if (typeof get(value, 'ok') === 'boolean' && bag(get(value, 'parked'))) answer(helperResultOf(value, () => ({ ok: false, code: 'crashed' })));
+      }
     });
     if (input != null) child.stdin?.end(input);
   });
+}
+
+/**
+ * The person is typing in the console's page (client/js/composing.ts): the Windows helper waits before
+ * each action while the time written here has not passed (uia-driver.cs, BeforeAct). An action's grab
+ * of the foreground would end a word being composed, and keys typed while the app holds the foreground
+ * (a menu open) go to the app's page. `composing` lasts until renewed (the page renews it while the word
+ * goes on, and a word the page never ends lapses by itself); `keys` lasts until a pause in typing.
+ */
+export const COMPOSING_MS = 1500, KEYS_PAUSE_MS = 800;
+export function markTyping(typing: 'composing' | 'keys', { dir = helperCacheDir(), now = Date.now() }: { dir?: string; now?: number } = {}): void {
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'person-typing'), String(now + (typing === 'composing' ? COMPOSING_MS : KEYS_PAUSE_MS)));
+  } catch { /* the helper then just does not wait */ }
 }
 
 export interface AutomationOptions { engine: string; label?: string; cacheDir?: string; platform?: string; runner?: HelperRunner; parkMs?: number; warmEveryMs?: number }

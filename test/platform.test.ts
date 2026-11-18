@@ -162,8 +162,16 @@ test('Windows: Antigravity takes only show-session and open-file, and finds a co
   assert.match(driver, /"ported", flowCommands\.Concat\(Shared\(\)\)/);
   assert.match(driver, /if \(Shared\(\)\.Contains\(command\)\) RunShared\(\);/);
   // "sessionAddress": the page's document at that path, its sidebar row the link there, scrolled both ways to it.
-  assert.match(driver, /Func<bool> here = \(\) => at\.Length == 0 \? Current\(\) == title : Showing\(at\);/);
+  assert.match(driver, /static bool IsShown\(string title, string at\) \{ return at\.Length == 0 \? Current\(\) == title : Showing\(at\); \}/);
   assert.match(driver, /foreach \(bool downward in new\[\] \{ true, false \}\)/);
+  // "sessionRowsBy": "title" (main, Claude): each row with the title is pressed until the page's address is the
+  // session's; the deep link only for a command that brings the desktop to the front anyway; back and Stop by address.
+  assert.match(driver, /if \(at\.Length > 0 && Setting\("sessionRowsBy"\) == "title"\)/);
+  assert.match(driver, /bool linkable = MayFront && /);
+  assert.match(driver, /static bool MayFront \{ get \{ return command == "open-file" \|\| command == "show-session"; \} \}/);
+  const claudeFlow = fs.readFileSync(path.join(native, 'claude-desktop.cs'), 'utf8');
+  assert.match(claudeFlow, /previousAt = StartedAddress\(\)/);
+  assert.match(claudeFlow, /if \(!IsShown\(title, target\)\) break;/);
   // "fileLink": only the chat's own links count.
   assert.match(driver, /if \(shaped != null && !Fits\(e, shaped\)\) continue;/);
 });
@@ -196,4 +204,67 @@ test('Windows: a helper stopped mid-park is followed by `restore`, and a park th
   mac.binary = process.execPath; ran.length = 0;
   await mac.run(['send']);
   assert.deepEqual(ran, ['mac send']);
+});
+
+// Fewer grabs of the foreground on Windows, and none in the middle of a word the person is composing:
+// every action that can make a parked page take the foreground waits first for the page to be live
+// and for the person (BeforeAct), and a command that parked the window leaves it on its conversation.
+test('Windows: every page action waits in BeforeAct, and a parked command does not go back to the previous conversation', () => {
+  const native = path.join(import.meta.dirname, '../src/server/native');
+  const raw = fs.readFileSync(path.join(native, 'uia-driver.cs'), 'utf8').split('\n');
+  const body = (signature: RegExp) => { const from = raw.findIndex(line => signature.test(line)); assert.ok(from > 0, String(signature)); return raw.slice(from, raw.findIndex((line, i) => i > from && /^ {8}\}/.test(line))).join('\n'); };
+  for (const action of [/static bool Press\(Node/, /static bool Expand\(Node/, /static bool Collapse\(Node/, /static bool SetValue\(Node/, /static bool Activate\(Node/, /static bool Toggle\(Node/, /static void ScrollIntoView\(/, /static void OpenLink\(/]) {
+    assert.match(body(action), /BeforeAct\(\);/, `${action} waits in BeforeAct`);
+  }
+  const before = body(/static void BeforeAct\(\)/);
+  assert.match(before, /if \(!Parking\.Active \|\| Parking\.Held\) return;/);
+  assert.ok(before.indexOf('TypingUntil() > NowMs()') > 0 && before.indexOf('TypingUntil() > NowMs()') < before.indexOf('PageLive()'), 'the person first, then the page right before the action');
+  assert.match(before, /Nudge\(\);\s*while \(!PageLive\(\) && shown\.ElapsedMilliseconds < SettleMs\(\)\)/);
+  // A raised corner is nudged, so Chromium counts the page as shown again (a z-order change alone does not make it count).
+  assert.match(body(/static bool RaiseCorner\(\)/), /Nudge\(\);\s*return CornerUp\(\);/);
+  assert.match(body(/static bool PageLive\(\)/), /Chrome_RenderWidgetHostHWND/);
+  // An exclusive full-screen program in front (QUNS_RUNNING_D3D_FULL_SCREEN): nothing is parked or pressed.
+  const park = body(/static bool Park\(\)/);
+  assert.ok(park.indexOf('ExclusiveFullscreen()') > 0 && park.indexOf('ExclusiveFullscreen()') < park.indexOf('TakeParkLock('), 'the full-screen check comes before the park');
+  assert.match(body(/static bool ExclusiveFullscreen\(\)/) || raw.find(line => line.includes('static bool ExclusiveFullscreen()')) || '', /SHQueryUserNotificationState\(out state\) == 0 && state == 3/);
+  // Deadlines outside the window section run on ActClock, which leaves out what BeforeAct waited: a
+  // fill's few seconds are not spent waiting for the person.
+  const start = raw.findIndex(line => line.includes('// ==== the window: parked, put back, brought forward ====')), end = raw.findIndex(line => line.includes('// ==== end of the window ===='));
+  raw.forEach((line, i) => { if (i < start || i > end) assert.doesNotMatch(line, /DateTime\.UtcNow/, `uia-driver.cs:${i + 1} keeps a deadline on the wall clock`); });
+  assert.match(raw.find(line => line.includes('static DateTime ActClock')) ?? '', /Parking\.SettledMs \+ Parking\.PersonMs/);
+  // Going back: through ReturnTo in every flow, which leaves a parked window where it is but never on the new-chat page.
+  for (const flow of ['claude-desktop.cs', 'codex-desktop.cs', 'uia-driver.cs']) {
+    const text = fs.readFileSync(path.join(native, flow), 'utf8');
+    assert.match(text, /Action back = \(\) =>[\s\S]{0,400}?ReturnTo\(previous/, `${flow} goes back through ReturnTo`);
+    assert.doesNotMatch(text, /Action back = \(\) => \{[^}]*Show\(previous/, `${flow} does not show the previous conversation itself`);
+  }
+  assert.match(body(/static void ReturnTo\(string previous, string previousAt = ""\)/), /Parking\.Active && !staying && !newPageNames\.Contains\(command\) && Current\(\)\.Length > 0/);
+  // The answer goes out before the rest of the park (a minimized window's saved bounds) is finished.
+  const out = body(/static void Out\(Dictionary/);
+  assert.ok(out.indexOf('Unpark(false)') >= 0 && out.indexOf('Console.WriteLine') < out.indexOf('FinishPark();'), 'the answer is written before FinishPark');
+});
+
+test('The person typing in the page marks the time the Windows helper waits until: a word being composed, renewed while it goes on, then a pause in keys', async () => {
+  const { markTyping, COMPOSING_MS, KEYS_PAUSE_MS } = await import('../src/server/core/desktop-automation.js');
+  const dir = temp(), file = path.join(dir, 'person-typing');
+  markTyping('composing', { dir, now: 1000 });
+  assert.equal(fs.readFileSync(file, 'utf8'), String(1000 + COMPOSING_MS));
+  markTyping('keys', { dir, now: 2000 });
+  assert.equal(fs.readFileSync(file, 'utf8'), String(2000 + KEYS_PAUSE_MS));
+
+  const { watchTyping, RENEW_MS, KEYS_EVERY_MS } = await import('../src/client/js/composing.js');
+  const target = new EventTarget(), said: string[] = [];
+  let now = 0;
+  const stop = watchTyping(target, typing => said.push(typing), () => now);
+  const key = (isComposing = false) => target.dispatchEvent(Object.assign(new Event('keydown'), { isComposing }));
+  key(); now = KEYS_EVERY_MS - 1; key(); now = KEYS_EVERY_MS; key();           // keys: at most every 0.3 s
+  assert.deepEqual(said, ['keys', 'keys']);
+  target.dispatchEvent(new Event('compositionstart')); key(true);              // a word: the keys inside it are its own
+  now += RENEW_MS - 1; target.dispatchEvent(new Event('compositionupdate'));
+  now += 1; target.dispatchEvent(new Event('compositionupdate'));
+  target.dispatchEvent(new Event('compositionend'));                          // then a pause in keys is waited for
+  assert.deepEqual(said, ['keys', 'keys', 'composing', 'composing', 'keys']);
+  stop();
+  target.dispatchEvent(new Event('compositionstart')); key();
+  assert.equal(said.length, 5, 'nothing is said once stopped');
 });

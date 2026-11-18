@@ -19,6 +19,11 @@
           "name": "Chat messages"
         }
       ],
+      "messageMark": {
+        "role": "AXGroup",
+        "prefix": "Message ",
+        "inside": "transcript"
+      },
       "spaceSwitch": [
         {
           "role": "AXRadioGroup",

@@ -432,6 +432,95 @@ Changed after the round, from reading the code:
 - Checked by hand through the console (server on 4111, rebuilt): a send to "测试" with Haiku 5.5 (the "Switch model?" question confirmed) and Effort Extra, and the person clicked another window right after Send in the console. The trace has `followed the person to 0x50962` at 388 ms, just after the park began. The model and effort changes held the foreground as before and still worked, the message was sent, and the park ended after 5.25 s with the window the person clicked still in front. Two other sends in the same run, with no move, parked 2.0 s and 7.7 s; in the 7.7 s one Send showed only 4.4 s after the park began (not looked into).
 - Not checked: more than one monitor (this machine has one), and a person moving to Claude itself mid-park (Alt+Tab or its taskbar button: the watchdog still takes that back, since it cannot tell that move from the page's own grabs).
 
+**Step 3, third round: the input method, and live before the first press** (2026-11-18; the console in Chrome with a Chinese input method in front, Claude minimized).
+
+The report: typing Chinese in the console while it sends drops what is being composed. A watch of the foreground and the input method every 10 ms (`GetForegroundWindow`, the focused window's IME open state and conversion mode, the keyboard layout) during one send, with the person typing on:
+
+| What | Measured |
+| --- | --- |
+| Grabs during one send | 14 in about 12 s, each 17 to 38 ms, all given back to the same Chrome window |
+| The input method after each grab | Unchanged: open, Chinese mode, the same layout. So nothing is broken by the give-back itself (`AttachThreadInput` included) |
+| Why it fails | Chrome loses the foreground at each grab, and ends the word being composed. About one grab a second is enough to make typing impossible |
+| Who grabs | The page itself (`Chrome_RenderWidgetHostHWND`), at each action: `Invoke`, `SetValue`. Reading the page never grabs |
+
+Why 14: a helper run of `settings 测试` with each grab traced (no message sent, the window parked, Chrome in front):
+
+| Wait after the corner went up, before the first press | Presses | Grabs | Command |
+| --- | --- | --- | --- |
+| 0 (as built; two runs) | 3 | 3 | 4.0 s: the row's first press was lost, the retry 2 s later was taken |
+| 0.4 s (two runs) | 4 | 4 | 5.2 s: the press on the way back was lost too |
+| 1 s | 2 | 2 | 3.1 s: every press taken at once |
+
+**Live before the first press.** A page just back on screen in its corner takes reads at once but loses presses for most of a second. Only a window minimized before the park was measured. What changed (uia-driver.cs, BeforeAct; ReturnTo):
+
+- **Live before the first action.** First built as a fixed wait: the first action of a park waited until `windows.settleMs` (then 1000 ms) had passed since the corner went up. It was replaced by a nudge and a check, below. A row press not shown after 1.2 s, rather than 2 s, is pressed again.
+- **The person's word first.** The page tells the server while the person composes with an input method (`compositionstart` to `compositionend`, renewed every 0.6 s; `POST /api/typing`, from this machine only). The server writes the time until which they are into `person-typing` next to the helper. Each action waits for it: at most 3 s for one action, 10 s for a command. The park report counts `settledMs` and `personMs`.
+- **No going back while parked.** A command that parked the window leaves the desktop on the conversation it acted on, instead of pressing the one it started on again. That press cost a grab and, when lost, 2 s. The next command for the same conversation then presses nothing to show it. The new-chat page is never left on.
+- **Answered before the saved bounds.** The helper writes its answer before it finishes a minimized window's saved bounds (FinishPark). The console reads an answer with a park report as soon as it is written.
+
+Checked with the rebuilt helper (`settings 测试`, a `person-typing` mark 2.5 s ahead):
+- **First run:** waited 880 ms for the page, then 1165 ms for the person. One press, taken at once. Left on 测试. 1 grab, 2.8 s.
+- **Second run:** already shown. 0 presses, 0 grabs, 0.37 s.
+
+Through the console, the person typing on without a pause after Send:
+- **Both sends failed** with `fill_failed`. The wait for the person (3 s) came out of the fill's own 4 s, and the fill had no time left.
+- **The fix:** every deadline outside the window section now runs on `ActClock`, the time since the command began less what BeforeAct waited.
+
+A send after that fix, the person typing on, went out in 10.3 s. Two things were still slow:
+- The first row press, 2.9 s after the park began, was lost.
+- After Send, the composer was not seen to clear for the full 3 s.
+
+**The page is stopped while Chromium counts it covered.** Claude was maximized behind Chrome, and its page was watched every 30 ms after the park. Two signals were watched:
+- the documents' `IsOffscreen` and bounds: never changed;
+- the app window's child windows: the `Chrome_RenderWidgetHostHWND` child, absent while the page is stopped, and visible once it is shown again.
+
+| After the corner was raised | The page shown again | A press |
+| --- | --- | --- |
+| Nothing more (5 runs) | at 1.3 s, 2.1 s, 2.4 s, or not within 4 s | before it: lost; after it: taken |
+| `HWND_TOPMOST` and back again | 0.85 s | |
+| `ShowWindow(SW_SHOWNA)` | 0.3 to 0.6 s | |
+| **Moved a pixel and back** (`SetWindowPos`, no z-order, no activation) | **0.1 s** | |
+
+So Chromium recounts on a move, not on a z-order change made by another process. The same holds after every give-back:
+- the person's window comes over the corner, and the page is stopped;
+- the watchdog raises the corner again, and the page stays stopped.
+
+That stopped page was why the composer did not seem to clear: its tree does not change while it is stopped.
+
+What changed:
+- `RaiseCorner` nudges, both when the park begins and at each re-raise by the watchdog.
+- BeforeAct no longer waits a fixed second. Right before each action it checks `PageLive()`. If the page is stopped, it nudges again and waits for it, at most `windows.settleMs` (now 2500 by default), then acts anyway. The park report counts those as `notLive`.
+
+Checked, Claude maximized behind another app:
+
+| Run | Before | After |
+| --- | --- | --- |
+| `settings` to another conversation (4 runs, alternating) | 3 presses, 3 grabs, 4.0 s | 1 press, 1 grab, about 0.7 s, every time |
+| A real send ("回复一个ok" to 测试) | 14 grabs, about 12 s, through the console | 3 grabs (row, fill, Send), 1.26 s. The composer cleared 0.22 s after Send |
+
+Then through the console, the person typing on:
+- **A plain send:** 2.9 s. It waited 0.65 s and 0.84 s for the person, then sent.
+- **A send with a model and effort change failed** with `no_model_menu`. The model was picked and "Switch model?" confirmed. Then the effort menu's `Expand` failed twice with `UIA_E_ELEMENTNOTAVAILABLE` (0x80040201).
+- **Not reproduced without typing:** the same change made by the helper alone (Sonnet 5.5 Low, then Medium, with "Switch model?") worked every time, in 1.0 to 1.8 s.
+- **The likely cause:** while a menu holds the foreground, the person's keys go to the app's page. A page redrawn under them has a new menu button, so the one just found is gone.
+
+What changed:
+- The page now reports keys too (`keys`, lasting until a 0.8 s pause in typing), not only a word being composed. A hold waits for it before it starts, as every action does.
+- A menu button gone when pressed is found again and pressed at once (twice at most), instead of 1.2 s later.
+
+**Main's address for Claude's sessions (merged after this round).** Main told a Claude session apart from another of the same title by its page's address (`sessionAddress` `/epitaxy/{localId}`, `sessionRowsBy` `title`: each row with the title pressed until the address is the session's; folded rows unfolded; the deep link only for `open-file` / `show-session`; back and Stop by address). Merged as it was, the Windows driver read `sessionAddress` as Antigravity's (rows that are links to the address), found no such row among Claude's plain buttons and showed nothing: every Claude command for a session not already on screen would have failed `not_found`. Ported (`TitledRows`, `ShownAddress`, `IsShown`, `MayFront`, `ShowAt`; `claude-desktop.cs` goes back and watches Stop by address, through ReturnTo). A row press lost on a page not yet taking presses (nothing changed at all) presses that row once more before the next. Tried: the Windows page's document carries the address; `settings` to 测试 and back, by local id: row 1 each time, 1 grab, 0.7 to 0.8 s. Not tried: two sessions of one title, folded rows.
+
+**A game in front.** Each grab takes the foreground from whatever the person is in, a full-screen game too.
+- **Borderless full screen, or a window that leaves the taskbar in view:** a moment's stutter. The command goes ahead.
+- **Exclusive full screen:** switched away from, as by Alt+Tab. It goes black, changes mode, and is often minimized. `SetForegroundWindow` does not restore a minimized window.
+- **What changed:** Park asks `SHQueryUserNotificationState`. At `QUNS_RUNNING_D3D_FULL_SCREEN` (3) it does nothing and answers `fullscreen`.
+- **The Claude bridge** shows the message as waiting and tries again every 3 s. It sends once the game is gone. Stop takes the message back meanwhile. A steer at that moment goes to the console's queue.
+- **A chat mode's follower** just looks again later.
+- **A command already parked when the person goes into a game** finishes: a second or two.
+- Not tried with a real game. On this machine the call answers 5 (`QUNS_ACCEPTS_NOTIFICATIONS`) with nothing full screen.
+
+Not checked yet: Codex and Antigravity (same driver, same Chromium window), and more than one monitor.
+
 **Step 2, the C# driver's skeleton.** Status: read-only part done.
 - `src/server/native/uia-driver.cs` is the twin of `ax-driver.swift`. It provides `check`, `probe`, `inspect` and `warm [check]`; any other command answers `not_ported`. It holds the three checks every flow gets: Sole, Confirmed (menuSigns) and `via`.
 - Each profile has a `windows` section: the app's exe, plus locators the Windows app draws elsewhere (`chromeBar`, and `spaceSwitch` inside it).

@@ -348,6 +348,51 @@ test('Claude: a turn paused mid-step (a steer queued, a permission dialog) does 
   assert.deepEqual(waiting, [['desktop:t2', ['desktop']]], 'a history read shows it too');
 });
 
+test('Claude: an exclusive full-screen program in front holds a message back; it goes out once the program is gone, and Stop takes it back meanwhile', async t => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-home-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const indexDir = path.join(home, 'Library/Application Support/Claude/claude-code-sessions/acct/org');
+  const project = path.join(home, '.claude/projects/-work');
+  fs.mkdirSync(indexDir, { recursive: true }); fs.mkdirSync(project, { recursive: true });
+  const indexFile = path.join(indexDir, 'local_d1.json'), transcript = path.join(project, 'd-1.jsonl');
+  const index = (extra: object) => fs.writeFileSync(indexFile, JSON.stringify({ sessionId: 'local_d1', cliSessionId: 'd-1', cwd: '/work', title: '桌面会话', model: 'claude-opus-5-5', lastTurnEdgeAt: 10, latestUserFrameAt: 5, ...extra }));
+  index({});
+  fs.writeFileSync(transcript, [human('u0', 'earlier'), say('a0', 'earlier reply')].map(r => JSON.stringify(r)).join('\n') + '\n');
+  const append = (records: object[]) => fs.appendFileSync(transcript, records.map(r => JSON.stringify(r)).join('\n') + '\n');
+  let fullscreen = 2, tries = 0;
+  const desktop = fake<ClaudeDesktop>({
+    check: async () => ({ available: true }),
+    async send(meta, text) {
+      tries++;
+      if (fullscreen > 0) { fullscreen--; return { ok: false, code: 'fullscreen', error: '前台的程序独占全屏' }; }
+      const at = Date.now();
+      setTimeout(() => { append([{ ...human(`u${at}`, text), timestamp: new Date(at).toISOString() }, say(`a${at}`, 'ok')]); index({ latestUserFrameAt: at, lastTurnEdgeAt: at + 100 }); }, 50);
+      return { ok: true };
+    },
+    async stop() { throw new Error('a message the desktop never got is not stopped there'); },
+  });
+  const bridge = new ClaudeBridge({ home, desktopHome: macDesktopHome(home), env: {}, bin: '/bin/claude-test', desktop });
+  bridge.spawnCli = () => { throw new Error('the CLI must not run'); };
+  bridge.fullscreenRetryMs = 20;
+  const held = bridge.sendMessage('d-1', { prompt: '只回复 ok' }), notes: string[] = [];
+  held.on('warning', note => notes.push(note.message ?? ''));
+  assert.equal(get((await completion(held)).turn, 'status'), 'completed');
+  assert.equal(tries, 3, 'tried again until the program was gone');
+  assert.match(notes.join(), /独占全屏/);
+
+  // Stop while it waits: nothing reaches the desktop, and the run ends at once.
+  fullscreen = Infinity; tries = 0;
+  const stopped = bridge.sendMessage('d-1', { prompt: '不要发' });
+  const warned = new Promise(resolve => stopped.on('warning', resolve));
+  await warned;
+  assert.deepEqual(await bridge.interrupt('d-1'), { pending: false });
+  const count = tries;
+  await new Promise(resolve => setTimeout(resolve, 80));
+  assert.equal(tries, count, 'no more tries once stopped');
+  assert.equal(bridge.runs.size, 0);
+  bridge.dispose();
+});
+
 test('Claude: a session the desktop has is sent by the desktop app and followed in its transcript', async t => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-home-'));
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
@@ -1444,7 +1489,7 @@ test('Claude: a session is told apart from another of the same title by the addr
   const calls: string[][] = [];
   const desktop = new ClaudeDesktop({ runner: async (file, args) => { calls.push(args); return args[0] === 'check' ? { ok: true, trusted: true, running: true } : { ok: true }; } });
   desktop.binary = '/bin/helper'; desktop.platform = 'darwin';
-  const bridge = new ClaudeBridge({ home, env: {}, bin: null, desktop });
+  const bridge = new ClaudeBridge({ home, desktopHome: macDesktopHome(home), env: {}, bin: null, desktop });
   await bridge.show('cli-2');
   assert.deepEqual(at(calls, -1), ['show-session', '同一个标题', 'local_two']);
   assert.equal(bridge.sharedTitle(must(bridge.metaFor('cli-1'))), '');
@@ -1455,7 +1500,7 @@ test('Claude: a session is told apart from another of the same title by the addr
   bridge.dispose(); fs.rmSync(home, { recursive: true });
 });
 
-test('Claude: a file from the chat is opened in the desktop, in its own session', async () => {
+test('Claude: a file from the chat is opened in the desktop, in its own session', async t => {
   const { ClaudeDesktop } = __claude_desktop;
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-home-'));
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
@@ -1579,6 +1624,22 @@ test("a session's own temporary folder (scratchpad, task output) is a folder its
     if (typeof process.getuid === 'function') assert.deepEqual(bridge.fileRoots('s1'), [`/tmp/claude-${process.getuid()}/-Users-me-app/s1`]);
     assert.deepEqual(bridge.fileRoots('missing'), []);
     assert.deepEqual(bridge.fileRoots('../x'), []);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('the folders a session moved to inside the one it started in are folders its file links may open; others are not', (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-moved-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const project = path.join(home, '.claude', 'projects', '-w');
+  fs.mkdirSync(project, { recursive: true });
+  // Started in /w, then `cd repo`, `cd repo/src`, then `cd ~`: newest first, only those inside /w.
+  const at = (cwd: string, uuid: string) => JSON.stringify({ type: 'user', uuid, cwd, message: { role: 'user', content: 'x' } });
+  fs.writeFileSync(path.join(project, 's2.jsonl'), [at('/w', 'a'), at('/w/repo', 'b'), at('/w/repo/src', 'c'), at('/home/me', 'd'), at('/w/repo', 'e')].join('\n') + '\n');
+  const bridge = new ClaudeBridge({ home, desktopHome: macDesktopHome(home), env: {}, bin: null, desktop: fake<ClaudeDesktop>({}), tmpDir: '/nowhere' });
+  try {
+    assert.deepEqual(bridge.fileRoots('s2', 'darwin').slice(0, 2), ['/w/repo', '/w/repo/src']);
+    assert.ok(!bridge.fileRoots('s2', 'darwin').includes('/home/me'));
+    assert.ok(!bridge.fileRoots('s2', 'darwin').includes('/w'));
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 

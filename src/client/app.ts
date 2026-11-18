@@ -19,6 +19,7 @@ import { agentRows, newAgentsView, AVATAR_TYPES, AVATAR_MAX_BYTES } from './js/a
 import { referenceChoices, insertReference, referenceMeta } from './js/references.js';
 import { fileActions, actionButtons, filePopover } from './js/file-actions.js';
 import { byId, closest, find, findAll, nodeOf } from './js/dom.js';
+import { watchTyping } from './js/composing.js';
 import { get, isBag, messageOf, str } from '../shared/guards.js';
 import type { ConversationStore, PageTurn } from './js/store.js';
 import type { DictationSession } from './js/dictation.js';
@@ -40,6 +41,9 @@ const ELEMENTS = {
   'close-info': HTMLButtonElement,
   'close-reference': HTMLButtonElement,
   'close-onboard': HTMLButtonElement,
+  'close-focus': HTMLButtonElement,
+  'focus-dialog': HTMLDialogElement,
+  'focus-ok': HTMLButtonElement,
   'close-settings': HTMLButtonElement,
   'close-sidebar': HTMLButtonElement,
   'close-usage': HTMLButtonElement,
@@ -843,6 +847,7 @@ async function sendMessage(event?: Event | null, queue = false): Promise<void> {
     const result = await request<{ status?: string; reason?: string } | null>(`${url}/messages`, { method: 'POST', body: JSON.stringify({ prompt, attachments, cwd: state.session.cwd || undefined, mode, ...options() }) });
     if (mode === 'steer' && result?.status === 'queued' && view === state.view) notify(`${say(result.reason) || t('这一轮没法插进去，消息已排队')}${t('，可以在队列里再点“插入”')}`);
     drafts.clearSent(owner, originalInput, attachments);
+    noteFocusOnce();
     if (owner !== currentKey()) return;
     if ($('prompt').value === originalInput) { $('prompt').value = ''; $('prompt').style.height = ''; }
     const sent = new Set(attachments.map(item => item.filename));
@@ -887,6 +892,7 @@ async function sendFirst() {
     newOptions.sent();
     (state.sessions[provider.id] ||= []).unshift({ ...session, title: session.title || title || t('新建聊天'), updatedAt: new Date().toISOString(), cwd: session.cwd || cwd || '', engine: provider.id, metadata: { ...session.metadata, ...(mode ? { space: mode } : {}), ...(group === undefined ? {} : { group }) } });
     drafts.clearSent(owner, originalInput, attachments);
+    noteFocusOnce();
     if (view === state.view) {
       $('prompt').value = ''; $('prompt').style.height = ''; state.attachments = []; saveDraft();
       await selectSession(session.id, { engineId: provider.id });
@@ -1383,6 +1389,9 @@ $('conversation').addEventListener('click', async event => {
   if (button.dataset.approval && button.dataset.decision === 'desktop') { await showInDesktop(button); return; }
   if (button.dataset.approval) { button.disabled = true; try { await request(`${endpoint()}/approvals/${encodeURIComponent(button.dataset.approval)}`, { method: 'POST', body: JSON.stringify({ decision: button.dataset.decision }) }); } catch (err) { notify(messageOf(err)); button.disabled = false; } }
 });
+watchTyping(document, typing => {
+  void fetch('/api/typing', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ typing }), keepalive: true }).catch(() => {});
+});
 document.addEventListener('keydown', event => {
   if (event.key === 'Escape' && state.dictation) { event.preventDefault(); cancelDictation(); return; }
   if (event.key === 'Escape' && document.body.classList.contains('sidebar-open')) sidebar(false);
@@ -1427,10 +1436,10 @@ function onboardingPrompt() {
 请这样做：
 1. 先完整读手册（英文），以及 references/ 下的设计哲学、选通道、能力链路、插件契约、验收清单，再读 docs/architecture.md。插件用 TypeScript 写在 src/server/plugins/<你的引擎 id>.plugin.ts，导出 about（名字、主色、应用图标，以及只探测这台电脑上有没有你的桌面版的 detect，不能有副作用）和 setup（启用时才运行，停用时要能把它起的东西全部放掉）；数据适配写在 src/server/ 下，形状以 src/shared/contract.ts 为准，字段写错构建就会失败。照着和你最像的现有插件写（全走辅助程序的 Claude、官方接口加窗口间通道的 Codex、全走本机服务的 Antigravity）。开发时用 npm run dev（改前端即时生效，改服务端自动重启）。
 2. 摸清你在本机的数据（只读，不改）：会话记录、项目归属和顺序、"正在跑"和"结束了"的原生证据、每个会话的模型 / 推理强度 / 权限、步骤清单和提问卡片在记录里的样子。
-3. 选通道，写成表放进 docs/skins/<你的引擎 id>/progress.md：发送、插话、停止、改设置、新建、回答卡片、在桌面版里打开这个会话、打开文件各走哪条路，附证据。每条都要满足：这一轮由你的桌面版自己的进程执行、桌面版里马上显示为我本人发的、不用别人的令牌。优先用你桌面版进程对外的接口（像 Codex 的 app-server 队列、Antigravity 的 language server），其次是桌面版窗口之间的协调通道（像 Codex 的 IPC），都不行才用工作台共用的辅助功能驱动（像 Claude），只写步骤和控件名，不重写动作。绝不另起一个 CLI 进程去跑这一轮；通道做不到就不发，并说明原因（插话做不到就退回排队）。
+3. 选通道，写成表放进 docs/skins/<你的引擎 id>/progress.md：发送、插话、停止、改设置、新建、回答卡片、在桌面版里打开这个会话、打开文件各走哪条路，附证据。每条都要满足：这一轮由你的桌面版自己的进程执行、桌面版里马上显示为我本人发的、不用别人的令牌。优先用你桌面版进程对外的接口（像 Codex 的 app-server 队列、Antigravity 的 language server），其次是桌面版窗口之间的协调通道（像 Codex 的 IPC），都不行才用工作台共用的辅助功能驱动（像 Claude），只写步骤和控件名，不重写动作；这个驱动在 macOS 是 Swift，在 Windows 是 UI Automation（C#），两边的步骤各写一份（<你的引擎 id>-desktop.swift / .cs），Windows 上要注意的事见手册的选通道一节。绝不另起一个 CLI 进程去跑这一轮；通道做不到就不发，并说明原因（插话做不到就退回排队）。
 4. 按手册的阶段做：只读能看 → 发送和实时 → 停止、插话、排队 → 设置跟着走 → 新建 → 卡片和文件 → 长得像。每个阶段打开页面看一遍。
 5. 我在工作台改了的模型 / 推理强度 / 权限，要先在你的桌面版里改过去再发；改不成就不发。不要做只读模式，也不要因为会话正在桌面版里运行就禁止发送：我自己保证不会两边同时写。
-6. 不读取其他程序的私有令牌或密钥；你自己官方 CLI 的登录凭据可以在服务端现读现用（例如额度），但不能进页面、日志、测试和文件。需要我授权的事（例如辅助功能权限）先问我。你的桌面版有自家的语音识别时，接上 dictate 和 dictationReady，话筒就多一个可用的来源。
+6. 不读取其他程序的私有令牌或密钥；你自己官方 CLI 的登录凭据可以在服务端现读现用（例如额度），但不能进页面、日志、测试和文件。需要我授权的事（例如 macOS 的辅助功能权限）先问我。你的桌面版有自家的语音识别时，接上 dictate 和 dictationReady，话筒就多一个可用的来源。
 7. 想更像你的桌面版，只填插件的 look、改套件的 --kit-* 变量，你独有的东西用渲染器补；不复制套件样式，不在共用代码里写死你的名字。除非我明确要求一比一还原，否则不用截图对比。
 8. 做完后运行 npm run build、npm test 和 npm run check（含类型检查），都要通过；按手册第 4 步用最便宜的模型真实走一遍（先问我同意）：发一条、换模型再发、运行中插话和停止、作答一次卡片、点一次聊天标题栏的「在 <你> 打开」，确认桌面版里都看得到；按验收清单逐项核对。结束前关掉你开的后台进程。
 9. 最后告诉我：改了哪些文件；通道表；哪些做到了，哪些做不到以及原因；共用件不够用、需要新增的地方；我还需要做什么（例如登录、授权、重启工作台服务后在 Agent 栏的「+」里把你打开、删掉测试会话）。
@@ -1454,10 +1463,10 @@ Work the way you normally do: before you start, list the steps with your own tas
 Please:
 1. Read the whole guide first, plus the philosophy, choosing channels, capability paths, plugin contract and acceptance checklist under references/, then docs/architecture.md. Write your plugin in TypeScript as src/server/plugins/<your engine id>.plugin.ts, exporting about (your name, colour and app icon, and a detect that only looks whether your desktop app is on this machine, with no side effects) and setup (run only when you are switched on, and able to release everything it started when you are switched off); your data adapter goes under src/server/. The shapes come from src/shared/contract.ts, and a wrong field fails the build. Model your work on the existing plugin most like you (Claude: everything through the accessibility helper; Codex: an official interface plus the window-to-window channel; Antigravity: everything through a local service). While you work, run npm run dev (page changes show at once, server changes restart it).
 2. Find out your data on this machine (read-only, change nothing): session records, project membership and order, the native evidence for "running" and "ended", each session's model / reasoning effort / permissions, what step lists and question cards look like in the record.
-3. Pick the channels and put them in a table in docs/skins/<your engine id>/progress.md: which route sending, steering, stopping, changing settings, new chats, answering cards, opening the chat in your desktop app and opening files each take, with evidence. Every one must meet three conditions: the turn is run by your desktop app's own process, your desktop app shows the message right away as my own, and no one else's token is used. Prefer an interface your desktop process exposes (like Codex's app-server queue or Antigravity's language server), then the channel between your desktop's own windows (like Codex's IPC), and only then the shared accessibility driver (like Claude), writing only your steps and control names, never the actions again. Never start a separate CLI process to run the turn; when a channel cannot do something, do not send, and say why (a steer that cannot join falls back to the queue).
+3. Pick the channels and put them in a table in docs/skins/<your engine id>/progress.md: which route sending, steering, stopping, changing settings, new chats, answering cards, opening the chat in your desktop app and opening files each take, with evidence. Every one must meet three conditions: the turn is run by your desktop app's own process, your desktop app shows the message right away as my own, and no one else's token is used. Prefer an interface your desktop process exposes (like Codex's app-server queue or Antigravity's language server), then the channel between your desktop's own windows (like Codex's IPC), and only then the shared accessibility driver (like Claude), writing only your steps and control names, never the actions again; that driver is Swift on macOS and UI Automation (C#) on Windows, with your steps written once for each (<your engine id>-desktop.swift / .cs), and what to mind on Windows is in the guide's channels section. Never start a separate CLI process to run the turn; when a channel cannot do something, do not send, and say why (a steer that cannot join falls back to the queue).
 4. Build in the guide's stages: read-only and visible → sending and live updates → stop, steer, queue → settings follow the message → new chats → cards and files → looking like yourself. Open the page and look after each stage.
 5. When I change the model / reasoning effort / permissions in Frontdesk, change it in your desktop app first, then send; if it cannot be changed, do not send. Do not add a read-only mode, and do not block sending because a session is running in the desktop app: I make sure I never write from both places at once.
-6. Do not read other programs' private tokens or keys; your own official CLI's sign-in credentials may be read on the server at the moment of use (for quota, say), but never in the page, logs, tests or files. Ask me first for anything that needs my authorization (Accessibility permission, for example). If your desktop app has its own speech-to-text, wire up dictate and dictationReady: the microphone gains one more source it can use.
+6. Do not read other programs' private tokens or keys; your own official CLI's sign-in credentials may be read on the server at the moment of use (for quota, say), but never in the page, logs, tests or files. Ask me first for anything that needs my authorization (macOS's Accessibility permission, for example). If your desktop app has its own speech-to-text, wire up dictate and dictationReady: the microphone gains one more source it can use.
 7. To look more like your desktop app, only fill in the plugin's look field and the kit's --kit-* variables, and register renderers for what only you have; do not copy the kit's styles or hard-code your name in shared code. Unless I explicitly ask for a one-to-one match, no screenshot comparison is needed.
 8. When done, run npm run build, npm test and npm run check (which includes the type check); all must pass; following step 4 of the guide, try it for real with the cheapest model (ask me first): send one message, change the model and send again, steer and stop a running turn, answer one card, press "Open in <you>" in the chat header once, and confirm all of it shows in your desktop app; go through the acceptance checklist item by item. Close any background processes you started before you finish.
 9. Finally tell me: which files you changed; the channel table; what works and what does not, and why; where the shared parts fell short and need a new extension point; what I still need to do (sign in, authorize, restart the Frontdesk server and switch you on under the rail's "+", delete test chats, for example).
@@ -1489,9 +1498,20 @@ function openOnboard(): void {
   $('onboard-dialog').showModal();
 }
 $('close-onboard').addEventListener('click', () => $('onboard-dialog').close());
+// An engine that sends by working its desktop app's window, which takes the keyboard focus for a
+// moment on this platform (capabilities.takesFocus: Windows), says so once, after the first message
+// sent to it; Settings can show it again.
+const FOCUS_NOTE_KEY = 'desktop-bridge:focus-note-seen';
+function noteFocusOnce(): void {
+  if (!capsOf().takesFocus) return;
+  try { if (storageFor('localStorage')?.getItem(FOCUS_NOTE_KEY)) return; storageFor('localStorage')?.setItem(FOCUS_NOTE_KEY, '1'); } catch {}
+  if (!$('focus-dialog').open) $('focus-dialog').showModal();
+}
+$('close-focus').addEventListener('click', () => $('focus-dialog').close());
+$('focus-ok').addEventListener('click', () => $('focus-dialog').close());
 $('copy-onboard').addEventListener('click', async () => {
   try { await navigator.clipboard.writeText($('onboard-prompt').textContent); $('copy-onboard').textContent = t('已复制'); }
-  catch { const range = document.createRange(); range.selectNodeContents($('onboard-prompt')); getSelection()?.removeAllRanges(); getSelection()?.addRange(range); $('copy-onboard').textContent = t('已选中，按 ⌘C 复制'); }
+  catch { const range = document.createRange(); range.selectNodeContents($('onboard-prompt')); getSelection()?.removeAllRanges(); getSelection()?.addRange(range); $('copy-onboard').textContent = t(/Mac|iPhone|iPad/.test(navigator.platform) ? '已选中，按 ⌘C 复制' : '已选中，按 Ctrl+C 复制'); }
 });
 $('copy-skill-path').addEventListener('click', async () => {
   if (!state.projectDir) return;
@@ -1747,6 +1767,7 @@ document.addEventListener('click', event => {
   else if (force) void toggleAgent(data(force, 'agentForce'), false, true);
   else if (closest(event.target, '[data-agent-cancel]')) { agentsView.ask = null; renderAgents(); }
   else if (closest(event.target, '[data-open-onboard]')) openOnboard();
+  else if (closest(event.target, '[data-open-focus]')) $('focus-dialog').showModal();
 });
 // Right-click an agent in the rail: take it out of the rail, or open the list of agents.
 $('engine-dock').addEventListener('contextmenu', event => {
@@ -1808,7 +1829,8 @@ function renderSettings() {
     ? `<select id="setting-${escape(item.key)}" class="subtle-select" data-setting-select="${escape(item.key)}" aria-label="${escape(item.title)}">${item.choices.map(([value, label]) => `<option value="${escape(value)}"${appearance[item.key] === value ? ' selected' : ''}>${escape(label)}</option>`).join('')}</select>`
     : `<div class="setting-choices" role="radiogroup" aria-label="${escape(item.title)}">${item.choices.map(([value, label]) => `<button type="button" role="radio" class="setting-choice" data-setting="${escape(item.key)}" data-value="${escape(value)}" aria-checked="${appearance[item.key] === value}">${escape(label)}</button>`).join('')}</div>`;
   // Which agents are on is the console's first setting: the same switches as the rail's "+".
-  const agentsGroup = `<fieldset class="setting-group is-stacked"><legend>Agent</legend><div id="settings-agents">${agentsMarkup(true)}</div><button type="button" class="text-button" data-open-onboard>${t('接入其他桌面 AI…')}</button></fieldset>`;
+  const takesFocus = state.engines.some(item => item.capabilities.takesFocus);
+  const agentsGroup = `<fieldset class="setting-group is-stacked"><legend>Agent</legend><div id="settings-agents">${agentsMarkup(true)}</div><button type="button" class="text-button" data-open-onboard>${t('接入其他桌面 AI…')}</button>${takesFocus ? `<button type="button" class="text-button" data-open-focus>${t('在 Windows 上代发消息时会短暂拿走焦点…')}</button>` : ''}</fieldset>`;
   $('settings-content').innerHTML = agentsGroup + avatarRow + SETTINGS.map(item => `<fieldset class="setting-group"><legend>${escape(item.title)}</legend>${control(item)}${item.note?.() ? `<p class="field-help setting-note">${escape(item.note())}</p>` : ''}</fieldset>`).join('') + '<fieldset class="setting-group" id="settings-voice"></fieldset>';
   renderVoiceSetting();
   for (const select of $('settings-content').querySelectorAll('select')) enhanceSelect(select, { variant: 'field' });
