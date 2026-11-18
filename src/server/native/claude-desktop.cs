@@ -34,7 +34,6 @@ namespace Frontdesk.Driver
 
         // ---- Claude's own controls, named in profiles/claude.json ----
         static Node Composer() { return Find("composer"); }
-        static bool HoldsText(Node box) { string own = (box == null ? "" : box.Value).Trim(); return own.Length > 0 && own != box.Name; }
         static Node ModelMenu() { return Find("modelMenu"); }
         static string ShownModel() { Node m = ModelMenu(); return m == null ? "" : AfterColon(m.Name); }
         static List<string> Modes { get { return Settings("modes"); } }
@@ -325,18 +324,18 @@ namespace Frontdesk.Driver
             string draft = HoldsText(field) ? field.Value : "";
             if (!Fill("composer", text, "send"))
             {
-                Node again = Composer(); if (again != null) SetValue(again, draft);
+                Put("composer", draft, 2.4);
                 back();
                 Fail("fill_failed", "没能把消息填进 Claude 桌面版的输入框");
             }
             Node send = Find("send");
-            if (send == null || !Press(send)) { Node again = Composer(); if (again != null) SetValue(again, draft); back(); Fail("no_send", "Claude 桌面版没有出现发送按钮"); }
+            if (send == null || !Press(send)) { Put("composer", draft, 2.4); back(); Fail("no_send", "Claude 桌面版没有出现发送按钮"); }
             // The record, not this, says whether it went out; this only hints.
-            bool cleared = Until(3, () => Find("send") == null || Find("stop") != null || Composer() == null || Composer().Value.Trim().Length == 0);
+            bool cleared = Until(3, () => Find("send") == null || Find("stop") != null || Composer() == null || !HoldsText(Composer()));
             // A message sent into a running turn waits in the desktop's own queue (its "Send now" shows) until
             // the turn's next step; the record has it only then (seen 30 s later on a turn with no steps).
             bool queued = steer && running && Until(1.5, () => FindAll("sendNow").Count > 0);
-            if (cleared && draft.Length > 0) { Node again = Composer(); if (again != null) SetValue(again, draft); }
+            if (cleared && draft.Length > 0) Put("composer", draft, 2.4);
             back();
             Out(new Dictionary<string, object> { { "ok", true }, { "cleared", cleared }, { "queued", queued }, { "restored", previous }, { "changed", changed }, { "notes", notes } });
         }

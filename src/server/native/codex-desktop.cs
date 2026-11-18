@@ -56,8 +56,6 @@ namespace Frontdesk.Driver
         // A model row: a menu item, or (as Codex draws its list) a radio button with Invoke.
         static List<Node> ModelRows() { ReadPage(); return nodes.Where(n => RoleIs(n, "AXMenuItem") || n.ControlType == CT_RadioButton).ToList(); }
         static IEnumerable<Node> ChildrenOf(Node box) { return Within(box).Where(n => n.Parent == box.Index); }
-        // An empty box reads as its placeholder ("Do anything"); it holds text once its value is something else.
-        static bool HoldsText(Node box) { string own = (box == null ? "" : box.Value).Trim(); return own.Length > 0 && own != box.Name; }
 
         // ---- the New chat page ----
         static bool OnNewPage() { return Current().Length == 0 && ProjectMenu() != null && Find("composer") != null; }

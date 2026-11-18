@@ -1347,19 +1347,43 @@ namespace Frontdesk.Driver
         // The conversation a command goes back to: the one on screen as it starts, or, with the desktop
         // parked on its new-chat page, the one the person had before that.
         static string StartedOn() { string now = Current(); return now.Length == 0 ? parkedPrevious : now; }
+        // Whether a box holds text: an empty one reads as its placeholder, which is its name ("Do anything").
+        static bool HoldsText(Node box) { string own = (box == null ? "" : box.Value).Trim(); return own.Length > 0 && own != box.Name.Trim(); }
+        // Whether `field` reads as `text` (an empty text: as holding none).
+        static bool Holds(string field, string text) { Node now = Find(field); return now != null && (text.Trim().Length == 0 ? !HoldsText(now) : now.Value.Trim() == text.Trim()); }
+        static double Left(DateTime end, double most) { return Math.Max(0, Math.Min(most, (end - DateTime.UtcNow).TotalSeconds)); }
+        // Sets `field` to `text` and waits until it reads so. A set the page reports done is sometimes not
+        // taken: the box keeps what it held (measured in Codex's ChatGPT mode and Claude's chat mode, in
+        // about one fill in five, and in Codex nearly always when the box already held text). Set again,
+        // it took within 0.2 s every time. So each set is given 0.6 s and made again until `seconds`
+        // have passed; a set replaces the text, so one taken late is not doubled.
+        static bool Put(string field, string text, double seconds)
+        {
+            DateTime end = DateTime.UtcNow.AddSeconds(seconds);
+            while (true)
+            {
+                if (Holds(field, text)) return true;
+                Node box = Find(field);
+                if (box == null) { if (DateTime.UtcNow >= end) return false; Wait(0.3); continue; }
+                SetValue(box, text);
+                if (Until(Left(end, 0.6), () => Holds(field, text))) return true;
+                if (DateTime.UtcNow >= end) return false;
+            }
+        }
         // Fills `field` and waits for the `ready` button (the send button) to show.
         static bool Fill(string field, string text, string ready)
         {
-            for (int attempt = 0; attempt < 2; attempt++)
+            DateTime end = DateTime.UtcNow.AddSeconds(4);
+            do
             {
-                Node box = Find(field);
-                if (box == null) { Wait(0.3); continue; }
-                SetValue(box, text);
-                if (Until(4, () => { Node now = Find(field); return now != null && now.Value.Trim() == text.Trim() && Find(ready) != null; })) return true;
-            }
+                if (!Put(field, text, Left(end, 4))) return false;
+                // Taken: Send shows, unless the page drops the text again (then it is set again).
+                Until(Left(end, 4), () => Find(ready) != null || !Holds(field, text));
+                if (Holds(field, text) && Find(ready) != null) return true;
+            } while (DateTime.UtcNow < end);
             return false;
         }
-        static void Clear(string field) { Node box = Find(field); if (box != null && box.Value.Trim().Length > 0) SetValue(box, ""); }
+        static void Clear(string field) { Put(field, "", 2.4); }
 
         // ---- modes: the desktop's own switch between its kinds of chat (ax-driver.swift's spaces) ----
         static Dictionary<string, object> Spec(string key) { object v; return profile.TryGetValue(key, out v) && v is Dictionary<string, object> ? (Dictionary<string, object>)v : new Dictionary<string, object>(); }
@@ -1673,7 +1697,7 @@ namespace Frontdesk.Driver
                 if (box != null && box.Value.Trim() == text.Trim()) { send = Find(SendKey("send")); pressed = send != null && Press(send); }
             }
             if (!pressed) { Clear(SendKey("composer")); return new[] { "no_send", appName + "没有出现发送按钮" }; }
-            Func<bool> gone = () => { Node box = Find(SendKey("composer")); return (box != null && box.Value.Trim().Length == 0) || Answering(); };
+            Func<bool> gone = () => { Node box = Find(SendKey("composer")); return (box != null && !HoldsText(box)) || Answering(); };
             if (Until(1.5, gone)) return null;
             // Still in the composer: in a chat that is already open, Codex's ChatGPT mode takes the press only
             // while its window is active (measured: from behind nothing happened; with the window in front,
