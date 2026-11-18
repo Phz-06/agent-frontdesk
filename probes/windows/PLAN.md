@@ -7,6 +7,12 @@ This is the hand-off for whoever continues the Windows port, in particular a Cla
 - **Done:** the analysis below, and the probe (`uia-probe.cs`, `probe.ps1`).
 - **Step 1 runs:** on Windows 11 (build 26200, PowerShell 5.1, .NET 4.8.1) the helper compiles with `csc.exe` as written, and step 1 (read) runs end to end. The first run needed three fixes in `probe.ps1` and the helper: output paths past 260 characters, a second engine being handed the first engine's window, and a hidden Codex window being picked over its main one.
 - **Probe phase closed.** Development happens on the `windows` branch, verified step by step against the real apps, in test chats only. The probe's open questions that were not run (settle, off screen) are answered as the port reaches them.
+- **Where it stands (2026-11-18, end of the second round of step 3).** Claude sends end to end through its window on Windows: send, steer and Send now, stop, model / effort changes (with the "Switch model?" question), a question card, a card's own button, from behind the person's window, which keeps the foreground. Details: "Step 3" and "Step 3, second round" below. For whoever continues:
+  - **Nothing of this round is committed.** The work is in the working tree: `src/server/native/uia-driver.cs`, `claude-desktop.cs` (new), `profiles/claude.json`, `src/server/claude-bridge.ts`, `codex-bridge.ts`, `antigravity-bridge.ts`, `core/desktop-automation.ts`, `src/client/app.ts`, `test/claude.test.ts`, this file. `npm test` (154) and `npm run check` pass.
+  - **The console reads Claude's models, efforts and usage through Claude's CLI**, on Windows as on the Mac (`list_models`, `get_usage`, `auth status`). The Windows desktop signs its own sessions in through a local proxy, which the console must not use, so the CLI needs its own `claude auth login` once. Until then the model menu is empty and says why on hover.
+  - **The Mac helper (`claude-desktop.swift`) does not answer `queued` yet** (the steer the desktop keeps in its own queue, second round). The console still works without it, but waits the full 12 s and calls such a steer lost. It needs porting on a Mac.
+  - **Not tried:** `new` through the console, `open-file`, the Claude-mode chat commands on a real chat, a park from minimized since the second round, more than one monitor, a person moving to Claude itself mid-park.
+  - **The test machine's Claude window lost its normal bounds** to the maximized ones, through the first way of parking a maximized window (second round). Showing it normal once and sizing it back fixes it. It was left as it is.
 
 ## Development on Windows
 
@@ -20,7 +26,7 @@ Order:
 5. a Codex new chat by deep link;
 6. CI.
 
-**Step 1, the platform layer.** Status: done for reading; sending not yet tried.
+**Step 1, the platform layer.** Status: done for reading; sending: see step 3.
 
 What changed:
 - **`src/server/services/desktop-places.ts`** holds every per-platform place, and the bridges and plugins ask it:
@@ -258,6 +264,77 @@ What follows for the port:
 Still open from step 1:
 - **The page links only Unix-shaped local paths** (`LOCAL_ROOT` in `src/client/js/renderers.ts`), so `C:\…` in a reply is not a file link yet.
 - **Codex's new-chat options** (`/api/new-options/codex`) answer 409 until the window helper exists.
+
+**Step 3, Claude through its window on Windows.** Status: ported, tried on the real app in a test session.
+- `src/server/native/uia-driver.cs` parks the window for every acting command (see "Parked in a corner" below). The window is parked from normal, maximized or minimized, and put back exactly (placement, z-order under the same window, foreground, taskbar flash), also when the command fails or crashes. A maximized window is only moved, never un-maximized (second round, below); saved bounds that a long park of a minimized window left off screen are repaired.
+- It is not parked when Claude's own window is the foreground window: the person is in it, and the command acts in place, as on the Mac.
+- The menus answer only while Claude holds the foreground. So a model, effort, mode or new-session menu change holds it for the change (about 0.5 s measured), with the window still off screen.
+- A question card's option and Submit, and a wrap-up card's own buttons, take a press only while Claude's window is active: the window is activated (still off screen) and the foreground held for those presses, about half a second. No key is sent (second round, below).
+- `src/server/native/claude-desktop.cs` ports every Claude command:
+  - `send` (and steer);
+  - `settings`;
+  - `new`, `new-controls`, `new-pick`, `new-leave`;
+  - `send-now`, `stop`, `answer`, `card`, `action`.
+- The shared driver ports:
+  - the Claude/Code mode switch;
+  - `read-chat`, `chat-status`, `chat-new`, `chat-send`, `chat-stop`;
+  - `open-file`, `show-session`.
+- `check` says which commands are ported. The console counts an engine as able to send on Windows once `send` is among them.
+- Windows differences found while porting:
+  - every box reports the ARIA role "group";
+  - a question card's options are buttons with `aria-pressed`, not checkboxes;
+  - the session rows and the mode radios offer `Invoke`.
+- Tried in the test session ("测试"), with the window parked from maximized and from minimized; each time it was put back:
+  - send;
+  - send refused as busy while a turn ran;
+  - steer, then send-now (the reply followed the steer);
+  - stop;
+  - Effort to Medium and back;
+  - answer a question card (the record has the answer);
+  - read a wrap-up card;
+  - new-controls with the Folder menu's options, new-pick, new-leave;
+  - new (a session was created in `D:\af`);
+  - the mode switch to Claude and back;
+  - chat-status.
+- Not tried on the real app:
+  - `read-chat`, `chat-new`, `chat-send`, `chat-stop` on a real chat (no Claude-mode chat is cached on this machine, and making one would add a chat to the person's account). Paging a long chat uses `ScrollIntoView` instead of the Mac's arrow keys;
+  - ~~`action` (pressing a card's own button)~~ tried in the second round (below);
+  - `open-file`.
+- ~~Open: the profile's `transcript` drifts on Windows~~ Fixed in the second round (below).
+
+**Step 3, second round: fewer grabs, no keys** (2026-11-18, the test session "测试", Claude maximized behind a small window of the tester's own that held the foreground; every result checked in the record).
+
+What was measured, and what the driver now does:
+
+| Question | Measured | Now |
+| --- | --- | --- |
+| Does `LockSetForegroundWindow` (taken while attached to the foreground thread) stop the page's grabs? | Granted (`true`), but fill + Send still grabbed 4 times (up to 41 ms); the unlock was then refused (error 5) | Not used |
+| Can the corner sit under the taskbar, so nothing shows? | No: Chromium counts the taskbar as covering. The session row needed a second press, Send took 4 s to show, the park ran 12 s | The corner stays in the work area |
+| Can a maximized window be parked without un-maximizing it? | Yes. `SetWindowPos` moves it while it stays maximized: Send showed at once, the rect came back exact, and a 7.3 s park wrote nothing to `window-state.json` | Maximized windows are only moved. Their normal bounds never change, so nothing needs repairing |
+| The old way (shown normal at the maximized rect) | Left Claude's `rcNormalPosition` and saved normal bounds equal to the maximized rect (`x:0, y:0, 2054×1105`, where they were `448,183,2158,1365` / `x:365, y:146`) | Gone. The saved-bounds repair is kept for minimized windows only, and no longer waits 4 s after every long park |
+| A multi-line message | Recorded exactly, blank lines included | (no change) |
+| A question card's option, pressed from behind | Not picked. Space and Enter through `SendInput` (also with the scan code) were not taken either. A Unicode `VK_PACKET` key does reach the page, so input is not blocked | See next row |
+| The same with Claude's window activated first (foreground held, the window still off screen) | One press picks the option, one press of Submit is taken. Held 475 ms, park 0.7 s | `Activate()` + hold for the card's presses. **No key is sent anywhere any more**: `SendInput` is gone from the driver |
+| A wrap-up card's own button (`action`) | Taken the same way (held 418 ms); the record has the reply the button sent | Same `Activate()` + hold |
+| Effort through the menus | Hold 460 to 476 ms, nearly all of it the menus opening and closing (each read of ~500 nodes is 40 to 70 ms) | The hold now ends as soon as the menus close, not at the end of the settings step |
+| A steer into a turn with no tool steps | The desktop kept it in its own queue ("Send now" shown) and wrote `enqueue` to the record only 30 s later, so the console's 12 s wait called it lost | The helper answers `queued` when "Send now" shows; the console then takes the steer |
+| The Folder menu of the new-session page | "Open folder…" was listed as an option: UIA reports a toggle state (2) for every menu row | A row counts as a choice only if the page gives it a checked state (ARIA `checked`/`pressed`, or a checkbox or radio) |
+| Claude's "Switch model?" question (a model change in a session with history) | Not seen: Chromium reports it as ControlType Window, ARIA role `alert`, `IsDialog` true, not `alertdialog`. The model was not switched, and the question stayed up and hid the menus from the next message | `Dialog()` takes either. A question left over is answered with Cancel before anything is picked. Through the console: Haiku 5.5 → Opus 5.5 confirmed and sent (park 1.9 s) |
+| `transcript` (the chat list) | An ARIA `feed` on Windows | A Windows locator: `aria: "feed"` first (a new locator field, Windows only), the English name after it. `probe`: no drift, no differ |
+
+Also fixed: every console process the server starts (the helper about every 10 s for `warm`, the Claude CLI, codex app-server, Antigravity's CLI) now starts with `windowsHide`. Without it, a server not running in a console window would flash a console window, which takes the foreground, on each start.
+
+End to end through the console's API (server on port 4111, the page's own routes): a send with Effort changed (one 1.14 s park, completed), stop (`interrupted`, confirmed), steer then Send now (steered and delivered), all with the person's window keeping the foreground.
+
+Not tried in this round: `new` (it adds a session; `new-controls` was tried), `open-file`, the Claude-mode chat commands, a minimized window.
+
+Changed after the round, from reading the code:
+
+- **Whose foreground it is.** The watchdog gave the foreground back to the window that held it when the park began, and the put-back forced it there at the end. So a person who moved to another window during a park was moved back. Now the watchdog follows the person: any visible window that is not Claude's and not one the shell holds on the way to another (taskbar, Alt+Tab, Task View) becomes the window given back to. The put-back only takes the foreground back from Claude (or from no window), never from a window the person went to. The park report counts these moves as `followed`.
+- **Which corner.** The corner was looked for on the primary monitor first, so Claude on a second monitor was moved to the primary one, and at another scale it would get a DPI change (layout, and maybe a resize, twice). Now it is looked for on Claude's own monitor first (for a minimized window, the one it comes back on), then on the monitors at the same scale, primary first, then the rest.
+- Checked by the helper alone: on this one-monitor machine the park is unchanged (corner at 2,2, foreground back, placement exact, `followed: 0`). A test window of the tester's own could not take the foreground on cue, so the move mid-park was tried by hand.
+- Checked by hand through the console (server on 4111, rebuilt): a send to "测试" with Haiku 5.5 (the "Switch model?" question confirmed) and Effort Extra, and the person clicked another window right after Send in the console. The trace has `followed the person to 0x50962` at 388 ms, just after the park began. The model and effort changes held the foreground as before and still worked, the message was sent, and the park ended after 5.25 s with the window the person clicked still in front. Two other sends in the same run, with no move, parked 2.0 s and 7.7 s; in the 7.7 s one Send showed only 4.4 s after the park began (not looked into).
+- Not checked: more than one monitor (this machine has one), and a person moving to Claude itself mid-park (Alt+Tab or its taskbar button: the watchdog still takes that back, since it cannot tell that move from the page's own grabs).
 
 **Step 2, the C# driver's skeleton.** Status: read-only part done.
 - `src/server/native/uia-driver.cs` is the twin of `ax-driver.swift`. It provides `check`, `probe`, `inspect` and `warm [check]`; any other command answers `not_ported`. It holds the three checks every flow gets: Sole, Confirmed (menuSigns) and `via`.
