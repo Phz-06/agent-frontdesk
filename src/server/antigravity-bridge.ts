@@ -22,7 +22,6 @@ import { withAttachments } from './core/attachments.js';
 import { loadConfig, winSpawnArgs } from './config.js';
 import { tailJsonl } from './services/jsonl-tail.js';
 import { readSqlite } from './services/sqlite-reader.js';
-import { antigravityApp } from './services/desktop-places.js';
 import { DesktopAutomation, type HelperResult } from './core/desktop-automation.js';
 import { bag, errorField, get, isBag, list, messageOf, parseJson, str, text as asText, type Bag } from '../shared/guards.js';
 import type {
@@ -47,8 +46,6 @@ interface LsEnv { ANTIGRAVITY_LS_ADDRESS: string; ANTIGRAVITY_CSRF_TOKEN: string
 interface ParsedHistory { key?: string; turns: UnifiedTurn[]; model: string; modelId: unknown }
 interface AgAsk { conversationId: string; index: number; kind: string; body: unknown; command: string; trajectoryId: string }
 type Outcome = { status: string; error?: { message: string } };
-/** What openFile runs on Windows (execFile, or a stand-in in tests). */
-export type OpenRunner = (file: string, args: string[], options: { timeout: number }, callback: (error: Error | null) => void) => unknown;
 
 // Antigravity records tool arguments as JSON-encoded strings ("\"ls -la\"").
 function decodeArgs(args: unknown): Record<string, unknown> {
@@ -778,13 +775,8 @@ class AntigravityBridge extends EventEmitter {
   // the chat): the conversation is shown and the chat's link to the file pressed (the driver's
   // open-file). `pressed: false`: the chat is shown but no link to the file is drawn in it.
   // (Antigravity's app has been an agent window since 2.0, not an editor: a file handed to it is not opened.)
-  // Windows has no window flow for Antigravity yet (no antigravity-desktop.cs): there its exe is started
-  // with the file, as before.
-  async openFile(conversationId: string, file: FileTarget, run: OpenRunner = execFile, platform: NodeJS.Platform = process.platform): Promise<HelperResult> {
-    if (platform === 'win32') {
-      return new Promise((resolve, reject) => run(antigravityApp({ platform }), [file.absolute], { timeout: 15000 }, err =>
-        err ? reject(Object.assign(new Error('没能在 Antigravity 桌面版里打开这个文件'), { status: 409, cause: err })) : resolve({ ok: true, pressed: true })));
-    }
+  // macOS: antigravity-desktop.swift; Windows: antigravity-desktop.cs.
+  async openFile(conversationId: string, file: FileTarget): Promise<HelperResult> {
     const title = this.titleOf(conversationId);
     const result = await this.inWindow(() => this.desktop.openFile({ title, localId: conversationId, ...file }));
     if (!result.ok) throw Object.assign(new Error(result.error || '没能在 Antigravity 桌面版里打开这个文件'), { status: 409 });

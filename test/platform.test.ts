@@ -151,6 +151,23 @@ test('Windows: no flow sends input or moves a window itself; only the driver\'s 
   assert.ok(settings.indexOf('EffortCheck(false)') > 0 && settings.indexOf('EffortCheck(false)') < settings.indexOf('PickModel('), 'the effort is checked before the model menu is touched');
 });
 
+test('Windows: Antigravity takes only show-session and open-file, and finds a conversation by its address as the Mac driver does', () => {
+  const native = path.join(import.meta.dirname, '../src/server/native');
+  const flow = fs.readFileSync(path.join(native, 'antigravity-desktop.cs'), 'utf8'), driver = fs.readFileSync(path.join(native, 'uia-driver.cs'), 'utf8');
+  const profile = JSON.parse(fs.readFileSync(path.join(native, 'profiles/antigravity.json'), 'utf8'));
+  assert.equal(profile.windows.exe, 'Antigravity.exe');
+  // No commands of its own, so `check` names only the two shared ones it takes (not the chat modes').
+  assert.match(flow, /new\[\] \{ "show-session", "open-file" \}\) sharedTaken\.Add/);
+  assert.doesNotMatch(flow, /flowCommands\.Add/);
+  assert.match(driver, /"ported", flowCommands\.Concat\(Shared\(\)\)/);
+  assert.match(driver, /if \(Shared\(\)\.Contains\(command\)\) RunShared\(\);/);
+  // "sessionAddress": the page's document at that path, its sidebar row the link there, scrolled both ways to it.
+  assert.match(driver, /Func<bool> here = \(\) => at\.Length == 0 \? Current\(\) == title : Showing\(at\);/);
+  assert.match(driver, /foreach \(bool downward in new\[\] \{ true, false \}\)/);
+  // "fileLink": only the chat's own links count.
+  assert.match(driver, /if \(shaped != null && !Fits\(e, shaped\)\) continue;/);
+});
+
 test('Windows: a helper stopped mid-park is followed by `restore`, and a park that left something out is reported', async () => {
   const { DesktopAutomation } = await import('../src/server/core/desktop-automation.js');
   const ran: string[] = [];

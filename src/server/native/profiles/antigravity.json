@@ -1,6 +1,9 @@
 {
   "name": "Antigravity 桌面版",
   "bundleId": "com.google.antigravity",
+  "windows": {
+    "exe": "Antigravity.exe"
+  },
   "accessibilitySwitches": [
     "AXManualAccessibility"
   ],

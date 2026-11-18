@@ -1327,20 +1327,89 @@ namespace Frontdesk.Driver
             try { Process.Start(new ProcessStartInfo("rundll32.exe", "url.dll,FileProtocolHandler " + link) { UseShellExecute = false, CreateNoWindow = true }).WaitForExit(5000); } catch { }
             Stale();
         }
-        // Its sidebar row, or the profile's sessionLink where the row is not there (the link brings the
-        // app forward: while parked the watchdog gives the foreground straight back).
+        // A conversation known by its address (ax-driver.swift's address / rowAt). A desktop whose page has
+        // an address of its own for each conversation (profile "sessionAddress", its path with {localId}:
+        // Antigravity's "/c/{localId}") is asked by that rather than by title, which two conversations
+        // may share: the page shows the conversation when its document's address has that path, and the
+        // sidebar's row for it is the link that points there (inside the "sessionList" locator, when the
+        // profile has one). A long list is drawn only near what is on screen, so rows it has not drawn
+        // are brought in by scrolling its last drawn row into view, down to the list's end, then its
+        // first, up to its start, until the row is there.
+        static string Address(string localId)
+        {
+            string template = Setting("sessionAddress");
+            if (template.Length == 0 || string.IsNullOrEmpty(localId)) return "";
+            string path = template.Replace("{localId}", localId).Replace("{id}", localId);
+            return path.Contains("{") ? "" : path;
+        }
+        static string PathOf(Node n) { Uri u; return n.Value.Length > 0 && Uri.TryCreate(n.Value, UriKind.Absolute, out u) ? Uri.UnescapeDataString(u.AbsolutePath) : ""; }
+        static bool Showing(string path) { ReadPage(); return nodes.Any(n => n.ControlType == CT_Document && PathOf(n) == path); }
+        static Regex RowShape()
+        {
+            string template = Setting("sessionAddress");
+            return template.Length == 0 ? null : new Regex("^" + Regex.Replace(Regex.Escape(template), @"\\\{[A-Za-z]+}", "[^/]+") + "$");
+        }
+        static List<Node> SessionRows()
+        {
+            Regex shape = RowShape();
+            if (shape == null) return new List<Node>();
+            ReadPage();
+            Node box = locators.ContainsKey("sessionList") ? Find("sessionList") : null;
+            IEnumerable<Node> scope = box != null ? Within(box) : nodes;
+            return scope.Where(n => (n.ControlType == CT_Hyperlink || RoleIs(n, "AXButton")) && shape.IsMatch(PathOf(n))).ToList();
+        }
+        static Node RowAt(string path)
+        {
+            HashSet<string> seen = new HashSet<string>();
+            foreach (bool downward in new[] { true, false })
+            {
+                // The list's end in that direction: the row at its edge stays the same however it is scrolled.
+                string edgeBefore = ""; int still = 0;
+                for (int i = 0; i < 40; i++)
+                {
+                    List<Node> rows = SessionRows();
+                    Node hit = rows.FirstOrDefault(r => PathOf(r) == path);
+                    if (hit != null) return hit;
+                    foreach (Node r in rows) seen.Add(PathOf(r));
+                    if (rows.Count == 0) break;
+                    Node edge = downward ? rows[rows.Count - 1] : rows[0];
+                    string edgePath = PathOf(edge);
+                    still = edgePath == edgeBefore ? still + 1 : 0;
+                    if (still >= 2) break;
+                    edgeBefore = edgePath;
+                    ScrollIntoView(edge.Element); Wait(0.3);
+                }
+            }
+            Trace("no row for " + path + " among " + seen.Count);
+            return null;
+        }
+        // Its sidebar row (by its address where the profile has one), or the profile's sessionLink where
+        // the row is not there (the link brings the app forward: while parked the watchdog gives the
+        // foreground straight back).
         static bool Show(string title, string localId)
         {
-            if (Current() == title) return true;
+            string at = Address(localId);
+            Func<bool> here = () => at.Length == 0 ? Current() == title : Showing(at);
+            if (here()) return true;
             string link = Setting("sessionLink");
             for (int attempt = 0; attempt < 4; attempt++)
             {
-                Node row = Row(title);
                 bool asked = false;
-                if (row != null) asked = Press(row);
-                else if (attempt == 1 && link.Length > 0 && !string.IsNullOrEmpty(localId)) { OpenLink(link, new Dictionary<string, string> { { "localId", localId } }); asked = true; }
+                if (at.Length > 0)
+                {
+                    // Every row of the list was looked through: another try finds no more.
+                    Node found = RowAt(at);
+                    if (found == null) return false;
+                    asked = Press(found);
+                }
+                else
+                {
+                    Node row = Row(title);
+                    if (row != null) asked = Press(row);
+                    else if (attempt == 1 && link.Length > 0 && !string.IsNullOrEmpty(localId)) { OpenLink(link, new Dictionary<string, string> { { "localId", localId } }); asked = true; }
+                }
                 // Nothing pressed (no row yet): look again soon rather than wait for a page that is not coming.
-                if (Until(asked ? 2 : 0.5, () => Current() == title)) { Trace("showing " + title); return true; }
+                if (Until(asked ? 2 : 0.5, here)) { Trace("showing " + title); return true; }
             }
             return false;
         }
@@ -1936,15 +2005,24 @@ namespace Frontdesk.Driver
             string bare = Regex.Replace(path, @":\d+(:\d+)?$", "");
             string baseName = Path.GetFileName(bare.Replace('/', '\\'));
             List<KeyValuePair<Node, int>> hits = new List<KeyValuePair<Node, int>>();
+            // A page that names the file elsewhere too (Antigravity: the tabs of the files it has open,
+            // after the chat) says what the chat's own links are with the profile's "fileLink": only those count.
+            List<Loc> shaped; locators.TryGetValue("fileLink", out shaped);
             ReadPage();
             foreach (Node e in nodes.Where(n => n.ControlType == CT_Hyperlink || RoleIs(n, "AXButton")))
             {
+                if (shaped != null && !Fits(e, shaped)) continue;
                 string url = Uri.UnescapeDataString(e.Value ?? "").Replace('\\', '/'), own = Label(e).Trim();
                 string abs = absolute.Replace('\\', '/'), bareSlash = bare.Replace('\\', '/');
                 int score = 0;
+                // A link may name the file and carry its path as its description (Antigravity's pills:
+                // "ScreenSwitch.cs", described "c:\…\ScreenSwitch.cs"), which Label joins to the name:
+                // the description is matched as a path, and the name alone as the link's text.
+                string named = e.Name.Trim(), aside = (e.FullDescription.Length > 0 ? e.FullDescription : e.Help).Trim().Replace('\\', '/');
                 if (url.Length > 0 && ((abs.Length > 0 && url.EndsWith(abs, StringComparison.OrdinalIgnoreCase)) || url.EndsWith("/" + bareSlash, StringComparison.OrdinalIgnoreCase) || url == bareSlash)) score = 3;
-                else if (text.Length > 0 && own == text) score = 2;
-                else if (baseName.Length > 0 && (own == baseName || own == path || own == bare)) score = 1;
+                else if (abs.Length > 0 && aside.Equals(abs, StringComparison.OrdinalIgnoreCase)) score = 3;
+                else if (text.Length > 0 && (own == text || named == text)) score = 2;
+                else if (baseName.Length > 0 && new[] { own, named }.Any(o => o == baseName || o == path || o == bare)) score = 1;
                 if (score > 0) hits.Add(new KeyValuePair<Node, int>(e, score));
             }
             return hits;
@@ -2148,6 +2226,10 @@ namespace Frontdesk.Driver
         // bring the app forward, which the person asked for), waits for the page, and acts in the mode
         // the command is for.
         static readonly HashSet<string> sharedCommands = new HashSet<string> { "read-chat", "chat-status", "chat-new", "chat-send", "chat-stop", "open-file", "show-session" };
+        // The shared commands this engine takes: every one, for a flow with commands of its own; only the
+        // ones a flow with none names in `sharedTaken` (Antigravity: show-session and open-file).
+        static readonly HashSet<string> sharedTaken = new HashSet<string>();
+        static IEnumerable<string> Shared() { return sharedTaken.Count > 0 ? sharedTaken : flowCommands.Count > 0 ? (IEnumerable<string>)sharedCommands : new string[0]; }
         // The opening every acting command shares.
         static void Begin(bool park)
         {
@@ -2211,7 +2293,7 @@ namespace Frontdesk.Driver
             // a process may read a window of a higher level's process but not act on it.
             bool trusted = app < 0 || self >= app;
             DeclareFlow();
-            if (command == "check") Out(new Dictionary<string, object> { { "ok", true }, { "trusted", trusted }, { "running", window != IntPtr.Zero }, { "integrity", self }, { "appIntegrity", app }, { "ported", flowCommands.Count == 0 ? new List<string>() : flowCommands.Concat(sharedCommands).ToList() } });
+            if (command == "check") Out(new Dictionary<string, object> { { "ok", true }, { "trusted", trusted }, { "running", window != IntPtr.Zero }, { "integrity", self }, { "appIntegrity", app }, { "ported", flowCommands.Concat(Shared()).ToList() } });
             if (Setting("exe").Length == 0) Fail("usage", "缺少桌面版在 Windows 上的配置（AX_PROFILE 的 windows.exe）");
             if (window == IntPtr.Zero) Fail("not_running", appName + "没有在运行");
             if (!trusted) Fail("not_trusted", appName + "以更高的权限运行（例如以管理员身份），工作台读得到它的界面但不能操作：请用相同的权限运行两者");
@@ -2220,7 +2302,7 @@ namespace Frontdesk.Driver
 
             // A command the engine's flow ports acts on the page: the flow parks the window first and
             // waits for the page itself (RunFlow).
-            if (flowCommands.Count > 0 && sharedCommands.Contains(command)) RunShared();
+            if (Shared().Contains(command)) RunShared();
             if (flowCommands.Contains(command))
             {
                 RunFlow();
