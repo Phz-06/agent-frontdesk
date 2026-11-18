@@ -451,12 +451,16 @@ test('the Windows helper is compiled with the csc.exe Windows ships and speaks t
   assert.equal(refused.available, false);
   assert.match(refused.reason || '', /macOS 和 Windows/);
   if (process.platform === 'win32') {
-    // The real compile, then the one command that only looks (nothing is pressed in a unit test).
-    const real = new DesktopAutomation({ engine: 'claude', platform: 'win32', cacheDir: temp, warmEveryMs: 0 });
-    const file = await real.helper();
-    assert.ok(file?.endsWith('.exe'), 'the helper is an .exe in the cache');
-    const checked = await real.runner(must(file), ['check'], { timeout: 10000, env: { AX_PROFILE: real.profile } });
-    assert.equal(checked.ok, true);
-    assert.ok(list(checked['ported']).includes('send'), "Claude's flow ports send");
+    // The real compile of each engine's flow, then the one command that only looks (nothing is
+    // pressed in a unit test): Claude's flow sends through its window, Codex's starts new chats.
+    for (const [engine, own] of [['claude', 'send'], ['codex', 'new']] as const) {
+      const real = new DesktopAutomation({ engine, platform: 'win32', cacheDir: temp, warmEveryMs: 0 });
+      const file = await real.helper();
+      assert.ok(file?.endsWith('.exe'), 'the helper is an .exe in the cache');
+      const checked = await real.runner(must(file), ['check'], { timeout: 10000, env: { AX_PROFILE: real.profile } });
+      assert.equal(checked.ok, true);
+      assert.ok(list(checked['ported']).includes(own), `${engine}'s flow ports ${own}`);
+      assert.ok(list(checked['ported']).includes('chat-send'), 'the chat modes come with any flow');
+    }
   }
 });

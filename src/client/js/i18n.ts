@@ -192,6 +192,7 @@ const REPORTS: Record<string, string> = {
   'Claude 桌面版没有及时响应': "Claude's desktop app didn't respond in time", '桌面代发程序没有正常返回': 'The desktop helper stopped unexpectedly', '桌面代发只支持 macOS': 'Sending through the desktop app only works on macOS', '桌面代发只支持 macOS 和 Windows': 'Sending through the desktop app works on macOS and Windows', '桌面版以更高的权限运行（例如以管理员身份），工作台能读到它的界面但不能操作：请用相同的权限运行两者': 'The desktop app runs with higher rights (as administrator, say): the console can read its window but not act on it. Run both with the same rights.', '桌面代发程序编译失败（需要 Windows 自带的 .NET Framework 4 的 csc.exe）': "The desktop helper didn't compile (it needs the csc.exe of .NET Framework 4, which comes with Windows)", 'Windows 上的桌面代发还在移植中，暂时不能通过窗口操作发送': "Sending through the desktop app's window isn't available on Windows yet: it is still being ported",
   '缺少桌面版在 Windows 上的配置（AX_PROFILE 的 windows.exe）': "The desktop app's Windows settings are missing (windows.exe in AX_PROFILE)",
   '另一个桌面版正在后台操作，稍后再试': 'Another desktop app is being worked from behind right now. Try again in a moment.',
+  'Codex 桌面版的项目菜单没有关上，没有发送：请到桌面版里关掉它': "Codex's project menu didn't close, so nothing was sent. Close it in the desktop app.", 'Codex 桌面版的模型菜单没有关上，没有发送：请到桌面版里关掉它': "Codex's model menu didn't close, so nothing was sent. Close it in the desktop app.",
   'Codex 桌面版里这个会话的模型或推理强度刚刚变了，没有发送：请刷新后重新选择': "This chat's model or effort just changed in Codex's desktop app, so nothing was sent. Refresh and pick again.", 'Codex 桌面版现在没有打开这个会话，没法给它换模型或推理强度，没有发送：请先在桌面版里打开这个会话': "Codex's desktop app doesn't have this chat open, so its model or effort can't be changed and nothing was sent. Open the chat in the desktop app first.",
   '桌面代发程序编译失败（需要 Xcode 命令行工具：xcode-select --install）': "Couldn't build the desktop helper. Install the Xcode command line tools: xcode-select --install", 'Claude 桌面版没有在运行': "Claude's desktop app isn't running",
   '桌面代发程序不可用': 'The desktop helper is unavailable', '工作台没有辅助功能权限': "Frontdesk doesn't have Accessibility access", '缺少会话标题': 'Missing chat title', '消息是空的': 'The message is empty',
@@ -244,10 +245,6 @@ const REPORTS: Record<string, string> = {
   '缺少会话标题或消息': 'The chat title or the message is missing',
   '没能在 Codex 桌面版的侧栏里找到这个聊天': "Couldn't find this chat in Codex's desktop sidebar", '在 Codex 桌面版里选了不在项目里，但项目没有切换过去': "Picked no project in Codex's desktop app, but it didn't switch",
   // Win32 UIA driver (src/server/native/win32/uia-driver/Program.cs)
-  '应用没有在运行': 'The app is not running',
-  '没有找到输入框（profile 的 composer）': 'Could not find the message box (composer in profile)',
-  '输入框填不进文字': 'Could not enter text into the message box',
-  '没有找到停止控件，也按不到 Esc': 'Could not find the stop button or press Esc',
 };
 const REPORT_PATTERNS: Array<[RegExp, (match: RegExpExecArray) => string]> = [
   // The sign-in command is the one that works on that machine (claude-bridge.ts, loginCommand).
@@ -274,6 +271,7 @@ const REPORT_PATTERNS: Array<[RegExp, (match: RegExpExecArray) => string]> = [
   [/^(.+?)的页面没有接进 UI Automation，工作台读不到它的界面：把它的窗口切到前台看一眼再发$/, match => `${owner(match[1])} page isn't reachable through UI Automation, so the console can't read it. Bring the window to the front once, then send again.`],
   [/^(.+?)的窗口不在屏幕上（最小化或在另一个桌面），页面没有接进 UI Automation：把窗口还原后再试$/, match => `${owner(match[1])} window isn't on screen (minimized or on another desktop), so its page isn't reachable through UI Automation. Restore the window and try again.`],
   [/^(.+?)以更高的权限运行（例如以管理员身份），工作台读得到它的界面但不能操作：请用相同的权限运行两者$/, match => `${owner(match[1])} desktop app runs with higher rights (as administrator, say): the console can read its window but not act on it. Run both with the same rights.`],
+  [/^Windows 上 Codex 桌面版的推理强度只能用方向键调，工作台不向桌面版发按键，没有新建：请先在桌面版的新建页上把推理强度调成「(.+?)」$/, match => `On Windows, Codex's effort can only be changed with the arrow keys, and the console sends no keys to the desktop app, so no chat was started. Set the effort to "${match[1]}" on the desktop's New chat page first.`],
   [/^Windows 上的桌面代发还在移植中，(.+?)暂时不能通过窗口操作「(.+?)」$/, match => `Sending through the desktop app's window is still being ported on Windows: ${owner(match[1])} desktop app can't do "${match[2]}" through its window yet`],
   // Held back by the driver rather than guessed at (ax-driver.swift: "one control, or none", "a control found by its place").
   [/^(.+?)的页面上有 (.+?) 个控件都对得上「(.+?)」，分不清该动哪一个，所以没有动手（桌面版可能改过界面，这个控件的认法要更新）$/, match => `${owner(match[1])} desktop app shows ${match[2]} controls that all match "${match[3]}", so nothing was touched (the app may have changed: this control's locator needs updating)`],
@@ -353,8 +351,6 @@ const REPORT_PATTERNS: Array<[RegExp, (match: RegExpExecArray) => string]> = [
   [/^没能在 Codex 桌面版里换模型或推理强度（(.*)），没有发送$/, match => `Couldn't change the model or effort in Codex's desktop app (${english(match[1])}). Nothing was sent.`],
   [/^没能让 Codex 桌面版停下（(.*)），请在桌面端停止$/, match => `Couldn't stop Codex's desktop app (${english(match[1])}). Stop it on desktop.`],
   [/^(.+)，没有发送$/, match => `${english(match[1])}. Nothing was sent.`],
-  [/^profile 里没有 (.+) 的认法$/, match => `No selector for ${match[1] ?? ''} in the profile`],
-  [/^这个动作（(.+)）的 Windows 支持还没写好$/, match => `Windows support for "${match[1] ?? ''}" is not implemented yet`],
   [/^(.+?)没有在运行$/, match => { const app = match[1] ?? ''; return /\s*桌面版$/.test(app) ? `${owner(app)} desktop app isn't running` : `${app} is not running`; }],
 ];
 // A text from the server, in the interface language. Unknown texts are shown as they came.

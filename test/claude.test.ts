@@ -1378,7 +1378,7 @@ test('Claude\'s question to the person is a card in the chat, answered by pickin
   bridge.dispose(); fs.rmSync(home, { recursive: true });
 });
 
-test('Windows: an engine can send through its window once its flow ports send', async () => {
+test('Windows: an engine can act through its window once it has a flow there', async () => {
   const { ClaudeDesktop } = __claude_desktop;
   let ported: string[] = [];
   const desktop = new ClaudeDesktop({ platform: 'win32', warmEveryMs: 0, runner: async () => ({ ok: true, trusted: true, running: true, ported }) });

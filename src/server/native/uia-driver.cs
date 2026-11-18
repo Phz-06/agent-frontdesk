@@ -1408,11 +1408,14 @@ namespace Frontdesk.Driver
         }
 
         // ---- a menu (only while the app holds the foreground: HoldForeground) ----
-        static bool OpenMenu(Func<Node> menu)
+        // `opened`: what says it is open, for a popup that is not a menu (Codex's project picker, a
+        // list); by default a menu on the page.
+        static bool OpenMenu(Func<Node> menu, Func<bool> opened = null)
         {
+            Func<bool> open = opened ?? (() => Menus() > 0);
             Node button = menu();
             if (button == null) return false;
-            if (Expanded(button) && Menus() > 0) return true;
+            if (Expanded(button) && open()) return true;
             HoldForeground(true);
             Expand(button);
             // A press that came while the page was still settling (a chat just brought on screen) is
@@ -1420,7 +1423,7 @@ namespace Frontdesk.Driver
             DateTime began = DateTime.UtcNow; bool pressedAgain = false;
             bool shown = Until(3, () =>
             {
-                if (Menus() >= 1) return true;
+                if (open()) return true;
                 if (!pressedAgain && (DateTime.UtcNow - began).TotalSeconds > 1.2) { Node now = menu(); if (now != null && !Expanded(now)) { pressedAgain = true; Expand(now); } }
                 return false;
             });

@@ -208,8 +208,10 @@ class DesktopAutomation {
       state = !result.ok ? { available: false, ...(result.error !== undefined ? { reason: result.error } : {}) }
         : !result.trusted ? { available: false, reason: windows ? WINDOWS_NOT_TRUSTED : NOT_TRUSTED, code: 'not_trusted' }
         : !result.running ? { available: false, reason: `${this.label}没有在运行`, code: 'not_running' }
-        // Windows: available once the engine's flow ports sending.
-        : windows && !list(result['ported']).includes('send') ? { available: false, reason: WINDOWS_NOT_PORTED, code: 'not_ported' }
+        // Windows: available once the engine has a flow there (<engine>-desktop.cs). Which commands it
+        // ports is the engine's own: Claude's sends through its window, Codex's only starts new chats
+        // (everything else of Codex's goes through its app-server and router).
+        : windows && !list(result['ported']).length ? { available: false, reason: WINDOWS_NOT_PORTED, code: 'not_ported' }
         : { available: true };
     }
     this.state = state; this.checkedAt = Date.now();
