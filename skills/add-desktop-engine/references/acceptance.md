@@ -14,6 +14,7 @@ Check every item before handing over. For anything you could not do, write why; 
 - [ ] Session list: titles, working folders and update times match the desktop app; unused empty sessions do not appear.
 - [ ] Opening a past session: the number of turns matches the desktop app (only a person's input starts a turn); the AI's words, tool calls and artifacts appear in true order; thinking does not appear.
 - [ ] A real message sent from Frontdesk (the cheap way in step 4 of SKILL, with the person's consent first): it goes through the channel you chose; the desktop app shows the turn; no second, forked session appeared. If the person declined, write "not verified".
+- [ ] A reply sent from Frontdesk is shown as it is written, not all at once at the end: while the desktop app writes it, the page's text grows within a second of the desktop's (where the desktop app keeps the text so far somewhere it can be read; if it does not, `progress.md` says where you looked).
 - [ ] While a session runs in the desktop app, Frontdesk still allows sending; there is no read-only mode.
 - [ ] Tasks sent from Frontdesk default to the session's model, reasoning effort and permission settings from the desktop app; ones changed under the composer are sent as changed.
 - [ ] Running / completed / failed / stopped are shown only with native evidence; when unsure, "confirming" is shown.

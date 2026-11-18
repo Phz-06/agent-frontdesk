@@ -74,6 +74,8 @@ function askCard(threadId: string, request: unknown): Approval | null {
   return null;
 }
 
+// How often a reply the desktop is writing is passed on: its owner's state changes with every few words.
+const REPLY_MS = 150;
 // An item from the desktop's record as the events carry it. The record's items are objects with a
 // type and an id; anything else is not an item.
 // Codex's composer keeps a message in its Markdown and the desktop shows it rendered; the console's
@@ -109,6 +111,7 @@ class CodexBridge extends EventEmitter {
   rl: readline.Interface | null;
   reqId: number;
   pending: Map<number, Reply>;
+  followMs: number;
   isReady: boolean;
   accountInfo: unknown;
 
@@ -129,6 +132,7 @@ class CodexBridge extends EventEmitter {
     this.rl = null;
     this.reqId = 1;
     this.pending = new Map();
+    this.followMs = 800; // how often a running turn's record is read (shortened in tests)
     this.isReady = false;
     this.accountInfo = null;
   }
@@ -630,12 +634,15 @@ class CodexBridge extends EventEmitter {
     return new Promise((resolve, reject) => execFile('/usr/bin/open', ['-g', `codex://threads/wake/${threadId}`], { timeout: 15000 }, err => err ? reject(Object.assign(new Error('没能唤起 Codex 桌面版来处理这条消息'), { cause: err })) : resolve()));
   }
   // Follows the desktop's record of the thread: the first turn not in `known` that carries this
-  // message, item by item, until the record says how it ended.
+  // message, item by item, until the record says how it ended. The record has a reply only once it
+  // is whole; while it is being written, its text so far is taken from the window that owns the
+  // thread (see codex-desktop.ts watch), as that window draws it.
   follow(threadId: string, { prompt, known, emitter }: { prompt: string; known: ReadonlySet<unknown>; emitter: CodexRun }): void {
     const seen = new Map<string, string>(), started = Date.now();
     let polling = false, warned = false;
-    const asks = this.watchAsks(threadId, emitter);
-    const stop = () => { clearInterval(timer); asks.close(); };
+    const writing = this.followReplies(emitter, id => seen.has(id));
+    const asks = this.watchAsks(threadId, emitter, writing.update);
+    const stop = () => { clearInterval(timer); asks.close(); writing.close(); };
     const timer = setInterval(async () => {
       if (polling) return;
       polling = true;
@@ -663,16 +670,39 @@ class CodexBridge extends EventEmitter {
         if (['completed', 'failed', 'interrupted'].includes(resolved.status)) { stop(); emitter.emit('completed', { turn: { ...bag(turn), ...resolved } }); }
       } catch (err) { emitter.emit('warning', { message: messageOf(err), retrying: true }); }
       finally { polling = false; }
-    }, 800);
+    }, this.followMs);
     timer.unref?.();
     emitter.once('interrupt', stop);
   }
 
+  // The replies of the followed turn as the owning window has them so far (`update` takes its turns;
+  // the turn is the run's, once the record named it). A reply goes out as the desktop writes it, at
+  // most every REPLY_MS, until the record holds it (`recorded`): from then on the record's is shown.
+  followReplies(emitter: CodexRun, recorded: (id: string) => boolean): { update(turns: unknown[]): void; close(): void } {
+    const shown = new Map<string, string>();
+    let latest: unknown[] = [], timer: ReturnType<typeof setTimeout> | null = null, closed = false;
+    const flush = () => {
+      timer = null;
+      const turn = emitter.turnId ? latest.find(candidate => (get(candidate, 'turnId') || get(candidate, 'id')) === emitter.turnId) : null;
+      for (const raw of list(get(turn, 'items'))) {
+        const id = text(get(raw, 'id')), said = text(get(raw, 'text'));
+        if (get(raw, 'type') !== 'agentMessage' || !id || !said || recorded(id) || shown.get(id) === said) continue;
+        shown.set(id, said);
+        // Unfinished until the record has it: the end of a reply is the record's to say.
+        emitter.emit('item_started', { item: { type: 'agentMessage', id, text: said, phase: str(get(raw, 'phase')) } });
+      }
+    };
+    return {
+      update(turns) { if (closed) return; latest = turns; timer ||= setTimeout(flush, REPLY_MS); },
+      close() { closed = true; if (timer) clearTimeout(timer); timer = null; },
+    };
+  }
   // The desktop's requests to the person while this turn runs, as cards; one answered (here or in
-  // the desktop) leaves the desktop's state, and its card goes.
-  watchAsks(threadId: string, emitter: EngineEmitter): { close(): void } {
+  // the desktop) leaves the desktop's state, and its card goes. `onTurns` is given the owner's turns.
+  watchAsks(threadId: string, emitter: EngineEmitter, onTurns?: (turns: unknown[]) => void): { close(): void } {
     const open = new Set<string>();
-    const watcher = this.desktop.watch?.(threadId, requests => {
+    const watcher = this.desktop.watch?.(threadId, ({ requests, turns }) => {
+      onTurns?.(turns);
       const now = new Set<string>();
       for (const request of requests) {
         const card = askCard(threadId, request);

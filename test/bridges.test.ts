@@ -3,7 +3,7 @@ import { EngineEvents } from '../src/server/types.js';
 import { at, dig, fake, must, noRuns, required } from './support.js';
 import { errorField, get } from '../src/shared/guards.js';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
-import type { CodexDesktopIpc } from '../src/server/codex-desktop.js';
+import type { CodexDesktopIpc, LiveThread } from '../src/server/codex-desktop.js';
 import type { DesktopAutomation } from '../src/server/core/desktop-automation.js';
 import type { ApprovalRequest, DictationHandlers, EngineCompleted, EngineEmitter, Engine, History, UnifiedSession, UnifiedTurn } from '../src/shared/contract.js';
 import type { HubMessage } from '../src/server/core/event-hub.js';
@@ -65,6 +65,41 @@ test('Codex: a message to a chat is queued for the desktop and the desktop is wo
   const replies: unknown[] = []; bridge.proc = fake<ChildProcessWithoutNullStreams>({ stdin: fake<ChildProcessWithoutNullStreams['stdin']>({ write: (text: string) => replies.push(JSON.parse(text)) > 0 }) });
   bridge.handleMessage({ id: 42, method: 'item/commandExecution/requestApproval', params: { threadId: 'th' } });
   assert.equal(dig(replies, 0, 'error', 'code'), -32601);
+});
+
+test('Codex: a reply the desktop is writing is shown as it grows, from the window that owns the thread, until the record has it', async () => {
+  const { bridge, thread } = fakeCodex();
+  bridge.followMs = 20;
+  let live: ((state: LiveThread) => void) | undefined;
+  bridge.desktop = fake<CodexDesktopIpc>({ watch: (id, on) => { live = on; return { close() {} }; } });
+  const emitter = bridge.startTurn({ threadId: 'th', prompt: 'tell a story' });
+  const replies: Array<[string, unknown]> = [], shown: Array<[unknown, unknown]> = [];
+  emitter.on('item_started', ({ item }) => replies.push(['writing', item.text]));
+  emitter.on('item_completed', ({ item }) => { if (item.type === 'agentMessage') replies.push(['recorded', item.text]); });
+  bindEvents(emitter, (type, data) => { if (type === 'message.updated') shown.push([get(data, 'status'), get(data, 'text')]); });
+  const done = settle(emitter);
+  const until = async (check: () => boolean) => { for (let i = 0; i < 100 && !check(); i++) await new Promise(resolve => setTimeout(resolve, 10)); assert.ok(check()); };
+  const desktop = (text: string, turnId = 't2') => must(live)({ requests: [], turns: [{ turnId, items: [{ id: 'u', type: 'userMessage' }, { id: 'm', type: 'agentMessage', text, phase: 'final_answer' }] }] });
+  // Before the record names the turn, what the desktop writes is not known to be this run's.
+  await until(() => !!live);
+  desktop('Earlier');
+  // The desktop takes the message: the record has the turn, without its reply.
+  const turn: { id: string; status: string; completedAt?: number; items: object[] } = { id: 't2', status: 'inProgress', items: [{ id: 'u', type: 'userMessage', content: [{ type: 'text', text: 'tell a story' }] }] };
+  thread.turns.push(turn);
+  await until(() => emitter.turnId === 't2');
+  desktop('Once', 'other'); desktop('Once'); desktop('Once');
+  await until(() => replies.length === 1);
+  desktop('Once up'); desktop('Once upon');
+  await until(() => replies.length === 2);
+  // The record has the reply whole: what the desktop still holds is not shown over it.
+  turn.items.push({ id: 'm', type: 'agentMessage', text: 'Once upon a time.', phase: 'final_answer' });
+  Object.assign(turn, { status: 'completed', completedAt: 9 });
+  await done;
+  desktop('Once upon a time. More');
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.deepEqual(replies, [['writing', 'Once'], ['writing', 'Once upon'], ['recorded', 'Once upon a time.']]);
+  assert.deepEqual(shown, [['streaming', 'Once'], ['streaming', 'Once upon'], ['completed', 'Once upon a time.']]);
+  emitter.emit('interrupt');
 });
 
 test('Codex: a different model is picked in the desktop first; when it cannot be, nothing is queued', async () => {
@@ -276,6 +311,27 @@ test('an Antigravity turn that ends with an error and no reply ends the run as f
   await assert.rejects(bridge.sendUserMessage('c1', 'x', { model: 'pro' }), /没有提供这个模型/);
   assert.deepEqual((await bridge.getModels()).map(model => [model.id, model.name, model.agentId]), [['MODEL_A', 'Flash (High)', 'flash-high']]);
   bridge.dispose(); fs.rmSync(dir, { recursive: true });
+});
+
+test('an Antigravity reply being written is shown as it grows, read from the language server, until its record comes', async () => {
+  const writing = (text: string) => agyStep('PLANNER_RESPONSE', 'GENERATING', { plannerResponse: { thinking: 'hm', response: text } });
+  const steps = [agyStep('USER_INPUT', 'DONE', { userInput: { userResponse: 'tell a story' } }), writing('Once')];
+  const { bridge, dir } = antigravityFixture(steps, { idle: 0 });
+  const replies: Array<[string, unknown]> = [], emitter = new EngineEvents();
+  emitter.on('delta', data => { if (data.type === 'reasoning') replies.push(['thinking', data.itemId]); });
+  emitter.on('item_started', ({ item }) => replies.push(['writing', item.text]));
+  emitter.on('item_completed', ({ item }) => replies.push(['recorded', item.text]));
+  bridge.watchTurn('c1', emitter, { next: 0 });
+  const until = async (check: () => boolean) => { for (let i = 0; i < 100 && !check(); i++) await new Promise(resolve => setTimeout(resolve, 10)); assert.ok(check()); };
+  await until(() => replies.length === 2);
+  steps[1] = writing('Once upon');
+  await until(() => replies.length === 3);
+  steps[1] = agyStep('PLANNER_RESPONSE', 'DONE', { plannerResponse: { thinking: 'hm', response: 'Once upon a time.' } });
+  await until(() => replies.length === 5);
+  await new Promise(resolve => setTimeout(resolve, 60));
+  // The thinking is the same row each time it is named (one id), drawn before the reply.
+  assert.deepEqual(replies, [['thinking', 'thinking'], ['writing', 'Once'], ['writing', 'Once upon'], ['thinking', 'thinking'], ['recorded', 'Once upon a time.']]);
+  emitter.emit('interrupt'); bridge.dispose(); fs.rmSync(dir, { recursive: true });
 });
 
 test('what an Antigravity step waits on the person for becomes a card in the chat, answered the way the desktop answers it', async () => {

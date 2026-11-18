@@ -95,6 +95,8 @@ function workspaceOf(uris: unknown): string {
 const stepKind = (step: unknown): string => String(get(step, 'type') || '').replace('CORTEX_STEP_TYPE_', '');
 const stepStatus = (step: unknown): string => String(get(step, 'status') || '').replace('CORTEX_STEP_STATUS_', '');
 const SETTLED = new Set(['DONE', 'ERROR', 'CANCELED', 'INTERRUPTED', 'INVALID', 'CLEARED']);
+// How often a running turn's steps are read from the language server.
+const REPLY_POLL_MS = 500;
 // Only an error the desktop shows the person counts; the rest are notes to the model, which retries.
 const shownError = (step: unknown): unknown => stepKind(step) === 'ERROR_MESSAGE' && get(step, 'errorMessage', 'shouldShowUser') ? get(step, 'errorMessage', 'error') || {} : null;
 const errorText = (error: unknown): string => [get(error, 'userErrorMessage'), get(error, 'shortError')].filter(Boolean).join(' ').trim() || 'Agent execution terminated due to error.';
@@ -721,7 +723,8 @@ class AntigravityBridge extends EventEmitter {
   // a turn can end at once with an error (a model the conversation used is gone) and no reply.
   watchTurn(conversationId: string, emitter: EngineEmitter & { once(event: 'interrupt', listener: () => void): unknown }, { file = '', offset = 0, next = 0, baseline = -1 }: { file?: string; offset?: number; next?: number; baseline?: number } = {}): void {
     let stopped = false, received = false, checking = false, polling = false, idleChecks = 0, missing = 0, failure = '';
-    const pending: string[] = [], started = Date.now();
+    // `said`: the replies whose record has come; a reply being written is shown until then.
+    const pending: string[] = [], said = new Set<string>(), started = Date.now();
     const cleanup = () => { stopped = true; tailer?.close(); clearInterval(checker); clearInterval(poller); this.stopping.delete(conversationId); for (const id of waiting.values()) this.asks.delete(id); if (this.activeWatchers.get(conversationId)?.emitter === emitter) this.activeWatchers.delete(conversationId); };
     const onRecord = (record: unknown) => {
       idleChecks = 0;
@@ -730,6 +733,7 @@ class AntigravityBridge extends EventEmitter {
         received = true; failure = '';
         if (get(record, 'thinking')) emitter.emit('delta', { type: 'reasoning', itemId: 'thinking' });
         const reply = str(get(record, 'content'));
+        said.add(`message-${stepIndex}`);
         if (reply?.trim()) emitter.emit('item_completed', { item: { type: 'agentMessage', id: `message-${stepIndex}`, text: reply, phase: 'commentary' } });
         for (const [index, tool] of list(get(record, 'tool_calls')).entries()) {
           const id = asText(get(tool, 'id')) || `tool-${stepIndex}-${index}`;
@@ -748,8 +752,9 @@ class AntigravityBridge extends EventEmitter {
     };
     const tailer = file ? tailJsonl(file, offset, onRecord, { onError: err => { cleanup(); emitter.emit('error', errorOf(err)); } }) : null;
     // The language server's steps since the message: the ones that settled (they are the
-    // records when there is no file), and the ones waiting on the person, which become cards.
-    const waiting = new Map<number, string>();
+    // records when there is no file), the ones waiting on the person, which become cards, and a
+    // reply still being written, whose text so far is shown until its record has it (`said`).
+    const waiting = new Map<number, string>(), writing = new Map<string, string>();
     const poll = async () => {
       if (stopped || polling) return;
       polling = true;
@@ -761,6 +766,12 @@ class AntigravityBridge extends EventEmitter {
           const status = stepStatus(step);
           if (settled && SETTLED.has(status)) { if (!file) for (const record of recordsOfStep(step, index)) onRecord(record); next = index + 1; }
           else settled = false;
+          if (!SETTLED.has(status) && stepKind(step) === 'PLANNER_RESPONSE' && !said.has(`message-${index}`)) {
+            const [record] = recordsOfStep(step, index), id = `message-${index}`, soFar = str(record?.content) || '';
+            // Its thinking first, as its record will have it, so the reply is drawn after it.
+            if (get(record, 'thinking') && !writing.has(`${id}:thinking`)) { writing.set(`${id}:thinking`, ''); emitter.emit('delta', { type: 'reasoning', itemId: 'thinking' }); }
+            if (soFar.trim() && writing.get(id) !== soFar) { writing.set(id, soFar); emitter.emit('item_started', { item: { type: 'agentMessage', id, text: soFar, phase: 'commentary' } }); }
+          }
           if (status === 'WAITING' && get(step, 'requestedInteraction')) {
             open.add(index);
             if (!waiting.has(index)) { const ask = this.askOf(conversationId, index, step); if (ask) { waiting.set(index, ask.id); emitter.emit('approval', ask); } }
@@ -770,7 +781,8 @@ class AntigravityBridge extends EventEmitter {
         for (const [at, id] of waiting) if (!open.has(at)) { waiting.delete(at); this.asks.delete(id); emitter.emit('approval_resolved', { id }); }
       } catch {} finally { polling = false; }
     };
-    const poller = setInterval(poll, this.watchMs);
+    // Often enough for a reply being written to read as it grows.
+    const poller = setInterval(poll, Math.min(this.watchMs, REPLY_POLL_MS));
     poller.unref?.();
     const checker = setInterval(async () => {
       if (stopped || checking || Date.now() - started < this.settleMs) return;
