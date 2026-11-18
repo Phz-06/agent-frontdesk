@@ -296,6 +296,10 @@
       "role": "AXGroup",
       "subrole": "AXDocumentArticle"
     },
+    "citation": {
+      "role": "AXLink",
+      "class": "group/tag"
+    },
     "ignore": [
       "Claude is AI and can make mistakes",
       "Use the up and down arrow keys"
