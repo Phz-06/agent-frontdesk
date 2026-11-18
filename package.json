@@ -1,6 +1,6 @@
 {
   "name": "agent-frontdesk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "One web page for every desktop AI on your computer. Works with Codex, Claude and Antigravity today, and any other desktop AI can connect itself from a single prompt.",
   "homepage": "https://github.com/Phz-06/agent-frontdesk#readme",

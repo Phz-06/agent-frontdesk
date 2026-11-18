@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import type { AnyBridgeEvent, BridgeEventArgs } from '../../shared/contract.js';
+import { get } from '../../shared/guards.js';
 
 /** What a subscriber receives: a journal event, or the reset that tells it to read history again. */
 export type HubMessage = AnyBridgeEvent | { type: 'stream.reset'; data: Record<string, never>; id?: undefined };
@@ -28,6 +29,10 @@ class EventHub {
     const journal = this.journals.get(key) || { seq: 0, events: [], bytes: 0, sizes: [] };
     this.journals.delete(key); this.journals.set(key, journal);
     const event: AnyBridgeEvent = { id: `${this.epoch}:${++journal.seq}`, seq: journal.seq, engine, sessionId, turnId, type, data: structuredClone(data), timestamp: new Date().toISOString() };
+    // A reply being written is published again and again, whole each time: of a run of updates to
+    // one message the journal keeps the latest, so a long reply does not push the rest of the run out.
+    const last = journal.events.at(-1);
+    if (type === 'message.updated' && last?.type === 'message.updated' && last.turnId === turnId && get(last.data, 'id') === get(data, 'id')) { journal.events.pop(); journal.bytes -= journal.sizes.pop() ?? 0; }
     journal.events.push(event);
     const bytes = Buffer.byteLength(JSON.stringify(event));
     journal.bytes += bytes; journal.sizes.push(bytes);

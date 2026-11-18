@@ -109,6 +109,7 @@ Treat native records (session files, interface responses, chats read through acc
 | Event | Data | Purpose |
 | --- | --- | --- |
 | `item_completed` | `{ item: { type: 'agentMessage', id, text, phase } }` | A finished piece of what the AI said |
+| `item_started` | `{ item: { type: 'agentMessage', id, text, phase } }` | A reply the desktop app is still writing: its whole text so far, sent again as it grows (a few times a second at most), with the same `id` as the `item_completed` that ends it. A record on disk usually has a reply only once it is whole; take the text so far from where the desktop app keeps it live (Codex: the owning window's state through `watch`; Antigravity: the language server's step while it is `GENERATING`), and stop once the record has the reply |
 | `delta` | `{ type: 'agent_message', id, text, phase }` | Streamed text to append |
 | `delta` | `{ type: 'tool_call', id, name, input, plan? }` / `{ type: 'tool_result', id, output, isError, images? }` | A tool starts / ends; `plan` is the latest step list, `images` as in section 3 |
 | `delta` | `{ type: 'command_output', id, output }` | Command output to append |

@@ -3,7 +3,7 @@ import { EngineEvents } from '../src/server/types.js';
 import { at, dig, fake, must, noRuns, required } from './support.js';
 import { errorField, get } from '../src/shared/guards.js';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
-import type { CodexDesktopIpc } from '../src/server/codex-desktop.js';
+import type { CodexDesktopIpc, LiveThread } from '../src/server/codex-desktop.js';
 import type { DesktopAutomation } from '../src/server/core/desktop-automation.js';
 import type { ApprovalRequest, DictationHandlers, EngineCompleted, EngineEmitter, Engine, History, UnifiedSession, UnifiedTurn } from '../src/shared/contract.js';
 import type { HubMessage } from '../src/server/core/event-hub.js';
@@ -42,10 +42,6 @@ function fakeCodex({ model = 'gpt-a', effort = 'medium' } = {}) {
     return { result: {} };
   };
   bridge.wake = async id => { calls.push(['wake', id]); };
-  // No desktop window has the chat (the real router is never reached from a test), on macOS, so a
-  // settings change falls back to the desktop's menus unless a test says otherwise.
-  bridge.desktop = fake<CodexDesktopIpc>({ updateSettings: async () => { throw Object.assign(new Error('no-client-found'), { code: 'no-client-found' }); } });
-  bridge.platform = 'darwin';
   // The desktop takes the queued message: a new turn appears in the thread's record.
   const take = (text: string) => thread.turns.push({ id: 't2', status: 'completed', completedAt: 9, items: [{ id: 'u', type: 'userMessage', content: [{ type: 'text', text }] }, { id: 'a', type: 'agentMessage', text: 'done' }] });
   return { bridge, calls, thread, take };
@@ -71,17 +67,50 @@ test('Codex: a message to a chat is queued for the desktop and the desktop is wo
   assert.equal(dig(replies, 0, 'error', 'code'), -32601);
 });
 
+test('Codex: a reply the desktop is writing is shown as it grows, from the window that owns the thread, until the record has it', async () => {
+  const { bridge, thread } = fakeCodex();
+  bridge.followMs = 20;
+  let live: ((state: LiveThread) => void) | undefined;
+  bridge.desktop = fake<CodexDesktopIpc>({ watch: (id, on) => { live = on; return { close() {} }; } });
+  const emitter = bridge.startTurn({ threadId: 'th', prompt: 'tell a story' });
+  const replies: Array<[string, unknown]> = [], shown: Array<[unknown, unknown]> = [];
+  emitter.on('item_started', ({ item }) => replies.push(['writing', item.text]));
+  emitter.on('item_completed', ({ item }) => { if (item.type === 'agentMessage') replies.push(['recorded', item.text]); });
+  bindEvents(emitter, (type, data) => { if (type === 'message.updated') shown.push([get(data, 'status'), get(data, 'text')]); });
+  const done = settle(emitter);
+  const until = async (check: () => boolean) => { for (let i = 0; i < 100 && !check(); i++) await new Promise(resolve => setTimeout(resolve, 10)); assert.ok(check()); };
+  const desktop = (text: string, turnId = 't2') => must(live)({ requests: [], turns: [{ turnId, items: [{ id: 'u', type: 'userMessage' }, { id: 'm', type: 'agentMessage', text, phase: 'final_answer' }] }] });
+  // Before the record names the turn, what the desktop writes is not known to be this run's.
+  await until(() => !!live);
+  desktop('Earlier');
+  // The desktop takes the message: the record has the turn, without its reply.
+  const turn: { id: string; status: string; completedAt?: number; items: object[] } = { id: 't2', status: 'inProgress', items: [{ id: 'u', type: 'userMessage', content: [{ type: 'text', text: 'tell a story' }] }] };
+  thread.turns.push(turn);
+  await until(() => emitter.turnId === 't2');
+  desktop('Once', 'other'); desktop('Once'); desktop('Once');
+  await until(() => replies.length === 1);
+  desktop('Once up'); desktop('Once upon');
+  await until(() => replies.length === 2);
+  // The record has the reply whole: what the desktop still holds is not shown over it.
+  turn.items.push({ id: 'm', type: 'agentMessage', text: 'Once upon a time.', phase: 'final_answer' });
+  Object.assign(turn, { status: 'completed', completedAt: 9 });
+  await done;
+  desktop('Once upon a time. More');
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.deepEqual(replies, [['writing', 'Once'], ['writing', 'Once upon'], ['recorded', 'Once upon a time.']]);
+  assert.deepEqual(shown, [['streaming', 'Once'], ['streaming', 'Once upon'], ['completed', 'Once upon a time.']]);
+  emitter.emit('interrupt');
+});
+
 test('Codex: a different model is picked in the desktop first; when it cannot be, nothing is queued', async () => {
   const { bridge, calls, take } = fakeCodex();
-  const asked: unknown[] = [], routed: unknown[] = [];
-  // macOS picks them in the desktop's menus; the router is not asked there.
-  bridge.desktop = fake<CodexDesktopIpc>({ updateSettings: async request => { routed.push(request); return { applied: true }; } });
+  const asked: unknown[] = [];
+  bridge.desktop = fake<CodexDesktopIpc>({}); // no IPC for settings: the menu
   const ui = bridge.ui = fake<DesktopAutomation>({ check: async () => ({ available: true }), run: async (args, options) => { asked.push([args, options?.settings]); return { ok: true, changed: ['model'] }; } });
   const emitter = bridge.startTurn({ threadId: 'th', prompt: 'go', model: 'gpt-b', reasoningEffort: 'high' });
   const done = settle(emitter);
   await new Promise(resolve => setTimeout(resolve, 20)); take('go'); await done; emitter.emit('interrupt');
   assert.deepEqual(asked, [[['settings', 'Plan the trip'], { model: 'GPT-B', effort: 'high' }]]);
-  assert.deepEqual(routed, [], 'macOS does not change settings over the router');
   // The desktop could not switch: the message is not queued, and the reason says why.
   calls.length = 0;
   ui.run = async () => ({ ok: false, error: '在 Codex 桌面版里选了 GPT-B，但它没有切换过去' });
@@ -97,41 +126,82 @@ test('Codex: a different model is picked in the desktop first; when it cannot be
   assert.deepEqual(touched, []);
 });
 
-test('Codex on Windows: a different model or effort is made by the window that owns the chat, on condition it still has the settings just read; no menu is opened', async () => {
+// The desktop's IPC as a window that owns (or does not own) the chat answers it.
+function ownerIpc({ owned = true, applies = true, fails = false }: { owned?: boolean | (() => boolean); applies?: boolean; fails?: boolean } = {}) {
+  const held = { model: 'gpt-a' as string | null, effort: 'medium' as string | null }, updates: unknown[] = [];
+  const ipc = fake<CodexDesktopIpc>({
+    owns: async () => typeof owned === 'function' ? owned() : owned,
+    readSettings: async () => ({ ...held }),
+    updateSettings: async request => { if (fails) throw Object.assign(new Error('timeout'), { code: 'timeout' }); updates.push(request); if (applies) Object.assign(held, request.to); return applies; },
+  });
+  return { ipc, held, updates };
+}
+
+test('Codex: a different model is set by the window that owns the chat, as its menu does, without touching the window', async () => {
   const { bridge, calls, take } = fakeCodex();
-  bridge.platform = 'win32';
-  const asked: unknown[] = [];
-  let answer: { applied: boolean } | Error = { applied: true };
-  bridge.desktop = fake<CodexDesktopIpc>({ updateSettings: async request => { asked.push(request); if (answer instanceof Error) throw answer; return answer; } });
-  const touched: unknown[] = [];
-  bridge.ui = fake<DesktopAutomation>({ check: async () => ({ available: true }), run: async args => { touched.push(args); return { ok: true }; } });
+  bridge.getModels = async () => [{ id: 'gpt-a', name: 'GPT-A' }, { id: 'gpt-b', name: 'GPT-B', reasoningEfforts: ['low', 'medium', 'high'] }];
+  const { ipc, updates } = ownerIpc(); bridge.desktop = ipc;
+  const touched: unknown[] = []; bridge.ui = fake<DesktopAutomation>({ check: async () => ({ available: true }), run: async args => { touched.push(args); return { ok: true }; } });
   const emitter = bridge.startTurn({ threadId: 'th', prompt: 'go', model: 'gpt-b', reasoningEffort: 'high' });
   const done = settle(emitter);
   await new Promise(resolve => setTimeout(resolve, 20)); take('go'); await done; emitter.emit('interrupt');
-  // The app-server's ids, and the guard is what the record said the chat has.
-  assert.deepEqual(asked, [{ threadId: 'th', settings: { model: 'gpt-b', effort: 'high' }, condition: { model: 'gpt-a', effort: 'medium' } }]);
-  assert.deepEqual(touched, [], 'the menus are not touched');
-  assert.deepEqual(calls.map(([method]) => method).filter(method => method !== 'thread/read'), ['thread/queue/add', 'wake']);
-  // Only what differs is changed.
-  asked.length = 0;
-  const effortOnly = bridge.startTurn({ threadId: 'th', prompt: 'more', model: 'gpt-a', reasoningEffort: 'low' });
-  await new Promise(resolve => setTimeout(resolve, 20)); effortOnly.emit('interrupt');
-  assert.deepEqual(dig(asked, 0, 'settings'), { effort: 'low' });
-  // The desktop changed them meanwhile: not applied, nothing queued, and the page is told to pick again.
-  calls.length = 0; answer = { applied: false };
-  const stale: unknown = await settle(bridge.startTurn({ threadId: 'th', prompt: 'stale', reasoningEffort: 'low' })).catch((err: unknown) => err);
-  assert.match(String(errorField(stale, 'message')), /刚刚变了，没有发送/); assert.equal(errorField(stale, 'terminal'), true);
-  assert.ok(!calls.some(([method]) => method === 'thread/queue/add'));
-  // The router answered with an error of its own (not "no window has it"): not sent, no menu either.
-  answer = Object.assign(new Error('Codex 桌面版没有响应'), { code: 'timeout' });
-  const silent: unknown = await settle(bridge.startTurn({ threadId: 'th', prompt: 'silent', reasoningEffort: 'low' })).catch((err: unknown) => err);
-  assert.match(String(errorField(silent, 'message')), /^没能在 Codex 桌面版里换模型或推理强度（Codex 桌面版没有响应），没有发送$/);
+  assert.deepEqual(updates, [{ threadId: 'th', to: { model: 'gpt-b', effort: 'high' }, from: { model: 'gpt-a', effort: 'medium' } }]);
   assert.deepEqual(touched, []);
-  // No window has the chat on Windows: nothing is sent, and the page says to open it in the desktop.
-  answer = Object.assign(new Error('no-client-found'), { code: 'no-client-found' });
-  const closed: unknown = await settle(bridge.startTurn({ threadId: 'th', prompt: 'closed', reasoningEffort: 'low' })).catch((err: unknown) => err);
-  assert.match(String(errorField(closed, 'message')), /没有打开这个会话.*没有发送/);
-  assert.deepEqual(touched, []); assert.ok(!calls.some(([method]) => method === 'thread/queue/add'));
+  assert.ok(calls.some(([method]) => method === 'thread/queue/add'));
+  // An effort the model does not have is refused before anything is touched.
+  calls.length = 0; updates.length = 0;
+  const refused = bridge.startTurn({ threadId: 'th', prompt: 'again', model: 'gpt-b', reasoningEffort: 'xhigh' });
+  const error: unknown = await settle(refused).catch((err: unknown) => err);
+  assert.match(String(errorField(error, 'message')), /GPT-B 没有「xhigh」这一档推理强度，没有发送$/);
+  assert.deepEqual(updates, []); assert.ok(!calls.some(([method]) => method === 'thread/queue/add'));
+});
+
+test('Codex: a chat no window owns is opened in the desktop in the background, then set by its owner', async () => {
+  const { bridge, take } = fakeCodex();
+  let opened = false;
+  const { ipc, updates } = ownerIpc({ owned: () => opened }); bridge.desktop = ipc;
+  const asked: unknown[] = []; bridge.ui = fake<DesktopAutomation>({ check: async () => ({ available: true }), run: async (args, options) => { asked.push([args, options?.settings]); opened = true; return { ok: true, changed: [] }; } });
+  const emitter = bridge.startTurn({ threadId: 'th', prompt: 'go', model: 'gpt-b' });
+  const done = settle(emitter);
+  await new Promise(resolve => setTimeout(resolve, 20)); take('go'); await done; emitter.emit('interrupt');
+  assert.deepEqual(asked, [[['settings', 'Plan the trip'], undefined]], 'opened only: nothing picked in its menus');
+  assert.deepEqual(updates, [{ threadId: 'th', to: { model: 'gpt-b', effort: 'medium' }, from: { model: 'gpt-a', effort: 'medium' } }]);
+  // A chat the sidebar does not show cannot be opened, nor found by the menu: not sent, and the menu is not tried.
+  const hidden = fakeCodex();
+  hidden.bridge.desktop = ownerIpc({ owned: false }).ipc;
+  const tried: unknown[] = []; hidden.bridge.ui = fake<DesktopAutomation>({ check: async () => ({ available: true }), run: async (args, options) => { tried.push([args, options?.settings]); return { ok: false, error: '没能在 Codex 桌面版的侧栏里找到这个聊天' }; } });
+  const error: unknown = await settle(hidden.bridge.startTurn({ threadId: 'th', prompt: 'go', model: 'gpt-b' })).catch((err: unknown) => err);
+  assert.equal(errorField(error, 'message'), '没能在 Codex 桌面版的侧栏里找到这个聊天，没有发送');
+  assert.deepEqual(tried, [[['settings', 'Plan the trip'], undefined]]);
+  assert.ok(!hidden.calls.some(([method]) => method === 'thread/queue/add'));
+});
+
+test('Codex: when the owner cannot set it the menu does, but never for a chat whose name another shares; a change made meanwhile is not overwritten', async () => {
+  // The IPC fails (a desktop that changed its protocol): the menu picks it, as before.
+  const { bridge, take } = fakeCodex();
+  bridge.desktop = ownerIpc({ fails: true }).ipc;
+  const asked: unknown[] = []; bridge.ui = fake<DesktopAutomation>({ check: async () => ({ available: true }), run: async (args, options) => { asked.push([args, options?.settings]); return { ok: true, changed: ['model'] }; } });
+  const emitter = bridge.startTurn({ threadId: 'th', prompt: 'go', model: 'gpt-b' });
+  const done = settle(emitter);
+  await new Promise(resolve => setTimeout(resolve, 20)); take('go'); await done; emitter.emit('interrupt');
+  assert.deepEqual(asked, [[['settings', 'Plan the trip'], { model: 'GPT-B' }]]);
+  // Still not owned once opened (the sidebar opened another chat of that name): not sent.
+  const second = fakeCodex();
+  second.bridge.desktop = ownerIpc({ owned: false }).ipc;
+  const send = second.bridge.send;
+  second.bridge.send = async (method, params) => method === 'thread/list' ? { result: { data: [{ id: 'th' , name: 'Plan the trip' }, { id: 'other', name: 'Plan the trip' }] } } : send(method, params);
+  const menus: unknown[] = []; second.bridge.ui = fake<DesktopAutomation>({ check: async () => ({ available: true }), run: async (args, options) => { menus.push([args, options?.settings]); return { ok: true }; } });
+  const refused: unknown = await settle(second.bridge.startTurn({ threadId: 'th', prompt: 'go', model: 'gpt-b' })).catch((err: unknown) => err);
+  assert.match(String(errorField(refused, 'message')), /不止一个叫「Plan the trip」的聊天/);
+  assert.deepEqual(menus, [[['settings', 'Plan the trip'], undefined]], 'opened, never picked in a menu');
+  assert.ok(!second.calls.some(([method]) => method === 'thread/queue/add'));
+  // The owner's settings changed between reading and setting: not applied, not sent.
+  const third = fakeCodex();
+  third.bridge.desktop = ownerIpc({ applies: false }).ipc;
+  third.bridge.ui = fake<DesktopAutomation>({ check: async () => ({ available: true }), run: async () => ({ ok: true }) });
+  const raced: unknown = await settle(third.bridge.startTurn({ threadId: 'th', prompt: 'go', model: 'gpt-b' })).catch((err: unknown) => err);
+  assert.match(String(errorField(raced, 'message')), /刚被改过，没有发送/);
+  assert.ok(!third.calls.some(([method]) => method === 'thread/queue/add'));
 });
 
 test('Codex: after a stopped turn, the window that owns the chat starts the next one (the desktop holds its queue then); with no window it is queued', async () => {
@@ -394,6 +464,27 @@ test('an Antigravity turn that ends with an error and no reply ends the run as f
   await assert.rejects(bridge.sendUserMessage('c1', 'x', { model: 'pro' }), /没有提供这个模型/);
   assert.deepEqual((await bridge.getModels()).map(model => [model.id, model.name, model.agentId]), [['MODEL_A', 'Flash (High)', 'flash-high']]);
   bridge.dispose(); fs.rmSync(dir, { recursive: true });
+});
+
+test('an Antigravity reply being written is shown as it grows, read from the language server, until its record comes', async () => {
+  const writing = (text: string) => agyStep('PLANNER_RESPONSE', 'GENERATING', { plannerResponse: { thinking: 'hm', response: text } });
+  const steps = [agyStep('USER_INPUT', 'DONE', { userInput: { userResponse: 'tell a story' } }), writing('Once')];
+  const { bridge, dir } = antigravityFixture(steps, { idle: 0 });
+  const replies: Array<[string, unknown]> = [], emitter = new EngineEvents();
+  emitter.on('delta', data => { if (data.type === 'reasoning') replies.push(['thinking', data.itemId]); });
+  emitter.on('item_started', ({ item }) => replies.push(['writing', item.text]));
+  emitter.on('item_completed', ({ item }) => replies.push(['recorded', item.text]));
+  bridge.watchTurn('c1', emitter, { next: 0 });
+  const until = async (check: () => boolean) => { for (let i = 0; i < 100 && !check(); i++) await new Promise(resolve => setTimeout(resolve, 10)); assert.ok(check()); };
+  await until(() => replies.length === 2);
+  steps[1] = writing('Once upon');
+  await until(() => replies.length === 3);
+  steps[1] = agyStep('PLANNER_RESPONSE', 'DONE', { plannerResponse: { thinking: 'hm', response: 'Once upon a time.' } });
+  await until(() => replies.length === 5);
+  await new Promise(resolve => setTimeout(resolve, 60));
+  // The thinking is the same row each time it is named (one id), drawn before the reply.
+  assert.deepEqual(replies, [['thinking', 'thinking'], ['writing', 'Once'], ['writing', 'Once upon'], ['thinking', 'thinking'], ['recorded', 'Once upon a time.']]);
+  emitter.emit('interrupt'); bridge.dispose(); fs.rmSync(dir, { recursive: true });
 });
 
 test('what an Antigravity step waits on the person for becomes a card in the chat, answered the way the desktop answers it', async t => {

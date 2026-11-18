@@ -4,7 +4,7 @@ import { EngineEvents } from '../src/server/types.js';
 import { at, bridgeEvent, dig, fake, must, required } from './support.js';
 import { errorField, get, list } from '../src/shared/guards.js';
 import { loadConfig } from '../src/server/config.js';
-import type { CodexDesktopIpc, DesktopRequest } from '../src/server/codex-desktop.js';
+import type { CodexDesktopIpc, DesktopRequest, LiveThread } from '../src/server/codex-desktop.js';
 import type { AnyBridgeEvent, BridgeEventMap, BridgeEventType, Engine, History, RunTurn, UnifiedSession, UnifiedStep, UnifiedTurn } from '../src/shared/contract.js';
 import type { HubMessage } from '../src/server/core/event-hub.js';
 import { PluginHost } from '../src/server/core/plugin-host.js';
@@ -73,6 +73,21 @@ test('journal replays exactly after cursor and resets when retention/epoch is lo
   assert.deepEqual(replay, ['run.completed', 'run.interrupted']); off();
   const reset: string[] = []; hub.subscribe('a', 's', 'old-epoch:9', event => reset.push(event.type))();
   assert.deepEqual(reset, ['stream.reset']);
+});
+test('of a run of updates to one message the journal keeps the latest; subscribers still get every one', () => {
+  const hub = new EventHub(), live: string[] = [];
+  hub.subscribe('a', 's', null, event => { if (event.type === 'message.updated') live.push(String(get(event.data, 'text'))); });
+  const before = hub.publish('a', 's', 't', 'run.started', { turn: fake<RunTurn>({}) });
+  const say = (id: string, text: string) => hub.publish('a', 's', 't', 'message.updated', { id, text, status: 'streaming' });
+  const once = say('m', 'O');
+  say('m', 'On'); say('m', 'Once');
+  hub.publish('a', 's', 't', 'activity.upsert', fake<BridgeEventMap['activity.upsert']>({ id: 'x' }));
+  say('m', 'Once upon'); say('n', 'Next');
+  const replay = (cursor: string | undefined) => { const seen: string[] = []; hub.subscribe('a', 's', cursor, event => seen.push(event.type === 'message.updated' ? `${get(event.data, 'id')}:${get(event.data, 'text')}` : event.type))(); return seen; };
+  assert.deepEqual(replay(before.id), ['m:Once', 'activity.upsert', 'm:Once upon', 'n:Next']);
+  // A cursor on an update the journal let go of replays what came after it.
+  assert.deepEqual(replay(once.id), ['m:Once', 'activity.upsert', 'm:Once upon', 'n:Next']);
+  assert.deepEqual(live, ['O', 'On', 'Once', 'Once upon', 'Next']);
 });
 test('runs isolate sessions, reject overlap, preserve tool output and terminate once', async () => {
   const host = new PluginHost(), engine = provider(), hub = new EventHub(); host.register(engine);
@@ -398,17 +413,18 @@ test('what Codex waits on the person for is a card, followed from the owning win
   assert.equal(askCard('t', { id: 9, method: 'item/tool/requestOptionPicker', params: {} }), null);
 
   const bridge = new CodexBridge({ codexBin: 'codex' }), calls: unknown[] = [];
-  let push: ((requests: DesktopRequest[]) => void) | undefined;
-  bridge.desktop = fake<CodexDesktopIpc>({ watch: (id, on) => { push = on; return { close() { calls.push('closed'); } }; }, answerUserInput: async input => { calls.push(input); }, decideApproval: async input => { calls.push(input); } });
+  let live: ((state: LiveThread) => void) | undefined;
+  bridge.desktop = fake<CodexDesktopIpc>({ watch: (id, on) => { live = on; return { close() { calls.push('closed'); } }; }, answerUserInput: async input => { calls.push(input); }, decideApproval: async input => { calls.push(input); } });
+  const push = (requests: DesktopRequest[]) => must(live)({ requests, turns: [] });
   const emitter = new EngineEvents(), seen: string[][] = [];
   emitter.on('approval', card => seen.push(['card', card.id])); emitter.on('approval_resolved', ({ id }) => seen.push(['gone', id]));
   const asks = bridge.watchAsks('t', emitter);
-  must(push)([question]); must(push)([question]);
+  push([question]); push([question]);
   assert.deepEqual(seen, [['card', 't:7']]);
   await bridge.decide('t:7', 'option:Beta');
   assert.deepEqual(calls[0], { threadId: 't', requestId: 7, response: { answers: { pick: { answers: ['Beta'] } } } });
   await assert.rejects(bridge.decide('t:7', 'option:Beta'), /已经回答过了/);
-  must(push)([{ id: 8, method: 'item/fileChange/requestApproval', params: { reason: 'write' } }]);
+  push([{ id: 8, method: 'item/fileChange/requestApproval', params: { reason: 'write' } }]);
   assert.deepEqual(seen.slice(1), [['card', 't:8'], ['gone', 't:7']]);
   await bridge.decide('t:8', 'accept');
   assert.deepEqual(calls[1], { threadId: 't', requestId: 8, kind: 'fileChange', decision: 'accept' });
@@ -416,6 +432,47 @@ test('what Codex waits on the person for is a card, followed from the owning win
   assert.equal(at(calls, -1), 'closed');
 });
 
+test('the window that owns a Codex thread is followed whole: its requests, and its turns with a reply as it is written', async t => {
+  const { watch, frame } = __codex_desktop;
+  // (a socket file, or on Windows a named pipe, as the test above)
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ipc-')), sock = process.platform === 'win32' ? `\\\\.\\pipe\\frontdesk-test-${path.basename(dir)}` : path.join(dir, 's.sock');
+  // The desktop's router: it answers the follower, then gives the owner's state and its changes.
+  const items = (text: string) => [{ id: 'm', type: 'agentMessage', text }];
+  const changed = (change: object) => frame({ type: 'broadcast', method: 'thread-stream-state-changed', params: { conversationId: 'th', change } });
+  const following: unknown[] = [];
+  const server = __node_net.createServer(socket => {
+    let buffer: Buffer = Buffer.alloc(0); socket.on('error', () => {});
+    socket.on('data', (chunk: Buffer) => {
+      buffer = Buffer.concat([buffer, chunk]);
+      while (buffer.length >= 4 && buffer.length >= 4 + buffer.readUInt32LE(0)) {
+        const size = buffer.readUInt32LE(0), message: unknown = JSON.parse(buffer.subarray(4, 4 + size).toString()); buffer = buffer.subarray(4 + size);
+        if (get(message, 'method') === 'initialize') socket.write(frame({ type: 'response', requestId: get(message, 'requestId'), result: { clientId: 'me' } }));
+        if (get(message, 'method') !== 'thread-stream-following-changed') continue;
+        following.push(dig(message, 'params', 'following'));
+        if (!dig(message, 'params', 'following')) continue;
+        // Asked again (it missed a revision): the state as it is now.
+        if (following.length > 1) { socket.write(changed({ type: 'snapshot', revision: 9, conversationState: { requests: [], turnHistory: { history: { entitiesByKey: { k: { turnId: 't1', items: items('Once upon a time') } } } } } })); continue; }
+        // A running turn, and the ones the owner's history holds.
+        socket.write(changed({ type: 'snapshot', revision: 1, conversationState: { requests: [], turns: [{ id: 't0', items: [] }], turnHistory: { history: { entitiesByKey: { k: { turnId: 't1', items: items('Once') } } } } } }));
+        socket.write(changed({ type: 'patches', baseRevision: 1, revision: 2, patches: [{ op: 'replace', path: ['turnHistory', 'history', 'entitiesByKey', 'k', 'items', 0, 'text'], value: 'Once upon' }, { op: 'add', path: ['requests', 0], value: { id: 7, method: 'item/tool/requestUserInput', params: {} } }] }));
+        // A change to a revision the follower did not have: it is not applied.
+        socket.write(changed({ type: 'patches', baseRevision: 5, revision: 6, patches: [{ op: 'replace', path: ['requests'], value: [] }] }));
+      }
+    });
+  });
+  await new Promise<void>(resolve => server.listen(sock, resolve));
+  t.after(() => { server.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  const seen: Array<[unknown, unknown[]]> = [];
+  const watcher = watch('th', ({ requests, turns }) => seen.push([dig(turns.at(-1), 'items', 0, 'text'), requests.map(request => request.id)]), { sock, retryMs: 60000 });
+  for (let i = 0; i < 100 && seen.length < 3; i++) await new Promise(resolve => setTimeout(resolve, 10));
+  await new Promise(resolve => setTimeout(resolve, 30));
+  // Having missed a revision, it said it follows again and was given the state anew.
+  assert.deepEqual(seen, [['Once', []], ['Once upon', [7]], ['Once upon a time', []]]);
+  assert.deepEqual(following, [true, true]);
+  watcher.close();
+  for (let i = 0; i < 50 && following.at(-1) !== false; i++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(following.at(-1), false);
+});
 test('every icon the page names in its sources is one it carries (the rest of lucide stays out of its script)', async () => {
   const { hasIcon } = await import('../src/client/js/icons.js');
   const client = path.resolve('src/client'), named = new Map<string, string>();

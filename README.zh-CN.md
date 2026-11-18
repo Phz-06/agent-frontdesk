@@ -95,8 +95,8 @@ Frontdesk 是跑在你电脑上的一个小服务。它读各家桌面应用留�
 
 | AI | 历史从哪读 | 消息怎么发 |
 | --- | --- | --- |
-| Codex | Codex 本机的 app-server | Codex 自己的消息队列和窗口间通道，新建聊天和改模型在 macOS 用辅助功能 / 在 Windows 用 UIA |
-| Claude | Claude Code 的会话记录 | macOS 辅助功能 / Windows 11 UIA |
+| Codex | Codex 本机的 app-server | Codex 自己的消息队列和窗口间通道（改模型也走它），新建聊天在 macOS 用辅助功能 / 在 Windows 用 UIA |
+| Claude | Claude Code 的会话记录 | macOS 辅助功能 / Windows UIA |
 | Antigravity | 它的本地数据库和会话记录 | 它本机的 language server |
 
 一轮对话有没有完成，以桌面应用自己的记录为准。桌面应用更新后这些通道可能会变，我们会跟着更新。

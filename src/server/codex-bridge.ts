@@ -16,7 +16,7 @@ import { changesOf, questionCard } from './core/presentation.js';
 import { withAttachments } from './core/attachments.js';
 import { characterReferences, promptStarts } from '../shared/turn-match.js';
 import * as codexDesktop from './codex-desktop.js';
-import type { CodexDesktopIpc, CodexInput, DesktopRequest, ThreadSettingsChange } from './codex-desktop.js';
+import type { CodexDesktopIpc, CodexInput, DesktopRequest, ThreadSettings } from './codex-desktop.js';
 import { DesktopAutomation, type DesktopFlags } from './core/desktop-automation.js';
 import { CodexProjects } from './services/codex-projects.js';
 import { openLink } from './services/desktop-places.js';
@@ -75,6 +75,8 @@ function askCard(threadId: string, request: unknown): Approval | null {
   return null;
 }
 
+// How often a reply the desktop is writing is passed on: its owner's state changes with every few words.
+const REPLY_MS = 150;
 // An item from the desktop's record as the events carry it. The record's items are objects with a
 // type and an id; anything else is not an item.
 // Codex's composer keeps a message in its Markdown and the desktop shows it rendered; the console's
@@ -100,8 +102,6 @@ class CodexBridge extends EventEmitter {
   desktop: CodexDesktopIpc;
   asks: Map<string, Ask>;
   ui: DesktopAutomation;
-  // Which way a settings change falls back when no desktop window has the chat (see applySettings).
-  platform: NodeJS.Platform = process.platform;
   starts: Map<string, CodexRun>;
   config: Partial<BridgeConfig>;
   lifecycle: CodexLifecycle;
@@ -112,6 +112,7 @@ class CodexBridge extends EventEmitter {
   rl: readline.Interface | null;
   reqId: number;
   pending: Map<number, Reply>;
+  followMs: number;
   isReady: boolean;
   accountInfo: unknown;
 
@@ -132,6 +133,7 @@ class CodexBridge extends EventEmitter {
     this.rl = null;
     this.reqId = 1;
     this.pending = new Map();
+    this.followMs = 800; // how often a running turn's record is read (shortened in tests)
     this.isReady = false;
     this.accountInfo = null;
   }
@@ -513,7 +515,7 @@ class CodexBridge extends EventEmitter {
   //    app-server resumes the thread and runs what is queued, without showing its window);
   //  - a message for the running turn goes to the desktop window that owns it (thread-follower IPC).
   // The desktop's model and effort follow the chat; a different pick in the console is made in the
-  // desktop's own model menu first, and when it cannot be made nothing is sent.
+  // desktop first (pickInDesktop), and when it cannot be made nothing is sent.
 
   // The chat's name as the desktop's sidebar shows it.
   titleOf(thread: unknown): string { return String(get(thread, 'name') || get(thread, 'title') || text(get(thread, 'preview')).trim().split('\n')[0]?.slice(0, 120) || 'Codex Chat'); }
@@ -614,48 +616,13 @@ class CodexBridge extends EventEmitter {
     return emitter;
   }
 
-  // The model and effort the console picked, made in the desktop before the message goes, so the
-  // desktop runs the turn with them and keeps them.
-  //  - macOS picks them in the desktop's menus (Accessibility), the way measured there.
-  //  - Elsewhere (Windows) the menus are not used: the effort is a slider that takes only arrow
-  //    keys, and the console sends no keys there. The window that owns the chat is asked over the
-  //    router instead (thread-follower-update-thread-settings), on condition that the chat still has
-  //    the settings just read, so a change made in the desktop meanwhile is not overwritten. When no
-  //    window has the chat, nothing is sent.
-  // Throws, with `terminal`, whenever the change was not made: nothing is sent then.
-  async applySettings(threadId: string, thread: unknown, { model, reasoningEffort }: { model?: string | undefined; reasoningEffort?: string | undefined }): Promise<void> {
-    const current = { model: get(thread, 'model'), reasoningEffort: get(thread, 'reasoningEffort') };
-    const wanted = await this.desktopSettings({ model, reasoningEffort }, current);
-    if (!Object.keys(wanted).length) return;
-    const stop = (message: string): never => { throw Object.assign(new Error(message), { terminal: true }); };
-    const change: ThreadSettingsChange = { ...(wanted.model ? { model } : {}), ...(wanted.effort ? { effort: reasoningEffort } : {}) };
-    const condition = { model: typeof current.model === 'string' ? current.model : null, effort: typeof current.reasoningEffort === 'string' ? current.reasoningEffort : null };
-    let reached = false;
-    if (this.platform !== 'darwin' && this.desktop.updateSettings) {
-      try {
-        const { applied } = await this.desktop.updateSettings({ threadId, settings: change, condition });
-        reached = true;
-        if (!applied) stop('Codex 桌面版里这个会话的模型或推理强度刚刚变了，没有发送：请刷新后重新选择');
-        return;
-      } catch (err) {
-        if (reached || errorField(err, 'terminal')) throw err;
-        if (!codexDesktop.unreached(err)) stop(`没能在 Codex 桌面版里换模型或推理强度（${messageOf(err)}），没有发送`);
-      }
-    }
-    if (this.platform !== 'darwin') stop('Codex 桌面版现在没有打开这个会话，没法给它换模型或推理强度，没有发送：请先在桌面版里打开这个会话');
-    const state = await this.ui.check();
-    if (!state.available) stop(`要换模型或推理强度得在 Codex 桌面版里换，但${state.reason}，没有发送`);
-    const result = await this.ui.run(['settings', this.titleOf(thread)], { settings: wanted });
-    if (!result.ok) stop(`${result.error || '没能在 Codex 桌面版里换模型'}，没有发送`);
-  }
-
   startTurn({ threadId, prompt, model, reasoningEffort, attachments }: Partial<SendInput> & { threadId: string; prompt: string }): CodexRun {
     const emitter = new CodexRun();
     (async () => {
       const thread = await this.readThread(threadId, true);
       const known = new Set(list(get(thread, 'turns')).map(turn => get(turn, 'id')));
-      // A different model or effort is made in the desktop first (applySettings).
-      await this.applySettings(threadId, thread, { model, reasoningEffort });
+      // A different model or effort is picked in the desktop first.
+      await this.pickInDesktop(thread, { model, reasoningEffort });
       const inputs = this.buildCodexInputs(prompt, attachments);
       // After a stopped turn the desktop holds its queue: every queued message shows as paused
       // until the person sends one, so a queued message would wait there (measured on Windows; the
@@ -682,19 +649,79 @@ class CodexBridge extends EventEmitter {
     });
     return emitter;
   }
-  // Asks the desktop to run what the thread has queued. On macOS `open -g` keeps it in the
-  // background; a desktop that is not running starts just to do this (see openLink for Windows).
+  // A different model or effort for the chat's next turn is set in the desktop itself, so the
+  // desktop shows and keeps it; when it cannot be, this throws why and nothing is sent.
+  //  1. The window that owns the chat sets it as its own model menu does, asked over the desktop's
+  //     IPC (codex-desktop.ts): no window is touched, and it takes a tenth of a second.
+  //  2. No window owns it (the desktop has not loaded it since it started): the chat is opened in
+  //     the desktop's sidebar in the background and the window goes back to where it was
+  //     (Accessibility, about 1.5 s). The chat is then owned, by its id, and set as in 1. A chat the
+  //     sidebar does not show cannot be opened this way, nor picked in the menu: not sent.
+  //  3. Neither works (the IPC has changed, or the sidebar opened another chat of the same name):
+  //     the desktop's model menu and Power slider pick it (5-7 s), unless another chat has the same
+  //     name, since the menu finds the chat by its name.
+  async pickInDesktop(thread: unknown, { model, reasoningEffort }: { model?: string | undefined; reasoningEffort?: string | undefined }): Promise<void> {
+    const refuse = (message: string): never => { throw Object.assign(new Error(message), { terminal: true }); };
+    const threadId = text(get(thread, 'id'));
+    const current = { model: text(get(thread, 'model')), effort: text(get(thread, 'reasoningEffort')) };
+    const to = { model: model || current.model, effort: reasoningEffort || current.effort || null };
+    if (to.model === current.model && to.effort === (current.effort || null)) return;
+    const known = (await this.getModels().catch((): Model[] => [])).find(item => item.id === to.model);
+    if (to.model !== current.model && !known) refuse('没能确定这个模型在 Codex 桌面版里叫什么，没有发送');
+    if (to.effort && known?.reasoningEfforts?.length && !known.reasoningEfforts.includes(to.effort)) refuse(`Codex 桌面版里 ${known.name} 没有「${to.effort}」这一档推理强度，没有发送`);
+    const title = this.titleOf(thread);
+    const ipc = this.desktop;
+    if (ipc.owns && ipc.readSettings && ipc.updateSettings) {
+      let owned = await ipc.owns(threadId);
+      if (!owned && (await this.ui.check()).available) {
+        const opened = await this.ui.run(['settings', title]);
+        // The menu finds the chat in the sidebar the same way: not there, so no use trying it.
+        if (!opened.ok) refuse(`${opened.error || '没能在 Codex 桌面版里打开这个聊天'}，没有发送`);
+        owned = await ipc.owns(threadId, { waitMs: 2000 });
+      }
+      if (owned) {
+        let from: ThreadSettings | null = null;
+        try { from = await ipc.readSettings(threadId); } catch { /* the menu below */ }
+        if (from && from.model === to.model && from.effort === to.effort) return;
+        if (from) {
+          let applied: boolean | null = null;
+          try { applied = await ipc.updateSettings({ threadId, to, from }); } catch { /* the menu below */ }
+          // Not applied: the chat's settings changed in the desktop since they were read.
+          if (applied === false) refuse('Codex 桌面版里这个聊天的模型刚被改过，没有发送，请再发一次');
+          const now = applied ? await ipc.readSettings(threadId).catch(() => null) : null;
+          if (now && now.model === to.model && now.effort === to.effort) return;
+        }
+      }
+    }
+    // The menu finds the chat by its name in the sidebar; with two chats of that name it could set another's.
+    if (await this.sharesName(threadId, title)) refuse(`Codex 桌面版里有不止一个叫「${title}」的聊天，没法确定要换的是哪一个，没有发送；请先在桌面版里打开这个聊天`);
+    const wanted = await this.desktopSettings({ model, reasoningEffort }, { model: current.model, reasoningEffort: current.effort });
+    const state = await this.ui.check();
+    if (!state.available) refuse(`要换模型或推理强度得在 Codex 桌面版里换，但${state.reason}，没有发送`);
+    const result = await this.ui.run(['settings', title], { settings: wanted });
+    if (!result.ok) refuse(`${result.error || '没能在 Codex 桌面版里换模型'}，没有发送`);
+  }
+  // Whether another recent chat has this name in the desktop's sidebar.
+  async sharesName(threadId: string, title: string): Promise<boolean> {
+    const rows = list(get(await this.send('thread/list', { limit: 100 }).catch(() => null), 'result', 'data'));
+    return rows.some(row => get(row, 'id') !== threadId && !get(row, 'parentThreadId') && this.titleOf(row) === title);
+  }
+  // Asks the desktop to run what the thread has queued. `open -g` keeps it in the background;
+  // a desktop that is not running starts just to do this.
   wake(threadId: string): Promise<void> {
     return openLink(`codex://threads/wake/${threadId}`).catch((err: unknown) => { throw Object.assign(new Error('没能唤起 Codex 桌面版来处理这条消息'), { cause: err }); });
   }
   // Follows the desktop's record of the thread: the first turn not in `known` that carries this
-  // message, item by item, until the record says how it ended.
+  // message, item by item, until the record says how it ended. The record has a reply only once it
+  // is whole; while it is being written, its text so far is taken from the window that owns the
+  // thread (see codex-desktop.ts watch), as that window draws it.
   // `paused`: queued after a stopped turn, where the desktop may hold it (startTurn).
   follow(threadId: string, { prompt, known, emitter, paused = false }: { prompt: string; known: ReadonlySet<unknown>; emitter: CodexRun; paused?: boolean }): void {
     const seen = new Map<string, string>(), started = Date.now();
     let polling = false, warned = false;
-    const asks = this.watchAsks(threadId, emitter);
-    const stop = () => { clearInterval(timer); asks.close(); };
+    const writing = this.followReplies(emitter, id => seen.has(id));
+    const asks = this.watchAsks(threadId, emitter, writing.update);
+    const stop = () => { clearInterval(timer); asks.close(); writing.close(); };
     const timer = setInterval(async () => {
       if (polling) return;
       polling = true;
@@ -725,16 +752,39 @@ class CodexBridge extends EventEmitter {
         if (['completed', 'failed', 'interrupted'].includes(resolved.status)) { stop(); emitter.emit('completed', { turn: { ...bag(turn), ...resolved } }); }
       } catch (err) { emitter.emit('warning', { message: messageOf(err), retrying: true }); }
       finally { polling = false; }
-    }, 800);
+    }, this.followMs);
     timer.unref?.();
     emitter.once('interrupt', stop);
   }
 
+  // The replies of the followed turn as the owning window has them so far (`update` takes its turns;
+  // the turn is the run's, once the record named it). A reply goes out as the desktop writes it, at
+  // most every REPLY_MS, until the record holds it (`recorded`): from then on the record's is shown.
+  followReplies(emitter: CodexRun, recorded: (id: string) => boolean): { update(turns: unknown[]): void; close(): void } {
+    const shown = new Map<string, string>();
+    let latest: unknown[] = [], timer: ReturnType<typeof setTimeout> | null = null, closed = false;
+    const flush = () => {
+      timer = null;
+      const turn = emitter.turnId ? latest.find(candidate => (get(candidate, 'turnId') || get(candidate, 'id')) === emitter.turnId) : null;
+      for (const raw of list(get(turn, 'items'))) {
+        const id = text(get(raw, 'id')), said = text(get(raw, 'text'));
+        if (get(raw, 'type') !== 'agentMessage' || !id || !said || recorded(id) || shown.get(id) === said) continue;
+        shown.set(id, said);
+        // Unfinished until the record has it: the end of a reply is the record's to say.
+        emitter.emit('item_started', { item: { type: 'agentMessage', id, text: said, phase: str(get(raw, 'phase')) } });
+      }
+    };
+    return {
+      update(turns) { if (closed) return; latest = turns; timer ||= setTimeout(flush, REPLY_MS); },
+      close() { closed = true; if (timer) clearTimeout(timer); timer = null; },
+    };
+  }
   // The desktop's requests to the person while this turn runs, as cards; one answered (here or in
-  // the desktop) leaves the desktop's state, and its card goes.
-  watchAsks(threadId: string, emitter: EngineEmitter): { close(): void } {
+  // the desktop) leaves the desktop's state, and its card goes. `onTurns` is given the owner's turns.
+  watchAsks(threadId: string, emitter: EngineEmitter, onTurns?: (turns: unknown[]) => void): { close(): void } {
     const open = new Set<string>();
-    const watcher = this.desktop.watch?.(threadId, requests => {
+    const watcher = this.desktop.watch?.(threadId, ({ requests, turns }) => {
+      onTurns?.(turns);
       const now = new Set<string>();
       for (const request of requests) {
         const card = askCard(threadId, request);

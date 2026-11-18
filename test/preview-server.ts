@@ -49,8 +49,10 @@ for (const [index, id, label, prefix, accent] of [[0, 'codex', 'Codex', 'CX', '#
         at(2400, () => emitter.emit('approval', desktopCard('desktop:dialog', 'Claude 桌面版在等你批准', 'Claude 想用电脑操作 ChatGPT：查看写作块怎么显示。请在 Claude 桌面版里允许或拒绝，这一轮才会继续。')));
         at(8000, () => emitter.emit('approval_resolved', { id: 'desktop:dialog' }));
       }
+      // The reply grows as the desktop writes it, then its record has it whole.
+      const reply = '验收任务完成。可以从顶部绿点一键回到此聊天继续工作。';
+      for (let part = 1; part < 6; part++) at(8600 + part * 250, () => emitter.emit('item_started', { item: { type: 'agentMessage', id: 'live-reply', phase: 'final_answer', text: reply.slice(0, Math.ceil(reply.length * part / 6)) } }));
       at(10000, () => {
-        const reply = '验收任务完成。可以从顶部绿点一键回到此聊天继续工作。';
         session.status = 'idle'; session.updatedAt = new Date().toISOString();
         if (sessionId === 'acceptance') history.push(fake<UnifiedTurn>({ id: `turn-${Date.now()}`, timestamp, userPrompt: input.prompt, status: 'completed', assistantReply: reply, steps: [fake<UnifiedStep>({ id: 'live-cmd', type: 'command', detail: 'npm test', output: 'Acceptance complete', status: 'completed' })], artifacts: [] }));
         emitter.emit('item_completed', { item: { type: 'commandExecution', id: 'second-cmd', command: 'npm run check', aggregatedOutput: 'Acceptance complete', status: 'completed', durationMs: 10000 } });
