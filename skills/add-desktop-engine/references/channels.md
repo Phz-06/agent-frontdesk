@@ -54,6 +54,7 @@ For actions neither A nor B can do, use macOS Accessibility to operate the deskt
 
 - **Claude does everything this way**: Claude Code's official channels (CLI / SDK) can only continue a session in another process, which fails question 1. So sending, steering, Send now, stopping, changing model / effort / permissions, new chats, the new-chat page's options, answering question cards and opening a file in the desktop app are all done in the Claude window by `src/server/native/claude-desktop.swift`.
 - **Codex does some actions this way**: new chats (pick the project on the New chat page, fill in the message, press Send), opening a chat the desktop has not loaded so that route B can change its settings (and, when route B cannot, the model menu and the "Power" slider, never for a chat whose name another shares), reading the model the New chat page shows, opening files, and chats in its ChatGPT mode.
+- **Antigravity does one thing this way**: taking the person to a chat (the chat header's "Open in Antigravity") and to a file in it. Its language server writes but cannot move the window, and its deep link `antigravity://open` takes only a prompt or a project. Its window shows each chat at its own address (`/c/<id>`) and its sidebar rows link there, so the flow is the shared driver's `show-session` / `open-file` with a profile and no steps of its own (`src/server/native/antigravity-desktop.swift`, profile `sessionAddress`).
 - **Both apps' cloud chat modes** (Claude's Claude mode, Codex's ChatGPT mode): their messages are not on disk, so reading, starting and sending all go through the desktop window (`ChatMode` in `src/server/services/desktop-chat.ts`).
 
 The helper's result only says "what was pressed in the interface"; **whether it really went out is decided by the native record** (the message appearing in the session record). How to write it is in section 4.
@@ -71,7 +72,8 @@ The helper's result only says "what was pressed in the interface"; **whether it 
 | Change model / effort / permissions | C: the menus under the composer | B: `thread-follower-update-thread-settings`; a chat not loaded is first opened with C; when B fails, C: the model menu, the Power slider | `requestedModel` with the message |
 | New chat | C: the New session page (its options picked first on cards in the page) | C: the New chat page, project picked | A: agentapi / `StartCascade` |
 | Answer question / permission cards | C: pick and submit on the desktop's card | B: answer as a follower | A: `HandleCascadeUserInteraction` |
-| Open a file in the desktop app | C: shared driver `open-file` | C: same | `open -a Antigravity <file>` |
+| Open this chat in the desktop app (the chat header's button) | C: shared driver `show-session` | C: same | C: same, found by its id (`sessionAddress`) |
+| Open a file in the desktop app | C: shared driver `open-file` | C: same | C: same (its window opens the file in a tab beside the chat) |
 | Quota | Official CLI control request `get_usage` (`--no-session-persistence`, runs no turn) | A: `account/rateLimits/read` | Language server `GetUserStatus` |
 | Dictation (shared by all) | Official speech recognition with its own credentials | — | Its own |
 
