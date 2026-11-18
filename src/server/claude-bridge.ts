@@ -600,6 +600,22 @@ class ClaudeBridge {
     return entry;
   }
   metaFor(id: string): SessionMeta | null { return this.desktopIndex().find(meta => meta.id === id) || null; }
+  // The desktop's window is told a session by its local id (the page's address has it), and by its
+  // title only when the index has no id for it: then another session with that title is another
+  // session the window may act on instead, so nothing is done there and the reason is given.
+  sharedTitle(meta: SessionMeta): string {
+    if (meta.localId) return '';
+    const other = this.desktopIndex().some(session => session.id !== meta.id && session.title === meta.title && !session.isArchived);
+    return other ? 'Claude 桌面版有同名会话，这个会话又没有本地 id，分不清是哪一个，所以没有动手' : '';
+  }
+  // The session as the desktop app has it, to act on there; `status` for what the request gets back.
+  private desktopMeta(id: string, status: number, missing = 'Claude 桌面版里没有这个会话'): SessionMeta {
+    const meta = this.metaFor(id);
+    if (!meta?.title) throw Object.assign(new Error(missing), { status });
+    const shared = this.sharedTitle(meta);
+    if (shared) throw Object.assign(new Error(shared), { status: 409 });
+    return meta;
+  }
 
   list(): UnifiedSession[] {
     const index = this.desktopIndex().filter(meta => !meta.isArchived);
@@ -970,6 +986,8 @@ class ClaudeBridge {
     const meta = this.metaFor(id);
     const file = this.transcriptPath(id);
     if (!meta || !meta.title || !file) return { error: '这个会话不在 Claude 桌面版里，只能发给桌面版已有的会话' };
+    const shared = this.sharedTitle(meta);
+    if (shared) return { error: shared };
     const state = await this.desktop.check();
     if (!state.available) return { error: state.reason || '' };
     return { desktop: true, meta, file };
@@ -1109,8 +1127,7 @@ class ClaudeBridge {
     return {};
   }
   async sendNow(id: string): Promise<{ status: string }> {
-    const meta = this.metaFor(id);
-    if (!meta?.title) throw Object.assign(new Error('这个会话不在 Claude 桌面版里'), { status: 404 });
+    const meta = this.desktopMeta(id, 404, '这个会话不在 Claude 桌面版里');
     const result = await this.desktop.sendNow(meta);
     if (!result.ok) throw Object.assign(new Error(result.error || '没能让 Claude 桌面版立即发送'), { status: 409 });
     return { status: 'sent' };
@@ -1149,8 +1166,7 @@ class ClaudeBridge {
   }
   // A file from the chat, opened in the desktop: the session is shown there and its link pressed.
   async openFile(id: string, file: FileTarget): Promise<HelperResult> {
-    const meta = this.metaFor(id);
-    if (!meta) throw Object.assign(new Error('Claude 桌面版里没有这个会话'), { status: 404 });
+    const meta = this.desktopMeta(id, 404);
     const state = await this.desktop.check();
     if (!state.available) throw Object.assign(new Error(state.reason), { status: 409 });
     const result = await this.desktop.openFile({ title: meta.title, localId: this.desktop.localId(meta), ...file });
@@ -1159,8 +1175,7 @@ class ClaudeBridge {
   }
   // Takes the person to this session in the desktop app.
   async show(id: string): Promise<HelperResult> {
-    const meta = this.metaFor(id);
-    if (!meta) throw Object.assign(new Error('Claude 桌面版里没有这个会话'), { status: 404 });
+    const meta = this.desktopMeta(id, 404);
     const state = await this.desktop.check();
     if (!state.available) throw Object.assign(new Error(state.reason), { status: 409 });
     const result = await this.desktop.showSession({ title: meta.title, localId: this.desktop.localId(meta) });
@@ -1172,8 +1187,7 @@ class ClaudeBridge {
   // once drawn, so each is read once (a failed read is tried again next time).
   readonly cards = new Map<string, string[]>();
   private async cardSession(id: string): Promise<SessionMeta> {
-    const meta = this.metaFor(id);
-    if (!meta) throw Object.assign(new Error('Claude 桌面版里没有这个会话'), { status: 404 });
+    const meta = this.desktopMeta(id, 404);
     // A turn the console sent that has not ended (by its record) still runs: the card's buttons come after it.
     if (this.runs.has(id)) throw Object.assign(new Error('这一轮还在 Claude 桌面版里运行，卡片上的按钮要等它结束才能按'), { status: 409 });
     const state = await this.desktop.check();
@@ -1210,9 +1224,8 @@ class ClaudeBridge {
     const sessions = this.desktopIndex();
     const meta = sessions.find(session => session.id === id) ?? run?.meta;
     if (!meta?.title) throw Object.assign(new Error('这个会话不在 Claude 桌面版里'), { status: 409 });
-    if (sessions.some(session => session.id !== id && session.title === meta.title && !session.isArchived)) {
-      throw Object.assign(new Error('Claude 桌面版有同名会话，无法确认要停止的是哪一个'), { status: 409 });
-    }
+    const shared = this.sharedTitle(meta);
+    if (shared) throw Object.assign(new Error(shared), { status: 409 });
     const result = await this.desktop.stop(meta);
     if (!result.ok) throw Object.assign(new Error(result.error || '没能在 Claude 桌面版里停止'), { status: 409 });
     // Not "stopped" yet: the turn may have finished on its own just then. The transcript

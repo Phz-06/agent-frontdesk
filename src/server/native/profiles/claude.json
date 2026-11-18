@@ -34,6 +34,8 @@
   "offscreenMenu": "key",
   "titleSuffix": " - Claude Code",
   "sessionLink": "claude://claude.ai/epitaxy/{localId}",
+  "sessionAddress": "/epitaxy/{localId}",
+  "sessionRowsBy": "title",
   "refreshAnchors": [
     "composer",
     "chatComposer",
@@ -97,6 +99,17 @@
     "sidebar": {
       "role": "AXGroup",
       "class": "dframe-sidebar"
+    },
+    "moreSessions": {
+      "role": "AXButton",
+      "prefix": "Show ",
+      "contains": " more in ",
+      "inside": "sidebar"
+    },
+    "nestedSessions": {
+      "role": "AXButton",
+      "prefix": "Show nested sessions",
+      "inside": "sidebar"
     },
     "chatPane": [
       {

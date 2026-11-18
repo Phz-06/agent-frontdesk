@@ -645,11 +645,14 @@ func current() -> String {
   }
   return ""
 }
-// Sidebar rows are buttons named "<title>", or "<title> <state>" ("Running", "Started by …").
-func row(_ title: String) -> AXUIElement? {
+// Sidebar rows are buttons named "<title>", or "<title> <state>" ("Running", "Started by …"):
+// every row that may be the conversation, the likeliest first (its exact name, then with a state).
+func titledRows(_ title: String) -> [AXUIElement] {
   let rows = every { role($0) == "AXButton" && label($0).hasPrefix(title) }
-  return rows.first(where: { label($0) == title }) ?? rows.first(where: { label($0).hasPrefix(title + " ") }) ?? rows.first
+  let exact = rows.filter { label($0) == title }, stated = rows.filter { label($0).hasPrefix(title + " ") }
+  return exact + stated + rows.filter { label($0) != title && !label($0).hasPrefix(title + " ") }
 }
+func row(_ title: String) -> AXUIElement? { titledRows(title).first }
 // Opens a link with `open -g`, which does not bring the app to the front.
 func openLink(_ template: String, _ values: [String: String]) {
   var link = template
@@ -710,20 +713,72 @@ func rowAt(_ path: String) -> AXUIElement? {
   trace("no row for \(path) among \(seen.count)")
   return nil
 }
-// Brings the conversation on screen inside the desktop's window: its sidebar row, or, when the
-// row is not there (scrolled away, filtered), the profile's "sessionLink" with {localId}/{id}.
-func show(_ title: String, _ ids: [String: String] = [:]) -> Bool {
-  let at = address(ids)
-  let here = { at.isEmpty ? current() == title : showing(at) }
+// The address of the conversation on screen: the path of the web area that has the template's
+// shape ("" with no "sessionAddress", or on a page that is not a conversation).
+func shownAddress() -> String {
+  guard let shape = rowShape else { return "" }
+  for area in every({ role($0) == "AXWebArea" }) {
+    let path = pathOf(area)
+    if !path.isEmpty, shape.firstMatch(in: path, range: NSRange(path.startIndex..., in: path)) != nil { return path }
+  }
+  return ""
+}
+// Is this conversation the one on screen: by its address when the page has one, else by its title.
+func isShown(_ title: String, _ at: String) -> Bool { at.isEmpty ? current() == title : showing(at) }
+// A deep link ("sessionLink") brings the desktop to the front whatever `open -g` asks (Claude's
+// does, measured), so it is used only by the commands that bring it there anyway, because the
+// person asked to be taken to the desktop. Every other command works with the window where it is.
+var mayFront: Bool { ["open-file", "show-session"].contains(args.first ?? "") }
+// Brings the conversation on screen inside the desktop's window: its sidebar row (rows the sidebar
+// keeps folded away are unfolded first), or, for a command that may bring the desktop to the front,
+// the profile's "sessionLink" with {localId}/{id}.
+func show(_ title: String, _ ids: [String: String] = [:]) -> Bool { show(title, at: address(ids), ids) }
+func show(_ title: String, at: String, _ ids: [String: String] = [:]) -> Bool {
+  let here = { isShown(title, at) }
   if here() { return true }
   let link = setting("sessionLink")
+  let linkable = mayFront && !link.isEmpty && !ids.isEmpty && !ids.values.contains(where: { $0.isEmpty })
+  // A desktop whose page has an address but whose rows are known only by title (profile
+  // "sessionRowsBy": "title"; Claude's rows are plain buttons, its page "/epitaxy/local_…"): two
+  // conversations may share the title, so each row with it is pressed in turn until the page's
+  // address is this conversation's. None of them → not shown, and the command does nothing to
+  // whatever conversation is on screen instead.
+  if !at.isEmpty && setting("sessionRowsBy") == "title" {
+    func byRows() -> Bool {
+      var index = 0
+      while true {
+        let rows = titledRows(title)
+        guard index < rows.count else { return false }
+        let before = shownAddress()
+        press(rows[index]); index += 1
+        // A row that opens another conversation says so as soon as the page's address changes.
+        until(2) { here() || shownAddress() != before }
+        if until(0.5, here) { trace("showing \(title.prefix(30)) by row \(index)"); return true }
+      }
+    }
+    if byRows() { return true }
+    // Rows the sidebar folds away (profile "moreSessions": a project's "Show 20 more";
+    // "nestedSessions": the sessions under another) are unfolded where they are, which leaves the
+    // desktop behind the person's app, and the rows with the title are tried again each time more
+    // of them are drawn.
+    var tried = titledRows(title).count
+    for _ in 0..<16 {
+      guard let more = findAll("moreSessions").first ?? findAll("nestedSessions").first else { break }
+      press(more); wait(0.4); stale()
+      let count = titledRows(title).count
+      if count > tried { tried = count; if byRows() { return true } }
+    }
+    if linkable { openLink(link, ids); if until(3, here) { trace("showing \(title.prefix(30)) by link"); return true } }
+    trace("no row shows \(at)")
+    return false
+  }
   for attempt in 0..<4 {
     if !at.isEmpty {
       // Every row of the list was looked through: another try finds no more.
       guard let found = rowAt(at) else { return false }
       press(found)
     } else if let button = row(title) { press(button) }
-    else if attempt == 1, !link.isEmpty, !ids.values.contains(where: { $0.isEmpty }), !ids.isEmpty { openLink(link, ids) }
+    else if attempt == 1, linkable { openLink(link, ids) }
     if until(2, here) { trace("showing \(title.prefix(30))"); return true }
   }
   return false
@@ -731,6 +786,8 @@ func show(_ title: String, _ ids: [String: String] = [:]) -> Bool {
 // The conversation a command goes back to when it is done: the one on screen as it starts, or,
 // with the desktop parked on its new-chat page, the one the person had before that.
 func startedOn() -> String { let now = current(); return now.isEmpty ? parkedPrevious : now }
+// Its address, when the page has one (a conversation parked away from has none here: by title).
+func startedAddress() -> String { current().isEmpty ? "" : shownAddress() }
 
 // ---- probe: does the profile still match the desktop? ----
 if args.first == "probe" {
