@@ -1658,8 +1658,40 @@ namespace Frontdesk.Driver
             if (SendKey("composer").Length == 0 || SendKey("send").Length == 0) return new[] { "usage", appName + "的配置里没有 chatSend" };
             if (!Fill(SendKey("composer"), text, SendKey("send"))) { Clear(SendKey("composer")); return new[] { "fill_failed", "没能把消息填进" + appName + "的输入框" }; }
             Node send = Find(SendKey("send"));
-            if (send == null || !Press(send)) { Clear(SendKey("composer")); return new[] { "no_send", appName + "没有出现发送按钮" }; }
-            for (int i = 0; i < 40; i++) { Wait(0.25); Node box = Find(SendKey("composer")); if ((box != null && box.Value.Trim().Length == 0) || Answering()) return null; }
+            bool pressed = send != null && Press(send);
+            // The page can draw the button anew between the read and the press (UIA's "element not
+            // available", seen in Codex's ChatGPT mode): read again and pressed once more, only while the
+            // composer still holds the message, so a send that went through is not made twice.
+            if (!pressed && send != null)
+            {
+                Wait(0.2);
+                Node box = Find(SendKey("composer"));
+                if (box != null && box.Value.Trim() == text.Trim()) { send = Find(SendKey("send")); pressed = send != null && Press(send); }
+            }
+            if (!pressed) { Clear(SendKey("composer")); return new[] { "no_send", appName + "没有出现发送按钮" }; }
+            Func<bool> gone = () => { Node box = Find(SendKey("composer")); return (box != null && box.Value.Trim().Length == 0) || Answering(); };
+            if (Until(1.5, gone)) return null;
+            // Still in the composer: in a chat that is already open, Codex's ChatGPT mode takes the press only
+            // while its window is active (measured: from behind nothing happened; with the window in front,
+            // the same press sent). Pressed once more with the window activated, still off screen, and the
+            // foreground held for that press only (as a card's buttons are).
+            Node holding = Find(SendKey("composer"));
+            if (Parking.Active && holding != null && holding.Value.Trim() == text.Trim())
+            {
+                HoldForeground(true); Activate();
+                // (Activated, the page draws its buttons anew: read again before each press.)
+                for (int attempt = 0; attempt < 3; attempt++)
+                {
+                    Stale(); Wait(0.15);
+                    Node box = Find(SendKey("composer"));
+                    if (box == null || box.Value.Trim() != text.Trim()) break;
+                    send = Find(SendKey("send"));
+                    if (send != null && Press(send) && Until(1.0, gone)) break;
+                }
+                HoldForeground(false);
+            }
+            if (Until(8, gone)) return null;
+            Clear(SendKey("composer"));
             return new[] { "not_sent", "按了" + appName + "的发送，但消息还留在输入框里" };
         }
         static string[] OpenChatPage(string project)
