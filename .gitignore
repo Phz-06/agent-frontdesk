@@ -29,3 +29,6 @@ src/server/native/win32/**/obj/
 
 # Personal agent instructions
 CLAUDE.local.md
+
+# Windows probe output (window and page facts of the person's own apps)
+probes/windows/out/

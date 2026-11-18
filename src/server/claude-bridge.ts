@@ -1,5 +1,5 @@
 // Claude desktop (Code tab) owns its history: an index of desktop sessions under
-// ~/Library/Application Support/Claude/claude-code-sessions and one transcript per
+// <Claude desktop's data folder>/claude-code-sessions (see services/desktop-places.ts) and one transcript per
 // session under ~/.claude/projects. The console reads both read-only. Every message, a new
 // chat's first one too, is sent by the desktop app itself (src/server/claude-desktop.ts), so the
 // desktop is the one process that runs and writes its sessions. When the desktop cannot take a
@@ -22,6 +22,7 @@ import { ClaudeDesktop, type DesktopSession } from './claude-desktop.js';
 import { winSpawnArgs } from './config.js';
 import { newControlsOf, type DesktopFlags, type HelperResult } from './core/desktop-automation.js';
 import { globalSocket } from './services/node-websocket.js';
+import { claudeCliIn, claudeDesktopHome, findExecutable, installedClaudeCli } from './services/desktop-places.js';
 import { arr, bag, errorField, get, list, messageOf, num, parseJson, str, text as asText } from '../shared/guards.js';
 import type {
   Approval, CardAction, CardRead, CreateInput, CreateResult, DesktopQueueItem, DesktopSettings, DictationHandlers, DictationReady, DictationStream, EngineEmitter, EngineStatus,
@@ -105,19 +106,10 @@ function findClaudeBin(envOrOptions: FindClaudeBinOptions | NodeJS.ProcessEnv = 
   const home = (isOpts ? (envOrOptions as FindClaudeBinOptions).home : homeArg) || os.homedir();
   const win = process.platform === 'win32';
   const appDir = (isOpts ? (envOrOptions as FindClaudeBinOptions).appDir : undefined)
-    || (win ? path.join(env['APPDATA'] || path.join(home, 'AppData', 'Roaming'), 'Claude') : path.join(home, 'Library/Application Support/Claude'));
+    || env['CLAUDE_DESKTOP_HOME'] || claudeDesktopHome({ env, home });
   if (env['CLAUDE_BIN']) return env['CLAUDE_BIN'];
-  const dirs = (env['PATH'] || '').split(path.delimiter).filter(Boolean);
-  for (const name of win ? ['claude.exe', 'claude.cmd', 'claude.bat', 'claude'] : ['claude']) {
-    for (const dir of dirs) {
-      const file = path.join(dir, name);
-      try { fs.accessSync(file, fs.constants.X_OK); return file; } catch {}
-    }
-  }
-  if (win) {
-    const local = path.join(home, '.local', 'bin', 'claude.exe');
-    if (fs.existsSync(local)) return local;
-  }
+  const onPath = findExecutable(['claude', installedClaudeCli({ home })], { env });
+  if (onPath) return onPath;
   // The desktop app installs its own copy, one folder per version.
   const root = path.join(appDir, 'claude-code');
   try {
@@ -125,15 +117,11 @@ function findClaudeBin(envOrOptions: FindClaudeBinOptions | NodeJS.ProcessEnv = 
       .sort((a, b) => b.split('.').map(Number).reduce((d, n, i) => d || n - (a.split('.').map(Number)[i] ?? NaN), 0));
     for (const version of versions) {
       const verDir = path.join(root, version);
-      if (win) {
-        const direct = path.join(verDir, 'claude.exe');
-        if (fs.existsSync(direct)) return direct;
-      }
+      // On Windows the exe may also sit straight in the version folder.
+      if (win && fs.existsSync(path.join(verDir, 'claude.exe'))) return path.join(verDir, 'claude.exe');
       for (const build of fs.readdirSync(verDir, { withFileTypes: true })) {
         if (!build.isDirectory()) continue;
-        const file = win
-          ? path.join(verDir, build.name, 'claude.exe')
-          : path.join(verDir, build.name, 'claude.app/Contents/MacOS/claude');
+        const file = claudeCliIn(path.join(verDir, build.name));
         if (fs.existsSync(file)) return file;
       }
     }
@@ -482,16 +470,15 @@ class ClaudeBridge {
   runs: Map<string, DesktopRun>; starts: Map<string, EngineEvents>;
   auth: AuthState | null; modelCache: { at: number; models: Model[] } | null;
   desktop: ClaudeDesktop;
-  constructor({ home = os.homedir(), env = process.env, bin, claudeHome, desktopHome, desktop, tmpDir = os.tmpdir() }: ClaudeBridgeOptions = {}) {
+  // tmpDir: where Claude Code keeps a session's scratchpad and task output: /tmp on macOS (not
+  // os.tmpdir(), which is a per-user folder under /var/folders there), the user's temp folder on Windows.
+  constructor({ home = os.homedir(), env = process.env, bin, claudeHome, desktopHome, desktop, tmpDir = process.platform === 'win32' ? os.tmpdir() : '/tmp' }: ClaudeBridgeOptions = {}) {
     this.home = home; this.tmpDir = tmpDir;
     this.claudeDir = claudeHome || path.join(home, '.claude');
-    const winAppDir = path.join(env['APPDATA'] || path.join(this.home, 'AppData', 'Roaming'), 'Claude');
-    const macAppDir = path.join(this.home, 'Library/Application Support/Claude');
-    const appDir = desktopHome || (process.platform === 'win32' && !fs.existsSync(macAppDir) ? winAppDir : macAppDir);
-    this.appDir = appDir;
+    this.appDir = desktopHome || claudeDesktopHome({ env, home });
     this.indexDir = path.join(this.appDir, 'claude-code-sessions');
     this.projectsDir = path.join(this.claudeDir, 'projects');
-    this.bin = bin === null ? null : (bin || findClaudeBin({ home: this.home, appDir, env }));
+    this.bin = bin === null ? null : (bin || findClaudeBin({ home: this.home, appDir: this.appDir, env }));
     this.cache = new Map(); this.metaCache = new Map(); this.repos = new Map();
     this.runs = new Map(); this.starts = new Map();
     this.auth = null; this.modelCache = null;
@@ -561,9 +548,17 @@ class ClaudeBridge {
   // Besides its working directory, Claude Code keeps a folder of its own for each session, which its
   // replies name (its scratchpad, a background command's output):
   // /tmp/claude-<uid>/<the transcript's project folder>/<session id>. The desktop opens files there too.
-  fileRoots(id: string): string[] {
+  // macOS: /tmp/claude-<uid>/<project folder>/<id>. Windows has no uid: Claude Code keeps it under
+  // %TEMP%\claude\<hash>\<id>, one hash for the scratchpad and another for task output, so every
+  // folder there named after the session counts.
+  fileRoots(id: string, platform: NodeJS.Platform = process.platform): string[] {
     const transcript = this.transcriptPath(id), uid = typeof process.getuid === 'function' ? process.getuid() : null;
-    return transcript && uid !== null ? [path.join(this.tmpDir, `claude-${uid}`, path.basename(path.dirname(transcript)), id)] : [];
+    if (!transcript) return [];
+    if (platform === 'win32') {
+      const base = path.join(this.tmpDir, 'claude');
+      try { return fs.readdirSync(base).map(hash => path.join(base, hash, id)).filter(dir => fs.existsSync(dir)); } catch { return []; }
+    }
+    return uid !== null ? [path.join(this.tmpDir, `claude-${uid}`, path.basename(path.dirname(transcript)), id)] : [];
   }
   // A session's transcript as turns, kept until the file changes. The list asks for every session
   // every few seconds (the activity feed), so every session the desktop lists stays in the cache:
@@ -718,10 +713,11 @@ class ClaudeBridge {
   // ---------- Claude Code CLI: reads the model list and usage only ----------
   spawnCli(args: string[], cwd?: string): ChildProcessByStdio<Writable, Readable, Readable> {
     if (!this.bin) throw new Error(NO_CLI);
+    // A claude.cmd shim (an npm install) goes through cmd.exe, quoted by winSpawnArgs. No console window.
     const [cmd, cmdArgs, cmdOpts] = winSpawnArgs(
       this.bin,
       ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', ...args],
-      { cwd: cwd && fs.existsSync(cwd) ? cwd : this.home, stdio: ['pipe', 'pipe', 'pipe'] as ['pipe', 'pipe', 'pipe'], env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: 'sdk-cli' } },
+      { cwd: cwd && fs.existsSync(cwd) ? cwd : this.home, stdio: ['pipe', 'pipe', 'pipe'] as ['pipe', 'pipe', 'pipe'], env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: 'sdk-cli' }, windowsHide: true },
     );
     return spawn(cmd, cmdArgs, cmdOpts);
   }
@@ -1086,6 +1082,8 @@ class ClaudeBridge {
     timer.unref?.();
     emitter.on('interrupt', () => { run.finished = true; clearInterval(timer); if (this.runs.get(id) === run) this.runs.delete(id); });
   }
+  // How long a steer waits for the record to show the desktop took it (a moment only, when the helper saw it queued).
+  steerConfirmMs = 12000;
   // Adds a message to the turn the desktop is running: typed into its composer and sent there,
   // the desktop queues it and puts it in at the next step (or at once with Send now).
   async steer(id: string, input: Partial<SendInput> = {}): Promise<Record<string, never>> {
@@ -1101,8 +1099,10 @@ class ClaudeBridge {
     const drop = () => { const index = run?.steers?.indexOf(message) ?? -1; if (index >= 0) run?.steers?.splice(index, 1); };
     if (!result.ok) { drop(); throw Object.assign(new Error(result.error || '没能由 Claude 桌面版插话'), { status: 409 }); }
     // Confirmed once the desktop records it: queued (enqueue) or already put in (a prompt).
-    const seen = await this.waitForRecord(route.file, offset, record => (get(record, 'type') === 'queue-operation' && get(record, 'operation') === 'enqueue') || (isHumanPrompt(record) && promptStarts(message, typedText(get(record, 'message', 'content')), 200)), 12000);
-    if (!seen) { drop(); throw Object.assign(new Error('Claude 桌面版没有收到这条插话'), { status: 409 }); }
+    const seen = await this.waitForRecord(route.file, offset, record => (get(record, 'type') === 'queue-operation' && get(record, 'operation') === 'enqueue') || (isHumanPrompt(record) && promptStarts(message, typedText(get(record, 'message', 'content')), 200)), result['queued'] === true ? Math.min(1500, this.steerConfirmMs) : this.steerConfirmMs);
+    // Still in the desktop's own queue (the helper saw its "Send now"): the desktop has it, and puts it in
+    // at the turn's next step; the run's follow takes its prompt as part of this turn then.
+    if (!seen && result['queued'] !== true) { drop(); throw Object.assign(new Error('Claude 桌面版没有收到这条插话'), { status: 409 }); }
     return {};
   }
   async sendNow(id: string): Promise<{ status: string }> {

@@ -19,6 +19,7 @@ import { withAttachments } from './core/attachments.js';
 import { loadConfig, winSpawnArgs } from './config.js';
 import { tailJsonl } from './services/jsonl-tail.js';
 import { readSqlite } from './services/sqlite-reader.js';
+import { antigravityApp } from './services/desktop-places.js';
 import { bag, errorField, get, isBag, list, messageOf, parseJson, str, text as asText, type Bag } from '../shared/guards.js';
 import type {
   Approval, BridgeConfig, CreateInput, CreateResult, DictationHandlers, DictationReady, DictationStream, EngineEmitter, EngineStatus,
@@ -676,8 +677,9 @@ class AntigravityBridge extends EventEmitter {
       const bin = this.binPath;
       // Callers check sendBlockedReason() first; without agentapi there is nothing to run.
       if (!bin) { reject(new Error(NO_AGENTAPI)); return; }
-      // Windows ships agentapi as a .bat; winSpawnArgs quotes the arguments for cmd.exe without `shell: true`.
-      const [cmd, cmdArgs, cmdOpts] = winSpawnArgs(bin, args, { env: { ...this.env, ...this.lsEnv() }, timeout: 60000, maxBuffer: 4 * 1024 * 1024 });
+      // Windows: agentapi is the language server's exe (agentapiArgs), started directly; an AGENTAPI_BIN
+      // that is a .bat/.cmd goes through cmd.exe, quoted by winSpawnArgs. No console window either way.
+      const [cmd, cmdArgs, cmdOpts] = winSpawnArgs(bin, [...(this.config.agentapiArgs || []), ...args], { env: { ...this.env, ...this.lsEnv() }, timeout: 60000, maxBuffer: 4 * 1024 * 1024, windowsHide: true });
       execFile(cmd, cmdArgs, cmdOpts, (err, stdout, stderr) => {
         let data: unknown = null;
         try { data = parseJson(String(stdout).trim()); } catch {}
@@ -758,13 +760,11 @@ class AntigravityBridge extends EventEmitter {
     } catch {}
     return roots;
   }
-  openFile(_conversationId: string, { absolute }: Pick<FileTarget, 'absolute'>, run: OpenRunner = execFile): Promise<{ ok: true; pressed: true }> {
-    if (process.platform === 'win32' && run === execFile) {
-      const bin = path.join(this.env['LOCALAPPDATA'] || path.join(this.home, 'AppData', 'Local'), 'Programs', 'antigravity', 'Antigravity.exe');
-      return new Promise((resolve, reject) => run(bin, [absolute], { timeout: 15000 }, err =>
-        err ? reject(Object.assign(new Error('没能在 Antigravity 里打开这个文件'), { status: 409, cause: err })) : resolve({ ok: true, pressed: true })));
-    }
-    return new Promise((resolve, reject) => run('/usr/bin/open', ['-b', 'com.google.antigravity', absolute], { timeout: 15000 }, err =>
+  openFile(_conversationId: string, { absolute }: Pick<FileTarget, 'absolute'>, run: OpenRunner = execFile, platform: NodeJS.Platform = process.platform): Promise<{ ok: true; pressed: true }> {
+    // macOS hands the file to the app by its bundle id; Windows starts the app's exe with the file,
+    // which (like `code <file>`) opens it in the window whose workspace holds it.
+    const [file, args]: [string, string[]] = platform === 'win32' ? [antigravityApp({ platform }), [absolute]] : ['/usr/bin/open', ['-b', 'com.google.antigravity', absolute]];
+    return new Promise((resolve, reject) => run(file, args, { timeout: 15000 }, err =>
       err ? reject(Object.assign(new Error('没能在 Antigravity 里打开这个文件'), { status: 409, cause: err })) : resolve({ ok: true, pressed: true })));
   }
   async interrupt(conversationId: string): Promise<{ pending: boolean }> {

@@ -66,10 +66,13 @@ test('"show in Finder" uses the same folder check as the preview, and the system
   assert.throws(() => resolveFile(cwd, '../outside.txt'), withStatus(403));
   // `~/…` is the home folder: outside the session's folders it is refused like any other path.
   assert.throws(() => resolveFile(cwd, '~/'), withStatus(403));
-  const realHome = process.env['HOME'];
-  process.env['HOME'] = root;
+  // os.homedir() reads HOME, and USERPROFILE on Windows.
+  const realHome = process.env['HOME'], realProfile = process.env['USERPROFILE'];
+  process.env['HOME'] = root; process.env['USERPROFILE'] = root;
   try { assert.deepEqual(resolveFile(cwd, '~/outside.txt', [root]), { file: path.join(root, 'outside.txt'), relative: 'outside.txt' }); }
-  finally { process.env['HOME'] = realHome; }
+  finally {
+    for (const [name, value] of [['HOME', realHome], ['USERPROFILE', realProfile]] as const) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+  }
   assert.deepEqual(command('/w/a.js', 'darwin'), ['/usr/bin/open', ['-R', '/w/a.js']]);
   assert.deepEqual(command('C:\\w\\a.js', 'win32'), ['explorer.exe', ['/select,C:\\w\\a.js']]);
   assert.deepEqual(command('/w/lib/a.js', 'linux'), ['xdg-open', ['/w/lib']]);

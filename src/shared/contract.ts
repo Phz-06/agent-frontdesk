@@ -422,6 +422,8 @@ export interface BridgeConfig {
   settingsFile: string;
   agyHome: string;
   agentapiBin: string | null;
+  /** Arguments put before every agentapi command (Windows runs it as `language_server.exe agentapi …`). */
+  agentapiArgs?: string[];
   catalogs: Record<string, Model[]>;
 }
 

@@ -166,12 +166,30 @@ test('what the server reports reads naturally in English, names and reasons incl
   const toAi = /^(请查看并分析附件|用户在工作台拒绝了这个操作|（图片或附件）|（图片）|你发送的图片|新建聊天|新会话|Antigravity 会话|模型|其他|截图|5 小时|每周)$/;
   const walk = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap(item => item.isDirectory() ? (item.name === 'bin' || item.name === 'obj' ? [] : walk(path.join(dir, item.name))) : /\.(js|ts|swift|cs)$/.test(item.name) && !item.name.endsWith('.d.ts') ? [path.join(dir, item.name)] : []);
   const serverFiles = walk(path.join(root, 'src/server'));
-  assert.ok(serverFiles.some(file => /server\.[jt]s$/.test(file)) && serverFiles.some(file => file.endsWith('Program.cs')) && serverFiles.length >= 35, 'the server sources are found');
+  assert.ok(serverFiles.some(file => /server\.[jt]s$/.test(file)) && serverFiles.some(file => file.endsWith('uia-driver.cs')) && serverFiles.length >= 35, 'the server sources are found');
+  // C# (no string interpolation in C# 5) builds a message as "text" + value + "text": the pieces of
+  // one concatenation are read as one text, each value standing in as {x}, the way a Swift
+  // "\(value)" stands in its literal.
+  const literal = /'((?:[^'\\\n]|\\.)*)'|"((?:[^"\\\n]|\\.)*)"/g;
+  const textsOf = (line: string, csharp: boolean): string[] => {
+    const found = [...line.matchAll(literal)];
+    if (!csharp) return found.map(match => match[1] ?? match[2] ?? '');
+    const texts: string[] = [];
+    let current: string | null = null, end = 0;
+    for (const match of found) {
+      const between = line.slice(end, match.index), text = match[2] ?? match[1] ?? '';
+      if (current !== null && /^\s*\+\s*$/.test(between)) current += text;
+      else if (current !== null && /^\s*\+[^;"']*\+\s*$/.test(between)) current += `{x}${text}`;
+      else { if (current !== null) texts.push(current); current = (/\+\s*$/.test(between) ? '{x}' : '') + text; }
+      end = (match.index ?? 0) + match[0].length;
+    }
+    if (current !== null) texts.push(current + (/^\s*\+/.test(line.slice(end)) ? '{x}' : ''));
+    return texts;
+  };
   for (const file of serverFiles) {
     for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
       if (/^\s*(\/\/|\*)/.test(line) || /console\.(log|error)/.test(line)) continue;
-      for (const match of line.replace(/\s\/\/\s.*$/, '').matchAll(/'((?:[^'\\\n]|\\.)*)'|"((?:[^"\\\n]|\\.)*)"/g)) {
-        const text = match[1] ?? match[2] ?? '';
+      for (const text of textsOf(line.replace(/\s\/\/\s.*$/, ''), file.endsWith('.cs'))) {
         if (/[\u4e00-\u9fff]/.test(text) && !toAi.test(text) && !known.has(text) && english(text) === text) missing.push(`${path.basename(file)}: ${text}`);
       }
     }

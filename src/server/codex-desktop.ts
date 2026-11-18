@@ -1,5 +1,5 @@
 // Steering a Codex turn that the desktop app is running. The desktop (ChatGPT.app) keeps a local
-// IPC router at ~/.codex/ipc/ipc.sock where its own windows coordinate: a window that does not own
+// IPC router (~/.codex/ipc/ipc.sock on macOS, the pipe \\.\pipe\codex-ipc on Windows) where its own windows coordinate: a window that does not own
 // a thread asks the owner to act with "thread-follower-*" requests. We join briefly as one more
 // follower and send "thread-follower-steer-turn"; the owning window delivers the message exactly as
 // if it had been typed into its composer while the turn runs. Nothing is read from or written to
@@ -29,10 +29,12 @@ export type CodexInput = { type: string; [field: string]: unknown };
 
 const ipcError = (message: string, code: string): IpcError => Object.assign(new Error(message), { code });
 
-function socketPath(codexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex')): string {
-  // Windows: verified inside OpenAI.Codex app.asar (early-bootstrap-824, module 92272);
-  // overridable via CODEX_IPC_PATH.
-  if (process.platform === 'win32') return process.env.CODEX_IPC_PATH || '\\\\.\\pipe\\codex-ipc';
+// Where the desktop's router listens: a socket under the Codex home on macOS; on Windows a named
+// pipe, since Node and Electron cannot listen on a socket path there (the desktop's own code:
+// `path.join("\\\\.\\pipe", "codex-ipc")`). net.createConnection takes either. CODEX_IPC_PATH
+// overrides it on Windows (tests, or a Codex build that names its pipe otherwise).
+function socketPath(codexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), platform: NodeJS.Platform = process.platform): string {
+  if (platform === 'win32') return process.env.CODEX_IPC_PATH || '\\\\.\\pipe\\codex-ipc';
   return path.join(codexHome, 'ipc', 'ipc.sock');
 }
 

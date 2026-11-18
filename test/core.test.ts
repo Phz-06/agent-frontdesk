@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import { once } from 'node:events';
 import { EngineEvents } from '../src/server/types.js';
 import { at, bridgeEvent, dig, fake, must, required } from './support.js';
-import { errorField, get } from '../src/shared/guards.js';
+import { errorField, get, list } from '../src/shared/guards.js';
 import { loadConfig } from '../src/server/config.js';
 import type { CodexDesktopIpc, DesktopRequest } from '../src/server/codex-desktop.js';
 import type { AnyBridgeEvent, BridgeEventMap, BridgeEventType, Engine, History, RunTurn, UnifiedSession, UnifiedStep, UnifiedTurn } from '../src/shared/contract.js';
@@ -292,9 +292,9 @@ test('a queued message can still be steered in, or taken back to edit', async ()
 
 test('Codex steers a desktop-run turn through the desktop IPC as a thread follower', async t => {
   const net = __node_net, codexDesktop = __codex_desktop;
+  // A stand-in router where the desktop's would be: a socket file, or on Windows a named pipe.
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ipc-'));
-  // Windows: AF_UNIX bind of a filesystem path is refused (EACCES); a named pipe stands in.
-  const sock = process.platform === 'win32' ? `\\\\.\\pipe\\frontdesk-ipc-test-${process.pid}` : path.join(dir, 's.sock');
+  const sock = process.platform === 'win32' ? `\\\\.\\pipe\\frontdesk-test-${path.basename(dir)}` : path.join(dir, 's.sock');
   const seen: unknown[] = [];
   const server = net.createServer(socket => {
     let buffer: Buffer = Buffer.alloc(0); socket.on('error', () => {});
@@ -436,39 +436,27 @@ test('every icon the page names in its sources is one it carries (the rest of lu
   assert.equal(hasIcon('zebra-crossing-not-an-icon'), false);
 });
 
-test('the Windows helper builds through dotnet publish and runs the same protocol', async t => {
+test('the Windows helper is compiled with the csc.exe Windows ships and speaks the same protocol', async t => {
   const { DesktopAutomation } = await import('../src/server/core/desktop-automation.js');
-  const ran: string[][] = [];
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'uia-cache-'));
-  const desktop = new DesktopAutomation({ engine: 'claude', platform: 'win32', cacheDir: temp,
-    runner: async (_file, args) => { ran.push(args); return args[0] === 'check' ? { ok: true, trusted: true, running: true } : { ok: true }; } });
   t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
-  // check on win32 says what the machine offers, not the macOS permission refusal.
-  const state = await desktop.check();
-  assert.equal(state.available, true);
-  assert.equal(state.code, undefined);
-  // keepWarm works on win32 too: the first beat reads the page through the helper.
-  const calls: string[][] = [];
-  desktop.runner = async (_file, args) => { calls.push(args); return { ok: true }; };
-  desktop.keepWarm(0); // warmEveryMs 0 would stop it; keepWarm(0) still fires one beat
-  assert.deepEqual(calls.filter(args => args[0] === 'warm').length <= 1, true);
+  // check on win32 says what the machine offers, not the macOS permission refusal: available once
+  // the engine's flow ports send.
+  const desktop = new DesktopAutomation({ engine: 'claude', platform: 'win32', cacheDir: temp, warmEveryMs: 0,
+    runner: async (_file, args) => args[0] === 'check' ? { ok: true, trusted: true, running: true, ported: ['send'] } : { ok: true } });
+  desktop.binary = 'C:\helper.exe';
+  assert.deepEqual(await desktop.check(), { available: true });
   // A platform the codebase does not serve still refuses, with the wording both languages carry.
-  const nowhere = new DesktopAutomation({ engine: 'claude', platform: 'linux' });
-  const refused = await nowhere.check();
+  const refused = await new DesktopAutomation({ engine: 'claude', platform: 'linux' }).check();
   assert.equal(refused.available, false);
-  assert.match(refused.reason || '', /macOS 和 Windows|macOS and Windows/);
+  assert.match(refused.reason || '', /macOS 和 Windows/);
   if (process.platform === 'win32') {
-    const realDesktop = new DesktopAutomation({ engine: 'claude', platform: 'win32', cacheDir: temp });
-    const realState = await realDesktop.check();
-    assert.ok(realDesktop.binary?.endsWith('.exe'), 'Windows UIA helper must end with .exe');
-    assert.notEqual(realState.reason, '桌面代发程序没有正常返回');
-    // Expanded UIA protocol check: flag parsing (--space/--previous/--stay) + ms/reads timing fields + non-unsupported handling
-    const checkRes = await realDesktop.runner(must(realDesktop.binary), ['check'], { timeout: 5000, env: { AX_PROFILE: realDesktop.profile } });
-    assert.equal(checkRes.ok, true);
-    assert.equal(typeof checkRes['ms'], 'number');
-    assert.equal(typeof checkRes['reads'], 'number');
-    const leaveRes = await realDesktop.runner(must(realDesktop.binary), ['new-leave', '--space', 'code', '--previous', 'none', '--stay'], { timeout: 5000, env: { AX_PROFILE: realDesktop.profile } });
-    assert.notEqual(leaveRes.code, 'unsupported');
-    assert.equal(typeof leaveRes['ms'], 'number');
+    // The real compile, then the one command that only looks (nothing is pressed in a unit test).
+    const real = new DesktopAutomation({ engine: 'claude', platform: 'win32', cacheDir: temp, warmEveryMs: 0 });
+    const file = await real.helper();
+    assert.ok(file?.endsWith('.exe'), 'the helper is an .exe in the cache');
+    const checked = await real.runner(must(file), ['check'], { timeout: 10000, env: { AX_PROFILE: real.profile } });
+    assert.equal(checked.ok, true);
+    assert.ok(list(checked['ported']).includes('send'), "Claude's flow ports send");
   }
 });

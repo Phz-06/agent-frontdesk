@@ -1,9 +1,8 @@
-import os from 'node:os';
-import path from 'node:path';
 import { registerTool, type ToolSummary } from '../services/tool-catalog.js';
 import { AntigravityBridge } from '../antigravity-bridge.js';
 import { get } from '../../shared/guards.js';
 import { appPlaces, firstExisting } from '../services/app-assets.js';
+import { antigravityApp, antigravityIconFile } from '../services/desktop-places.js';
 import type { Character, PluginAbout, PluginSetup } from '../../shared/contract.js';
 const text = (value: unknown): string => String(value ?? '').replace(/\s+/g, ' ').trim();
 // A tool call's arguments, as Antigravity records them (its own names).
@@ -23,17 +22,11 @@ const TOOLS: Array<[RegExp, (input: unknown) => ToolSummary]> = [
 // Who this is, the same whether the agent is on or off (the engine below is registered with it).
 const IDENTITY = { id: 'antigravity', label: 'Antigravity', description: 'Antigravity desktop', priority: 30, accent: '#4285F4' } as const;
 const CHARACTER: Character = { kind: 'image', url: '/assets/characters/antigravity.svg', standIn: true };
-const winAsar = () => path.join(process.env['LOCALAPPDATA'] || path.join(os.homedir(), 'AppData', 'Local'), 'Programs', 'antigravity', 'resources', 'app.asar');
 /** The agent as the console lists it before it is set up: found when Antigravity's data folder, or the app, is on this machine. */
 export const about: PluginAbout = { ...IDENTITY, character: CHARACTER,
   // The app's own icon, read from the installed app (the host serves it; nothing is copied here).
-  // Windows keeps it inside resources\app.asar as /icon.png (readAppIcon reads an .asar too);
-  // the .env (ANTIGRAVITY_APP_ICON) wins everywhere.
-  appIcon: () => process.env.ANTIGRAVITY_APP_ICON
-    || (process.platform === 'win32' ? winAsar() : '/Applications/Antigravity.app/Contents/Resources/icon.icns'),
-  detect: config => firstExisting([...appPlaces(process.platform === 'win32'
-    ? winAsar()
-    : '/Applications/Antigravity.app/Contents/Resources/app.asar'), config.agyHome]) };
+  appIcon: () => process.env.ANTIGRAVITY_APP_ICON || antigravityIconFile(),
+  detect: config => firstExisting([...(antigravityApp() ? appPlaces(antigravityApp()) : []), config.agyHome]) };
 export const setup: PluginSetup = ({ config, registerEngine }) => {
   // Where Antigravity keeps its data: always set by the server's configuration (config.ts).
   const agyHome = config.agyHome;

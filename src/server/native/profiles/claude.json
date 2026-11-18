@@ -1,8 +1,35 @@
 {
   "name": "Claude 桌面版",
   "bundleId": "com.anthropic.claudefordesktop",
-  "win32": {
-    "process": "Claude"
+  "windows": {
+    "exe": "claude.exe",
+    "windowStateFile": "%LOCALAPPDATA%\\Claude-Data\\claude_*\\window-state.json",
+    "locators": {
+      "chromeBar": {
+        "role": "AXGroup",
+        "class": "dframe-chrome-bar"
+      },
+      "transcript": [
+        {
+          "role": "AXGroup",
+          "aria": "feed"
+        },
+        {
+          "role": "AXGroup",
+          "name": "Chat messages"
+        }
+      ],
+      "spaceSwitch": [
+        {
+          "role": "AXRadioGroup",
+          "inside": "chromeBar"
+        },
+        {
+          "role": "AXRadioGroup",
+          "name": "Mode"
+        }
+      ]
+    }
   },
   "offscreenMenu": "key",
   "titleSuffix": " - Claude Code",
@@ -268,10 +295,6 @@
     "message": {
       "role": "AXGroup",
       "subrole": "AXDocumentArticle"
-    },
-    "citation": {
-      "role": "AXLink",
-      "class": "group/tag"
     },
     "ignore": [
       "Claude is AI and can make mistakes",

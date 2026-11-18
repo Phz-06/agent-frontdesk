@@ -44,8 +44,11 @@ function resolveFile(cwd: string, requested: unknown, roots: string[] = []): { f
   let file: string;
   try { file = fs.realpathSync(path.isAbsolute(named) ? named : path.join(reals[0] ?? '', named)); } catch { throw refuse(404, '找不到这个文件'); }
   for (const root of reals) {
-    const relative = path.relative(root, file);
-    if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) return { file, relative: relative.replace(/\\/g, '/') };
+    const native = path.relative(root, file);
+    // Written with "/" on every platform: the page shows it, and SECRET / INTERNAL below match on "/"
+    // (on Windows a bare path.relative gives ".git\config", which would slip past INTERNAL).
+    const relative = native.split(path.sep).join('/');
+    if (native && !native.startsWith('..') && !path.isAbsolute(native)) return { file, relative };
   }
   throw refuse(403, '只能预览这个会话工作目录里的文件');
 }

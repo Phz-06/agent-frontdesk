@@ -64,7 +64,8 @@ function readAppIcon(file: string, size = 256): AssetFile | null {
   }
   let data: Buffer;
   try { data = fs.readFileSync(file); } catch { return null; }
-  if (data.length >= 8 && data.subarray(0, 4).equals(PNG_MAGIC)) return { type: 'image/png', data };
+  // On Windows an app's icon is its package's PNG tile logo, served as it is.
+  if (data.length > 24 && data.subarray(0, 4).equals(PNG_MAGIC)) return { type: 'image/png', data };
   if (data.length < 8 || data.toString('latin1', 0, 4) !== 'icns') return null;
   let best: { width: number; png: Buffer } | null = null;
   for (let at = 8; at + 8 <= data.length;) {

@@ -5,13 +5,14 @@ import { ClaudeChats, type ClaudeChat, type ClaudeChatProject } from '../service
 import { UnifiedSession } from '../types.js';
 import { ChatMode, CHAT_CAPABILITIES, type ModeChat } from '../services/desktop-chat.js';
 import { appPlaces, firstExisting, readAsarFile } from '../services/app-assets.js';
+import { appAsar } from '../services/desktop-places.js';
 import { registerTool, type ToolSummary } from '../services/tool-catalog.js';
 import { get, list, parseJson, text } from '../../shared/guards.js';
 import type { Character, PluginAbout, PluginSetup } from '../../shared/contract.js';
 
 // Claude's own art and type, read at runtime from the installed desktop app (never vendored):
 // the pixel Clawd from the app's sprite data, and the Anthropic Sans faces the Code tab uses.
-const DEFAULT_ASAR = '/Applications/Claude.app/Contents/Resources/app.asar';
+const DEFAULT_ASAR = appAsar('claude');
 let APP_ASAR = DEFAULT_ASAR;
 const FONTS: Readonly<Record<string, RegExp>> = {
   'claude-font-text': /main_window\/assets\/AnthropicSansMicro-Text-Variable-[^/]+\.woff2$/,
