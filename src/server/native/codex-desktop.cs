@@ -178,7 +178,8 @@ namespace Frontdesk.Driver
             if (!Fill("composer", text, "send") || !OnNewPage()) giveUp(new[] { "fill_failed", "没能把消息填进 Codex 桌面版的输入框" });
             // A menu still open (the model menu after a pick) would take the press: nothing is sent.
             if (!Until(1.6, () => Menus() == 0)) giveUp(new[] { "menu_open", "Codex 桌面版的模型菜单没有关上，没有发送：请到桌面版里关掉它" });
-            if (changed.Contains("model") && !Until(1.6, () => ShowsModel(wanted["model"]))) giveUp(new[] { "model_not_set", "在 Codex 桌面版里选了 " + wanted["model"] + "，但它没有切换过去" });
+            string picked; wanted.TryGetValue("model", out picked);
+            if (changed.Contains("model") && !Until(1.6, () => ShowsModel(picked))) giveUp(new[] { "model_not_set", "在 Codex 桌面版里选了 " + picked + "，但它没有切换过去" });
             Node send = Find("send");
             if (send == null || !Press(send)) giveUp(new[] { "no_send", "Codex 桌面版没有出现发送按钮" });
             // The page becomes the new chat once the desktop has started it.

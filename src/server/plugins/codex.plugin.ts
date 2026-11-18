@@ -34,7 +34,8 @@ export const setup: PluginSetup = ({ config, registerEngine, registerAsset }) =>
   const ELSEWHERE = 'ChatGPT 对话的正文不在本机，要从 Codex 桌面版的界面读';
   const mode = (): { conversations: ChatgptConversation[]; projects: ChatgptProject[] } => { try { return chatgpt.read(); } catch { return { conversations: [], projects: [] }; } };
   // Its conversations are read, started and answered in the desktop's own window (src/server/services/desktop-chat.ts).
-  const chats = new ChatMode({ automation: bridge.ui, space: 'chatgpt', label: 'Codex 桌面版', list: () => mode().conversations.filter(item => !item.local) });
+  // Its sidebar's Recents list the Codex threads too, so a title they share is not driven (sharedTitle).
+  const chats = new ChatMode({ automation: bridge.ui, space: 'chatgpt', label: 'Codex 桌面版', list: () => mode().conversations.filter(item => !item.local), sidebar: () => mode().conversations });
   const remote = (id: string) => chats.get(id);
   const asSession = (item: { id: string; title: string; updatedAt: string }, rank: number) => new UnifiedSession({ id: item.id, engine: 'codex', title: item.title, updatedAt: item.updatedAt, sendBlocked: ELSEWHERE,
     metadata: { space: 'chatgpt', contentUnavailable: ELSEWHERE, group: null, bySpace: { chatgpt: { rank } } } });

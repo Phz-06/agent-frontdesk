@@ -166,6 +166,27 @@ test("a chat mode's new chats and messages go through the desktop window, and th
   assert.deepEqual(at(calls, -1).slice(0, 2), ['chat-new', '-']);
 });
 
+test('a chat mode does not drive a chat whose title another entry of its sidebar has: the row would not say which one', async () => {
+  const { ChatMode } = __services_desktop_chat;
+  const calls: string[] = [];
+  const automation: Runner & Partial<Pick<DesktopAutomation, 'showSession'>> = { run: async args => { calls.push(String(args[0])); return { ok: true, running: false, messages: [{ role: 'user', text: 'hi' }, { role: 'assistant', text: 'OK' }] }; }, showSession: async () => { calls.push('show-session'); return { ok: true }; } };
+  // Codex's ChatGPT mode: two chats named alike, and a Codex thread its Recents also list.
+  const chats = [{ id: 'g1', title: '回复 OK', updatedAt: 'v1' }, { id: 'g2', title: '回复 OK', updatedAt: 'v1' }, { id: 'g3', title: 'Plan the trip', updatedAt: 'v1' }, { id: 'g4', title: 'Unique', updatedAt: 'v1' }];
+  const threads = [{ id: 't1', title: 'Plan the trip' }];
+  const mode = new ChatMode({ automation, space: 'chatgpt', label: 'Codex 桌面版', list: () => chats, sidebar: () => threads });
+  const errorOf = (emitter: EngineEmitter) => new Promise<string>(resolve => { emitter.on('error', (err: unknown) => resolve(String(get(err, 'message')))); emitter.on('completed', () => resolve('')); });
+  for (const id of ['g1', 'g3']) {
+    assert.match(await errorOf(mode.send(id, { prompt: 'hi' })), /侧栏里有不止一个叫「.+」的会话，工作台分不清是哪一个，没有操作/);
+    const opened = await mode.read(fake<UnifiedSession>({ id, title: mode.get(id)?.title, metadata: { contentUnavailable: 'x' } }), 'v1');
+    assert.deepEqual(opened.turns, []); assert.match(String(opened.session?.metadata?.contentUnavailable), /分不清是哪一个/);
+    await assert.rejects(mode.show(id), /分不清是哪一个/);
+  }
+  assert.deepEqual(calls, [], 'the desktop is not touched');
+  // A title nothing else has is driven as before.
+  assert.equal(await errorOf(mode.send('g4', { prompt: 'hi' })), '');
+  assert.deepEqual(calls, ['chat-send']);
+});
+
 test("a mode can narrow the engine's capabilities (flags only)", async () => {
   const { PluginHost } = __core_plugin_host;
   const host = new PluginHost();

@@ -1209,9 +1209,12 @@ namespace Frontdesk.Driver
         // profile's windows.windowStateFile names that file; when it holds off-screen bounds after a
         // minimized window was put back, the window is shown normal at its own bounds, behind every
         // other window, until they are saved again, then minimized.
+        // Every park of a minimized window is checked, however short: Claude 6.6395 saved the corner's
+        // bounds about 1 s after the move, and a 1.1 s park left them off screen (measured; 5.11492 had
+        // saved 3.3 s after the window settled).
         static void RepairSavedBounds(long parkedMs)
         {
-            if (Parking.Placement.showCmd != 2 || parkedMs < 2500) return;
+            if (Parking.Placement.showCmd != 2) return;
             IntPtr under = Parking.InsertAfter != IntPtr.Zero ? Parking.InsertAfter : new IntPtr(1);   // HWND_BOTTOM for a minimized one
             string pattern = Environment.ExpandEnvironmentVariables(Setting("windowStateFile"));
             if (pattern.Length == 0) return;
@@ -1236,9 +1239,12 @@ namespace Frontdesk.Driver
                 }
                 catch { return false; }
             };
-            // The save may still be on its way: look for up to 4 s.
-            DateTime end = DateTime.UtcNow.AddSeconds(4);
-            bool bad = false; while (DateTime.UtcNow < end) { if (offScreen()) { bad = true; break; } Thread.Sleep(200); }
+            // The save may still be on its way: look until 4 s after the move (it comes 1 to 3.3 s after
+            // it), or until the app has saved bounds on screen since the park began (the corner's own save
+            // comes first, so none can follow that).
+            Func<bool> savedSince = () => { try { return File.GetLastWriteTimeUtc(file) > Parking.Began; } catch { return false; } };
+            DateTime end = Parking.Began.AddSeconds(4);
+            bool bad = false; while (DateTime.UtcNow < end) { if (offScreen()) { bad = true; break; } if (savedSince()) break; Thread.Sleep(200); }
             if (!bad) return;
             Trace("saved bounds are off screen: showing the window normal until they are saved again");
             Win.WINDOWPLACEMENT normal = Parking.Placement; normal.showCmd = 4;
