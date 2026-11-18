@@ -226,10 +226,18 @@ func shownMode() -> String {
 newPageShown = { ["model": shownModel(), "mode": shownMode()] }
 newPageInUse = { !(prompt().map(value) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 newPageCommands(open: openNewPage)
-let previous = startedOn()
+let previous = startedOn(), previousAt = startedAddress()
 let title = args.count > 1 ? args[1] : "", localId = args.count > 2 ? args[2] : "", steer = args.count > 3 && args[3] == "steer"
 guard !title.isEmpty else { fail("usage", "缺少会话标题") }
-func back() { if !previous.isEmpty && previous != title { _ = show(previous) } }
+// The session the command acts on, by its page's address ("/epitaxy/local_…"): two sessions may share a title.
+let target = localId.hasPrefix("local_") ? address(["localId": localId]) : ""
+// Back to the session the person had on screen, by its address when both are known (it may have
+// the same title as this one and still be another session).
+func back() {
+  guard !previous.isEmpty else { return }
+  if !previousAt.isEmpty && !target.isEmpty { if previousAt != target { _ = show(previous, at: previousAt) } }
+  else if previous != title { _ = show(previous) }
+}
 
 switch args.first {
 case "send":
@@ -365,7 +373,7 @@ case "stop":
   guard let stop = button("Stop") else { back(); fail("not_running", "这个会话在 Claude 桌面版里没有在运行") }
   guard act(stop, kAXPressAction as String) == .success else { back(); fail("not_stopped", "没能按下 Claude 桌面版的停止按钮") }
   var stopped = false
-  for _ in 0..<12 { wait(); if current() != title { break }; if button("Stop") == nil { stopped = true; break } }
+  for _ in 0..<12 { wait(); if !isShown(title, target) { break }; if button("Stop") == nil { stopped = true; break } }
   back()
   stopped ? out(["ok": true]) : fail("not_stopped", "按了停止，但 Claude 桌面版还在运行")
 default:

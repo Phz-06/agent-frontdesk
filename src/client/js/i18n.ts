@@ -192,7 +192,7 @@ const REPORTS: Record<string, string> = {
   '这个文件夹不在 Claude 桌面版的常用文件夹里：请先在桌面版里用它新建一次会话': "Claude's desktop app doesn't know this folder yet. Start one session in it from the desktop app first.",
   '消息已在 Claude 桌面版里发出，但还没在它的会话列表里看到这个新会话，请到桌面版里查看': "Your message was sent in Claude's desktop app, but the new session hasn't shown up yet. Check the desktop app.",
   '没能在 Claude 桌面版里停止': "Couldn't stop it in Claude's desktop app", 'Claude Code 报告执行失败': 'Claude Code reported a failure',
-  'Claude 桌面版有同名会话，无法确认要停止的是哪一个': 'More than one chat has this title in Claude. Open the chat in Claude to stop it.',
+  'Claude 桌面版有同名会话，这个会话又没有本地 id，分不清是哪一个，所以没有动手': "More than one chat has this title in Claude, and this one has no local ID to tell them apart, so nothing was done. Do it in Claude itself.",
   '缺少有效的会话 ID': 'Missing a valid chat ID', '缺少有效的会话 ID 或标题': 'Missing a valid chat ID or title',
   '没能按下 Claude 桌面版的停止按钮': "Couldn't press Stop in Claude's desktop app",
   '桌面代发需要辅助功能权限：在「系统设置 → 隐私与安全性 → 辅助功能」里允许运行工作台服务的程序（例如终端），然后重启工作台': "Sending through the desktop app needs Accessibility access. In System Settings → Privacy & Security → Accessibility, allow the app that runs Frontdesk (for example Terminal), then restart Frontdesk.",

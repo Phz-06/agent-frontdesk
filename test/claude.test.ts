@@ -1354,7 +1354,8 @@ test('a desktop whose page has an address for each conversation is asked by it, 
   assert.equal(profile.sessionAddress, '/c/{localId}');
   for (const key of profile.refreshAnchors) assert.ok(key in profile.locators, key);
   assert.ok('sessionList' in profile.locators && 'fileLink' in profile.locators);
-  assert.match(driver, /let here = \{ at\.isEmpty \? current\(\) == title : showing\(at\) \}/);
+  assert.match(driver, /func isShown\(_ title: String, _ at: String\) -> Bool \{ at\.isEmpty \? current\(\) == title : showing\(at\) \}/);
+  assert.match(driver, /let here = \{ isShown\(title, at\) \}/);
   // A list drawn only near what is on screen is scrolled both ways until the row is there.
   assert.match(driver, /for downward in \[true, false\] \{/);
   assert.match(driver, /act\(edge, "AXScrollToVisible"\)/);
@@ -1363,6 +1364,52 @@ test('a desktop whose page has an address for each conversation is asked by it, 
   assert.match(driver, /reopen\.arguments = \["-b", bundleId\]/);
   // Where the page names a file elsewhere too (its open files' tabs), only the chat's own links count.
   assert.match(driver, /if shaped, !fits\(e, "fileLink"\) \{ return false \}/);
+});
+
+test('Claude: a session is told apart from another of the same title by the address its page shows', async () => {
+  const driver = fs.readFileSync(path.join(__dirname, '../src/server/native/ax-driver.swift'), 'utf8');
+  const flow = fs.readFileSync(path.join(__dirname, '../src/server/native/claude-desktop.swift'), 'utf8');
+  const profile = JSON.parse(fs.readFileSync(path.join(__dirname, '../src/server/native/profiles/claude.json'), 'utf8'));
+  // The page is at /epitaxy/local_<id>; the sidebar's rows are plain buttons with only the title.
+  assert.equal(profile.sessionAddress, '/epitaxy/{localId}');
+  assert.equal(profile.sessionRowsBy, 'title');
+  assert.equal(profile.sessionLink.replace(/^claude:\/\/claude\.ai/, ''), profile.sessionAddress, 'the link opens the address the page then shows');
+  // Each row with the title is pressed until the page's address is this session's, then the link; else not shown.
+  assert.match(driver, /if !at\.isEmpty && setting\("sessionRowsBy"\) == "title" \{/);
+  assert.match(driver, /let rows = titledRows\(title\)/);
+  // Rows folded away are unfolded in place; the deep link, which brings the desktop to the front, is
+  // only for the commands that bring it there anyway (the person asked to be taken to it).
+  assert.match(driver, /var mayFront: Bool \{ \["open-file", "show-session"\]\.contains\(args\.first \?\? ""\) \}/);
+  assert.match(driver, /let linkable = mayFront && !link\.isEmpty/);
+  assert.match(driver, /guard let more = findAll\("moreSessions"\)\.first \?\? findAll\("nestedSessions"\)\.first else \{ break \}/);
+  assert.equal(profile.locators.moreSessions.inside, 'sidebar');
+  assert.equal(profile.locators.nestedSessions.inside, 'sidebar');
+  assert.equal((driver.match(/openLink\(link, ids\)/g) || []).length, 2, 'both uses of the link are behind linkable');
+  assert.equal((driver.match(/let linkable = /g) || []).length, 1);
+  // Going back, and watching Stop take, go by the address too.
+  assert.match(flow, /let target = localId\.hasPrefix\("local_"\) \? address\(\["localId": localId\]\) : ""/);
+  assert.match(flow, /_ = show\(previous, at: previousAt\)/);
+  assert.match(flow, /if !isShown\(title, target\) \{ break \}/);
+
+  // Two sessions of one title: each is driven by its own local id, nothing is refused.
+  const { ClaudeDesktop } = __claude_desktop;
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-home-'));
+  const index = path.join(home, 'Library/Application Support/Claude/claude-code-sessions/acct/org');
+  fs.mkdirSync(index, { recursive: true });
+  fs.writeFileSync(path.join(index, 'local_one.json'), JSON.stringify({ sessionId: 'local_one', cliSessionId: 'cli-1', cwd: '/work', title: '同一个标题' }));
+  fs.writeFileSync(path.join(index, 'local_two.json'), JSON.stringify({ sessionId: 'local_two', cliSessionId: 'cli-2', cwd: '/work', title: '同一个标题' }));
+  const calls: string[][] = [];
+  const desktop = new ClaudeDesktop({ runner: async (file, args) => { calls.push(args); return args[0] === 'check' ? { ok: true, trusted: true, running: true } : { ok: true }; } });
+  desktop.binary = '/bin/helper'; desktop.platform = 'darwin';
+  const bridge = new ClaudeBridge({ home, env: {}, bin: null, desktop });
+  await bridge.show('cli-2');
+  assert.deepEqual(at(calls, -1), ['show-session', '同一个标题', 'local_two']);
+  assert.equal(bridge.sharedTitle(must(bridge.metaFor('cli-1'))), '');
+  // A session the index has no local id for is known to the window by its title alone: with another of that title, refused.
+  const bare = { ...must(bridge.metaFor('cli-1')), localId: undefined };
+  assert.match(bridge.sharedTitle(bare), /同名会话/);
+  assert.equal(bridge.sharedTitle({ ...bare, title: '别的标题' }), '');
+  bridge.dispose(); fs.rmSync(home, { recursive: true });
 });
 
 test('Claude: a file from the chat is opened in the desktop, in its own session', async () => {
