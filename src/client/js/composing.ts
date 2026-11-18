@@ -11,6 +11,9 @@
 export type Typing = 'composing' | 'keys';
 export const RENEW_MS = 600, KEYS_EVERY_MS = 300;
 type Listen = Pick<EventTarget, 'addEventListener' | 'removeEventListener'>;
+// An object, not `true`: under Node 22's EventTarget (CI's tests) a listener added and removed with
+// `true` stayed after the removal; browsers and Node 26 take either form.
+const CAPTURE = { capture: true };
 export function watchTyping(target: Listen, send: (typing: Typing) => void, now: () => number = () => Date.now()): () => void {
   let composingSaid = 0, keysSaid = 0;
   const composing = () => { if (!composingSaid || now() - composingSaid >= RENEW_MS) { composingSaid = now(); send('composing'); } };
@@ -20,6 +23,6 @@ export function watchTyping(target: Listen, send: (typing: Typing) => void, now:
     if (!keysSaid || now() - keysSaid >= KEYS_EVERY_MS) { keysSaid = now(); send('keys'); }
   };
   const listeners: Array<[string, (event: Event) => void]> = [['compositionstart', composing], ['compositionupdate', composing], ['compositionend', ended], ['keydown', key]];
-  for (const [type, listener] of listeners) target.addEventListener(type, listener, true);
-  return () => { for (const [type, listener] of listeners) target.removeEventListener(type, listener, true); };
+  for (const [type, listener] of listeners) target.addEventListener(type, listener, CAPTURE);
+  return () => { for (const [type, listener] of listeners) target.removeEventListener(type, listener, CAPTURE); };
 }
