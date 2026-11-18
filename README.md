@@ -95,7 +95,7 @@ Frontdesk is a small server on your computer. It reads the records each desktop 
 
 | AI | Reads history from | Sends through |
 | --- | --- | --- |
-| Codex | Codex's local app-server | Codex's own message queue and its window-to-window channel, with macOS Accessibility for new chats and model changes |
+| Codex | Codex's local app-server | Codex's own message queue and its window-to-window channel (also for model changes), with macOS Accessibility for new chats |
 | Claude | Claude Code's session transcripts | macOS Accessibility |
 | Antigravity | Its local database and transcripts | Its local language server |
 

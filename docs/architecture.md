@@ -103,14 +103,14 @@ export const setup: PluginSetup = ({ config, registerEngine }) => {
 
 | | Reads history from | Sends, steers and stops through |
 | --- | --- | --- |
-| **Codex** | Its app-server (`thread/read`, which takes no writer lock) and its session logs | Its own queue (`thread/queue/add`) plus a background wake link; steer and stop over the desktop's window-to-window IPC; new chats and model changes through the accessibility helper |
+| **Codex** | Its app-server (`thread/read`, which takes no writer lock) and its session logs | Its own queue (`thread/queue/add`) plus a background wake link; steer, stop and model or effort changes over the desktop's window-to-window IPC (a chat the desktop has not loaded is first opened in its sidebar; the model menu is the fallback); new chats through the accessibility helper |
 | **Claude** | Claude Code's session transcripts and the desktop app's index | The accessibility helper: it opens the chat in the background, fills the composer and presses Send, without bringing the app to the front |
 | **Antigravity** | Its local database and transcripts | Its local language server, the channel its own composer uses |
 
 Why each channel was chosen, what was ruled out, and how the accessibility helper is built are in [channels.md](../skills/add-desktop-engine/references/channels.md). Two things are worth knowing here:
 
 - **The helper would rather do nothing than do the wrong thing.** Controls are found by what a language change does not touch (DOM classes, declared shortcuts, page addresses, position) with the name as a fallback. Before a press or a fill, the control must be the only match; a menu button found by position must prove itself by a row its menu always has. Otherwise the command fails with a reason and nothing is sent.
-- **Settings follow the message.** A model, effort or permission mode picked in the console is changed in the desktop app's own menu first, then the message is sent. If the change cannot be made, nothing is sent.
+- **Settings follow the message.** A model, effort or permission mode picked in the console is changed in the desktop app first, through its own menu or through the window that holds the session (Codex), then the message is sent. If the change cannot be made, nothing is sent.
 
 ## Events
 

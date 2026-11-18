@@ -95,7 +95,7 @@ Frontdesk 是跑在你电脑上的一个小服务。它读各家桌面应用留�
 
 | AI | 历史从哪读 | 消息怎么发 |
 | --- | --- | --- |
-| Codex | Codex 本机的 app-server | Codex 自己的消息队列和窗口间通道，新建聊天和改模型用 macOS 辅助功能 |
+| Codex | Codex 本机的 app-server | Codex 自己的消息队列和窗口间通道（改模型也走它），新建聊天用 macOS 辅助功能 |
 | Claude | Claude Code 的会话记录 | macOS 辅助功能 |
 | Antigravity | 它的本地数据库和会话记录 | 它本机的 language server |
 
