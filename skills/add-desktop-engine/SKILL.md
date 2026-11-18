@@ -58,6 +58,7 @@ Fill in a table in `progress.md`, one row per action: route A, B or C, the evide
 | Change model / effort / permissions | | | Do not send; say why |
 | New chat / new chat in a project | | | Say why |
 | Answer a question / permission card | | | Say to answer it in the desktop app |
+| Open this chat in the desktop app (the chat header's button) | | | Say why; every engine so far does it (the shared driver's `show-session`) |
 | Open a file in the desktop app | | | Do not declare `openFile` |
 
 Every row must pass the three questions in section 1 of [Choosing channels](references/channels.md). Any row that plans to "start another process to run this turn" gets crossed out and rethought. A row on route C says why routes A and B cannot do it; a row on route A or B names its fallback (route C, the queue, or not doing it and saying why). If you need the helper, get `probe` working first (Choosing channels, section 4) before going further.
@@ -71,7 +72,7 @@ After each stage, open the page and look, add tests, and update `progress.md`. F
 3. **Stop, steer, queue**: `interrupt`, `steer` (throw `fallback: 'queue'` when it cannot join). The queue is shared; you only make sure `read()` shows "running". If your desktop app has its own message queue, add `metadata.desktopQueue` and `sendNow`.
 4. **Settings follow the message**: `metadata.desktop` sets where the menus start; what the person changed is changed in the desktop app first, then sent (map names in `desktopSettings`, read back to confirm); `permissionModes`.
 5. **New chats**: pick an approach from the table in section 5 of [Capability paths](references/capabilities.md) (`cwd` / `createRequiresPrompt` / `newOptions` / `newSettings`); the "+" on projects; the desktop's modes (`spaces`).
-6. **Cards and files**: question / permission cards (`approval` events, `questionCard`, `decide`, `approval_resolved`), the summary card (`registerTool` mapped to `summary`), `openFile`, `fileRoots`.
+6. **Cards, files, and the way back to the desktop**: question / permission cards (`approval` events, `questionCard`, `decide`, `approval_resolved`), the summary card (`registerTool` mapped to `summary`), `openFile`, `fileRoots`, and `showInDesktop` + `show(id)` (the chat header's "Open in <you>"; also what a card that can only be answered in the desktop app sends the person to).
 7. **Looking like yourself**: fill in `look` from your desktop app; if needed, change `--kit-*` variables in `src/client/public/skins/<id>/skin.css`; register renderers for things only you have. Do a one-to-one match only when the person explicitly asks.
 
 ### 4. Hand over

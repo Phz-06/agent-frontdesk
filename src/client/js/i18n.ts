@@ -93,6 +93,11 @@ const EN: Record<string, string> = {
   '无法写入剪贴板，请在会话信息中手动复制': "Couldn't copy. You can copy it from Chat details.",
   // composer
   '跳到输入框': 'Skip to composer', '发送消息': 'Send message', '此会话当前只读': 'This chat is read-only', '发消息给': 'Message', '给当前引擎发送任务或后续指令…': 'Send a message…',
+  // referring to another chat (the composer's "+")
+  '添加文件，或引用另一个聊天': 'Add files, or refer to another chat', '引用另一个聊天…': 'Refer to another chat…', '引用另一个聊天': 'Refer to another chat',
+  '选一个聊天，工作台把它整理好附在这条消息上（不收附件的 Agent 会直接放进输入框）。不含思考过程和工具输出，聊天太长时较早的轮次会精简。': "Pick a chat. Frontdesk attaches it to your message (for an AI that takes no attachments, it goes into the text). Reasoning and tool output are left out, and the older turns of a long chat are shortened.",
+  '{n} 轮 · 约 {tokens} tokens': '{n} turn(s) · ~{tokens} tokens', '转成文字': 'Edit as text', '引用的内容已经不在了，请重新引用': "This reference isn't there any more. Refer to the chat again.",
+  '搜索所有 Agent 的聊天': "Search every agent's chats", '正在整理…': 'Preparing…', '没有找到匹配的聊天': 'No chats match', '还没有可以引用的聊天': 'No chats to refer to yet',
   '添加附件': 'Attach files', '添加文件或图片': 'Add files or photos', '待发送附件': 'Attachments', '松开以添加附件': 'Drop files to attach', '移除': 'Remove', '{n} 个附件': '{n} attached',
   '每条消息最多添加 10 个附件': 'You can attach up to 10 files per message', '上传失败': 'Upload failed', '正在上传附件…': 'Uploading…',
   '桌面端默认模型': 'Desktop default', '选择下一次任务的模型': 'Model for your next message', '使用引擎自身的默认模型': "Uses this AI's default model", '桌面端设置': 'Same as desktop',
@@ -131,6 +136,8 @@ const EN: Record<string, string> = {
 // They are written in Chinese where they arise; say() puts them into the interface language
 // where they are shown. Exact texts first, then the ones that carry a name or a reason.
 const REPORTS: Record<string, string> = {
+  // a chat written out for another agent to read (POST …/transcript)
+  '没有找到这个聊天': "Couldn't find this chat", '这个聊天还没有内容可以引用': "There's nothing in this chat to refer to yet",
   // an agent's name and faces (settings)
   '设置文件没有位置，图片存不下': "There's no settings file to keep pictures beside", '图片是空的': 'The picture is empty',
   '名称不能超过 40 个字': 'Names can be up to 40 characters',
@@ -199,7 +206,7 @@ const REPORTS: Record<string, string> = {
   '这个 AI 的桌面版不支持打开会话': "This AI's desktop app can't open chats from here", '没能在桌面版里打开这个会话': "Couldn't open this chat in the desktop app",
   '这个 AI 的桌面版不支持打开文件': "This AI's desktop app can't open files from here", '没能打开这个文件': "Couldn't open this file", '没能在文件管理器里显示这个文件': "Couldn't show this file in the file manager",
   'Claude 桌面版里没有这个会话': "Claude's desktop app doesn't have this chat", '缺少要按的按钮': 'No button was named', '缺少卡片的内容': "The card's contents are missing", '没能从桌面版读出这张卡片': "Couldn't read this card from the desktop app", '没能从 Claude 桌面版读出这张卡片': "Couldn't read this card from Claude's desktop app", 'Claude 桌面版的这张卡片上已经没有这个按钮了': "This button is no longer on the card in Claude's desktop app", 'Claude 桌面版里没有找到这一轮的卡片': "Couldn't find this turn's card in Claude's desktop app", '没能在桌面版里按下这个按钮': "Couldn't press this button in the desktop app", '没能在 Claude 桌面版里按下这个按钮': "Couldn't press this button in Claude's desktop app", '这一轮还在 Claude 桌面版里运行，卡片上的按钮要等它结束才能按': "This turn is still running in Claude's desktop app; the card's buttons work once it ends", '没能在 Claude 桌面版里打开这个文件': "Couldn't open this file in Claude's desktop app", '没能在 Codex 桌面版里打开这个文件': "Couldn't open this file in Codex's desktop app",
-  '没能在 Antigravity 里打开这个文件': "Couldn't open this file in Antigravity", '缺少会话标题或文件': 'Missing chat title or file',
+  '没能在 Antigravity 桌面版里打开这个文件': "Couldn't open this file in Antigravity's desktop app", 'Antigravity 桌面版里没有这个会话': "Antigravity's desktop app doesn't have this chat", '缺少会话标题或文件': 'Missing chat title or file',
   '没能在 Claude 桌面版里打开这个会话': "Couldn't open this chat in Claude's desktop app", '这个会话正在 Claude 桌面版里运行，等这一轮结束再发': 'Claude is still mid-turn on desktop. Try again when it finishes.',
   '没能把消息填进 Claude 桌面版的输入框': "Couldn't type into Claude's desktop composer", 'Claude 桌面版没有出现发送按钮': "Claude's desktop app didn't show a Send button", 'Claude 桌面版里没有排队中的消息': "Nothing is queued in Claude's desktop app",
   '这个会话在 Claude 桌面版里没有在运行': "This chat isn't running in Claude's desktop app", '按了停止，但 Claude 桌面版还在运行': 'Pressed Stop, but Claude is still running on desktop', '未知命令': 'Unknown command',
@@ -222,7 +229,7 @@ const REPORTS: Record<string, string> = {
   // usage
   '原生引擎未公开额度': "This AI doesn't report usage",
   // Codex desktop (src/server/codex-bridge.ts, src/server/native/codex-desktop.swift) and the shared desktop helper.
-  'Claude 桌面版': "Claude's desktop app", 'Codex 桌面版': "Codex's desktop app", 'Codex 桌面版没有在运行': "Codex's desktop app isn't running", '桌面版没有在运行': "The desktop app isn't running",
+  'Claude 桌面版': "Claude's desktop app", 'Codex 桌面版': "Codex's desktop app", 'Codex 桌面版没有在运行': "Codex's desktop app isn't running", 'Antigravity 桌面版': "Antigravity's desktop app", 'Antigravity 桌面版没有在运行': "Antigravity's desktop app isn't running", '桌面版没有在运行': "The desktop app isn't running",
   '桌面版没有及时响应': "The desktop app didn't respond in time", '缺少桌面版的配置（AX_PROFILE）': 'The desktop helper is missing its profile (AX_PROFILE)',
   'Codex 要运行这条命令': 'Codex wants to run this command', 'Codex 要修改文件': 'Codex wants to change files',
   '没能读到 Codex 桌面版新建页的模型': "Couldn't read the model on Codex's New chat page", 'Codex 桌面版的新建页上没有模型菜单': "Codex's New chat page has no model menu",
@@ -327,6 +334,7 @@ const REPORT_PATTERNS: Array<[RegExp, (match: RegExpExecArray) => string]> = [
   [/^(.+?)的新建会话页上现在没有「(.*)」这一项$/, match => `${owner(match[1])} New session page doesn't show "${match[2]}" right now`],
   [/^没能打开 (.+?)新建会话页上的「(.*)」菜单$/, match => `Couldn't open the "${match[2]}" menu on ${owner(match[1])} New session page`],
   [/^(.+?)的窗口不在屏幕上，页面没有接进辅助功能：把它的窗口切到前台看一眼再试，还不行的话可能是桌面版更新后换了打开辅助功能的方式$/, match => `${owner(match[1])} window isn't on screen and its page isn't reachable through Accessibility. Bring its window to the front once and try again. If that doesn't help, an update may have changed how the desktop app turns Accessibility on.`],
+  [/^(.+?)没有打开的窗口，工作台也没能让它重新打开：在程序坞里点一下它的图标再试$/, match => `${owner(match[1])} desktop app has no open window and didn't open one when asked. Click its icon in the Dock and try again.`],
   [/^(.+?)的页面没有接进辅助功能，工作台读不到它的界面（桌面版刚更新过的话，可能换了打开辅助功能的方式）$/, match => `${owner(match[1])} page isn't reachable through Accessibility, so the console can't read it. If the desktop app was just updated, it may have changed how it turns Accessibility on.`],
   [/^(.+?)的窗口不在屏幕上，没能打开新建会话页上的菜单：把窗口放到看得见的地方再试$/, match => `${owner(match[1])} window isn't on screen, so the New session page's menu didn't open. Put the window where it can be seen and try again.`],
   [/^(.+?)的「(.*)」菜单里没有「(.*)」$/, match => `${owner(match[1])} "${match[2]}" menu has no "${match[3]}"`],

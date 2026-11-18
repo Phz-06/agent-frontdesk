@@ -409,6 +409,8 @@ export interface BridgeConfig {
   httpsPort: number;
   certDir: string;
   uploadsDir: string;
+  /** Where the whole record of a long chat referred to from another is kept (services/transcript-export.ts). */
+  exportsDir: string;
   pluginDir: string;
   defaultCwd: string;
   codexBin: string | null;
@@ -585,6 +587,13 @@ export interface RunTurn {
 }
 /** A file or folder the side panel shows (POST …/file): its text, an image as a data URL, or a folder's entries. */
 export interface FilePreview { path: string; size: number; text?: string; image?: string; entries?: Array<{ name: string; dir: boolean }>; truncated?: boolean }
+/**
+ * Another chat as the text a message carries to refer to it (POST …/transcript): `text` goes into
+ * the composer whole. `truncated`: older turns were shortened to stay near the budget; `path`, the
+ * whole chat as a file, only then and only when the page asked for one. `attachment`: the same text
+ * kept as an attached file, when the page asked for one (an agent that takes files).
+ */
+export interface ChatReference { text: string; title: string; agent: string; turns: number; tokens: number; truncated: boolean; exportedAt: string; path?: string; attachment?: { filename: string; originalname: string; mimetype: string; size: number; url: string } }
 export interface QueuedMessage { id: string; prompt: string; attachments: number; at: string }
 
 export interface SessionHistoryResponse {

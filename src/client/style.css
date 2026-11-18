@@ -1476,6 +1476,10 @@ body.is-resizing { cursor: col-resize; user-select: none; }
 .attachment-chip { max-width: 260px; }
 .attachment-name { min-width: 0; }
 .attachment-chip .attachment-size { flex: none; color: var(--faint); }
+/* Another chat, referred to: named by its agent and title, which read before its size. */
+.reference-chip { max-width: min(440px, 100%); }
+.reference-chip .attachment-name { flex: 0 1 auto; min-width: 72px; }
+.reference-chip .icon-button { flex: none; }
 @media (hover: none) { .attachment-thumb .icon-button { opacity: 1; } }
 .queue-now { flex: none; height: 26px; padding: 0 10px; border-radius: 13px; border: 1px solid var(--control); font-size: 12px; color: var(--text); background: var(--ground); }
 .queue-now:hover:not(:disabled) { background: var(--surface); }
@@ -1937,6 +1941,22 @@ dialog::backdrop { background: rgb(0 0 0 / .42); }
    rail's "+" dialog, in settings, and on the page shown while no agent is on. */
 .agents-dialog { width: min(480px, calc(100vw - 32px)); }
 .agents-dialog .dialog-description { margin-bottom: 16px; }
+/* Referring to another chat: the picker the composer's "+" opens. */
+.reference-dialog .dialog-description { margin-bottom: 14px; }
+.reference-dialog .search { background: var(--ground); border-color: var(--border); }
+.reference-list { display: flex; flex-direction: column; gap: 2px; max-height: min(420px, 48dvh); margin: 10px -8px 0; overflow: auto; }
+.reference-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 3px 12px; padding: 9px 10px; border: 0; border-radius: 10px; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.reference-row:hover, .reference-row:focus-visible, .reference-row.is-pending { background: var(--raised); }
+.reference-row:disabled { cursor: progress; }
+.reference-row:disabled:not(.is-pending) { opacity: .5; }
+.reference-title { overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.reference-time { font-size: 12px; color: var(--faint); }
+.reference-meta { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; min-width: 0; font-size: 12px; color: var(--muted); }
+.reference-agent { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.reference-agent::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--hue, var(--faint)); }
+.reference-folder { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reference-list .quiet-state { padding: 28px 8px; text-align: center; }
+.reference-error { margin-top: 10px; font-size: 13px; line-height: 1.6; color: var(--negative); }
 .agent-list { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 14px; background: var(--ground); overflow: hidden; }
 .agent-row { --hue: var(--accent); display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; align-items: center; gap: 4px 14px; padding: 12px 14px; border-top: 1px solid var(--border); text-align: left; }
 .agent-row:first-child { border-top: 0; }

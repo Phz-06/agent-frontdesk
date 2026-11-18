@@ -66,7 +66,7 @@
         <textarea id="prompt" rows="2" placeholder="给当前引擎发送任务或后续指令…"></textarea>
         <div class="composer-toolbar">
           <div class="composer-options">
-            <button type="button" class="icon-button" id="attach" aria-label="添加附件" title="添加文件或图片"><i data-lucide="plus"></i></button>
+            <button type="button" class="icon-button" id="attach" aria-label="添加文件，或引用另一个聊天" title="添加文件，或引用另一个聊天" aria-haspopup="listbox" aria-expanded="false"><i data-lucide="plus"></i></button>
             <button type="button" class="icon-button mic-button" id="dictate" aria-label="语音输入" aria-pressed="false" title="语音输入"><i data-lucide="mic"></i><span class="mic-level" aria-hidden="true"></span></button>
             <label class="sr-only" for="model">模型</label><select id="model" class="subtle-select"><option value="">桌面端默认模型</option></select>
             <label class="sr-only" for="effort">推理强度</label><select id="effort" class="subtle-select" hidden></select>
@@ -129,6 +129,13 @@
     <div class="dialog-actions"><button type="button" class="secondary-button" id="copy-skill-path">复制手册路径</button><button type="button" class="primary-button" id="copy-onboard">复制提示词</button></div>
   </dialog>
   <dialog id="image-viewer" class="image-viewer" aria-label="查看图片"><img id="image-viewer-img" alt=""><div class="image-viewer-actions"><a class="icon-button" id="image-viewer-open" target="_blank" rel="noopener" aria-label="在新标签页打开原图" title="在新标签页打开原图"><i data-lucide="external-link"></i></a><button class="icon-button" id="close-image-viewer" aria-label="关闭"><i data-lucide="x"></i></button></div></dialog>
+  <dialog id="reference-dialog" class="settings-dialog reference-dialog" aria-labelledby="reference-title">
+    <div class="dialog-heading"><h2 id="reference-title">引用另一个聊天</h2><button class="icon-button" id="close-reference" aria-label="关闭"><i data-lucide="x"></i></button></div>
+    <p class="dialog-description">选一个聊天，工作台把它整理好附在这条消息上（不收附件的 Agent 会直接放进输入框）。不含思考过程和工具输出，聊天太长时较早的轮次会精简。</p>
+    <label class="search"><i data-lucide="search"></i><input type="search" id="reference-search" placeholder="搜索所有 Agent 的聊天" aria-label="搜索所有 Agent 的聊天" autocomplete="off"></label>
+    <p class="reference-error" id="reference-error" role="alert" hidden></p>
+    <div class="reference-list" id="reference-list"></div>
+  </dialog>
   <dialog id="info-dialog" aria-labelledby="info-title"><div class="dialog-heading"><h2 id="info-title">会话信息</h2><button class="icon-button" id="close-info" aria-label="关闭"><i data-lucide="x"></i></button></div><div id="info-content"></div></dialog>
 </body>
 </html>

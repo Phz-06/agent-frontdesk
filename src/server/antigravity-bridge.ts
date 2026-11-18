@@ -4,6 +4,9 @@
 // calls) sends the person's messages into it, and the same server stops a turn, lists the models
 // and tells how a turn ended. Its request fields are read from the protobuf descriptors inside the
 // language_server binary (not a public interface): confirm them again after an Antigravity upgrade.
+// Taking the person to a conversation (and a file in it) is the one thing those channels cannot do:
+// that is done in the app's window through Accessibility, with the shared driver
+// (src/server/native/antigravity-desktop.swift, profiles/antigravity.json).
 // Its records and answers are its own formats: they enter as unknown and are read through the
 // guards, so a record nobody understands is skipped.
 import fs from 'node:fs';
@@ -20,6 +23,7 @@ import { loadConfig, winSpawnArgs } from './config.js';
 import { tailJsonl } from './services/jsonl-tail.js';
 import { readSqlite } from './services/sqlite-reader.js';
 import { antigravityApp } from './services/desktop-places.js';
+import { DesktopAutomation, type HelperResult } from './core/desktop-automation.js';
 import { bag, errorField, get, isBag, list, messageOf, parseJson, str, text as asText, type Bag } from '../shared/guards.js';
 import type {
   Approval, BridgeConfig, CreateInput, CreateResult, DictationHandlers, DictationReady, DictationStream, EngineEmitter, EngineStatus,
@@ -43,7 +47,7 @@ interface LsEnv { ANTIGRAVITY_LS_ADDRESS: string; ANTIGRAVITY_CSRF_TOKEN: string
 interface ParsedHistory { key?: string; turns: UnifiedTurn[]; model: string; modelId: unknown }
 interface AgAsk { conversationId: string; index: number; kind: string; body: unknown; command: string; trajectoryId: string }
 type Outcome = { status: string; error?: { message: string } };
-/** What openFile runs (execFile, or a stand-in in tests). */
+/** What openFile runs on Windows (execFile, or a stand-in in tests). */
 export type OpenRunner = (file: string, args: string[], options: { timeout: number }, callback: (error: Error | null) => void) => unknown;
 
 // Antigravity records tool arguments as JSON-encoded strings ("\"ls -la\"").
@@ -196,6 +200,7 @@ class AntigravityBridge extends EventEmitter {
   pidCache: Map<number, { ok: boolean; at: number }>;
   ownIds: Set<string>;
   checkouts: Map<string, string>;
+  desktop: DesktopAutomation;
   constructor(config: AntigravityConfig = loadConfig(), env: NodeJS.ProcessEnv = process.env) {
     super();
     this.home = os.homedir();
@@ -217,6 +222,7 @@ class AntigravityBridge extends EventEmitter {
     this.pidCache = new Map();
     this.ownIds = new Set();
     this.checkouts = new Map();
+    this.desktop = new DesktopAutomation({ engine: 'antigravity', label: 'Antigravity 桌面版' }); // its window, through Accessibility
   }
 
   // One call to the language server the desktop app runs (the app's own channel).
@@ -744,11 +750,8 @@ class AntigravityBridge extends EventEmitter {
     return {};
   }
 
-  // Stop: the call behind the desktop's own stop button. How the turn ended is then read from
-  // the conversation's record by the watcher, not assumed.
-  // A file from the chat, opened in the desktop. Antigravity is an editor and opens a file it is
-  // handed in the window whose workspace holds it, which is what its own file links do; there is
-  // no accessibility flow for its chat, so the chat itself is not brought up.
+  // The documents the agent writes for a conversation (its artifacts) live in brain/<id>, outside its
+  // workspace; a chat in a worktree also names files in the checkout it belongs to.
   fileRoots(conversationId: string): string[] {
     if (!/^[\w-]{1,80}$/.test(String(conversationId))) return [];
     const roots = [path.join(this.brainDir, conversationId)];
@@ -762,13 +765,45 @@ class AntigravityBridge extends EventEmitter {
     } catch {}
     return roots;
   }
-  openFile(_conversationId: string, { absolute }: Pick<FileTarget, 'absolute'>, run: OpenRunner = execFile, platform: NodeJS.Platform = process.platform): Promise<{ ok: true; pressed: true }> {
-    // macOS hands the file to the app by its bundle id; Windows starts the app's exe with the file,
-    // which (like `code <file>`) opens it in the window whose workspace holds it.
-    const [file, args]: [string, string[]] = platform === 'win32' ? [antigravityApp({ platform }), [absolute]] : ['/usr/bin/open', ['-b', 'com.google.antigravity', absolute]];
-    return new Promise((resolve, reject) => run(file, args, { timeout: 15000 }, err =>
-      err ? reject(Object.assign(new Error('没能在 Antigravity 里打开这个文件'), { status: 409, cause: err })) : resolve({ ok: true, pressed: true })));
+  // Takes the person to this conversation in the desktop app: its window shows it and comes to the
+  // front (the driver's show-session). The window finds it by the id in its own address for it
+  // (/c/<id>), so two conversations with one title are told apart; the title is only for the log.
+  async show(conversationId: string): Promise<HelperResult> {
+    const title = this.titleOf(conversationId);
+    const result = await this.inWindow(() => this.desktop.showSession({ title, localId: conversationId }));
+    if (!result.ok) throw Object.assign(new Error(result.error || '没能在 Antigravity 桌面版里打开这个会话'), { status: 409 });
+    return result;
   }
+  // A file from the chat, opened in the desktop the way its own link there opens it (in a tab beside
+  // the chat): the conversation is shown and the chat's link to the file pressed (the driver's
+  // open-file). `pressed: false`: the chat is shown but no link to the file is drawn in it.
+  // (Antigravity's app has been an agent window since 2.0, not an editor: a file handed to it is not opened.)
+  // Windows has no window flow for Antigravity yet (no antigravity-desktop.cs): there its exe is started
+  // with the file, as before.
+  async openFile(conversationId: string, file: FileTarget, run: OpenRunner = execFile, platform: NodeJS.Platform = process.platform): Promise<HelperResult> {
+    if (platform === 'win32') {
+      return new Promise((resolve, reject) => run(antigravityApp({ platform }), [file.absolute], { timeout: 15000 }, err =>
+        err ? reject(Object.assign(new Error('没能在 Antigravity 桌面版里打开这个文件'), { status: 409, cause: err })) : resolve({ ok: true, pressed: true })));
+    }
+    const title = this.titleOf(conversationId);
+    const result = await this.inWindow(() => this.desktop.openFile({ title, localId: conversationId, ...file }));
+    if (!result.ok) throw Object.assign(new Error(result.error || '没能在 Antigravity 桌面版里打开这个文件'), { status: 409 });
+    return result;
+  }
+  // A conversation's title, or a 404 when the desktop has no such conversation.
+  titleOf(conversationId: string): string {
+    let row: Bag | undefined;
+    try { row = fs.existsSync(this.dbPath) ? readSqlite(this.dbPath, 'SELECT title, preview FROM conversation_summaries WHERE conversation_id = ? LIMIT 1', [conversationId])[0] : undefined; } catch {}
+    if (!row) throw Object.assign(new Error('Antigravity 桌面版里没有这个会话'), { status: 404 });
+    return asText(row['title'] || row['preview'] || 'Antigravity 会话');
+  }
+  async inWindow(command: () => Promise<HelperResult>): Promise<HelperResult> {
+    const state = await this.desktop.check();
+    if (!state.available) throw Object.assign(new Error(state.reason), { status: 409 });
+    return command();
+  }
+  // Stop: the call behind the desktop's own stop button. How the turn ended is then read from
+  // the conversation's record by the watcher, not assumed.
   async interrupt(conversationId: string): Promise<{ pending: boolean }> {
     try { await this.ls('CancelCascadeInvocation', { cascadeId: conversationId }); }
     catch (err) { throw Object.assign(new Error(`Antigravity 没有停下这一轮（${lsDetail(err)}）`), { status: lsStatus(err) }); }

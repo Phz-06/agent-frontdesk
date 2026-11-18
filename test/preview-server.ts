@@ -65,7 +65,7 @@ for (const [index, id, label, prefix, accent] of [[0, 'codex', 'Codex', 'CX', '#
     ...(id === 'claude' ? { show: async (sessionId: string) => { console.log(`show in desktop: ${sessionId}`); } } : {}),
   }); });
 }
-createApp({ host, config: { ...loadConfig(), uploadsDir: '/private/tmp/agent-frontdesk-preview-uploads', settingsFile: process.env.BRIDGE_SETTINGS_FILE || '/private/tmp/agent-frontdesk-preview-settings.json', defaultCwd: '/workspace/agent-frontdesk' } }).then(context => {
+createApp({ host, config: { ...loadConfig(), uploadsDir: '/private/tmp/agent-frontdesk-preview-uploads', exportsDir: '/private/tmp/agent-frontdesk-preview-exports', settingsFile: process.env.BRIDGE_SETTINGS_FILE || '/private/tmp/agent-frontdesk-preview-settings.json', defaultCwd: '/workspace/agent-frontdesk' } }).then(context => {
   const server = context.app.listen(Number(process.env.PORT || 4102), '127.0.0.1', () => console.log('Quick-switch acceptance fixture ready'));
   const close = async () => { await context.dispose(); server.close(); };
   process.once('SIGINT', close); process.once('SIGTERM', close);

@@ -50,7 +50,7 @@ The page never asks "which engine is this". It reads only the `capabilities`, `l
 
 **You provide**: the right `session.cwd` from `read()`. For "Open in the desktop app": `capabilities.openFile: true` + `openFile(id, { path, absolute, relative, label })`. If your desktop app saves documents outside `cwd`, implement `fileRoots(id)`.
 
-**How the two provide it**: both use the shared driver's `open-file` (show this chat, press the chat's own link to the file, bring the desktop app to the front), one line: `this.desktop.openFile(...)`. Antigravity is an editor and just uses `open -a`.
+**How the three provide it**: all use the shared driver's `open-file` (show this chat, press the chat's own link to the file, bring the desktop app to the front), one line: `this.desktop.openFile(...)`. Antigravity's app has been an agent window rather than an editor since 2.0 (a file handed to it with `open` is not opened), so it does the same, with its profile alone: its window opens the file in a tab beside the chat, as its own link does.
 
 ## 3. The agent rail: character, connection dot, unread badge, speech bubble
 
@@ -115,6 +115,8 @@ The page never asks "which engine is this". It reads only the `capabilities`, `l
 **You provide**: turns from `read()` (only a person's input starts a turn), `messages` (`assignPhases`), `timeline`, `steps`; live events per contract section 5. The same message or tool must have the same `id` live and in history, or it shows twice.
 
 **How the two provide it**: after sending, Claude watches the JSONL from where the file ended before the send (`sendViaDesktop`) and turns what the desktop writes into events; Codex polls `thread/read` until the turn holding this message appears, then follows it to its end (`CodexLifecycle` trusts `task_complete` / `turn_aborted`).
+
+**Every engine also provides "Open in <you>"**: the button at the top right of the chat header (`POST /api/sessions/:engine/:id/show`, and the "open it in the desktop app" button on a card that can only be answered there) takes the person to this very chat in your desktop app and brings the app to the front. Declare `capabilities.showInDesktop: true` and implement `show(id)`; without the flag there is no button, so leaving it out is a missing feature, not a neutral choice. Every engine so far does it with the shared driver's `show-session` (`DesktopAutomation#showSession({ title, localId })`), even one that writes through an interface of its own (Antigravity): a deep link that opens a given chat is better where your app has one (profile `sessionLink`, tried when the row is not in the sidebar). If your app's page has an address for each chat (Antigravity: `/c/<id>`), give the profile `sessionAddress` (`"/c/{localId}"`) and `show` finds the chat by its id, not its title (two chats may share a title); the driver scrolls a sidebar drawn only near what is on screen until the row is there, and brings back a window the person closed (the Dock's reopen). When the chat cannot be shown, throw the reason (the page shows it).
 
 ## 7. How everything in a reply is rendered
 
@@ -227,6 +229,7 @@ Text you return for the person to read (`status().error`, `blocked()`, `usage().
 | `newOptions` / `newFolder` | Show option cards from the new-chat page | `newOptions`, `pickNewOptions` |
 | `newSettings` | Start the new chat's menus from what the desktop's new-chat page shows | `newSettings` |
 | `openFile` | Show "Open in <you>" on file links | `openFile` |
+| `showInDesktop` | Show "Open in <you>" in the chat header (every engine has it), and on cards that can only be answered in the desktop app | `show` |
 | `cardActions` | The desktop's own buttons on a summary card (commit, open a PR…) can be clicked, named and counted as read off the desktop's card, and pressed there | `readCard`, `pressAction` |
 
 The `send` and `approvals` flags are declarations only; the page does not read them: whether sending works depends on `blocked()`, whether cards appear depends on whether you send `approval` events. Fill them in truthfully so others can read your plugin.

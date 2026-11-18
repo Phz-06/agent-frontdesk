@@ -1214,7 +1214,7 @@ test('controls are found by what the desktop\'s language does not change, their 
   const waysOf = (value: unknown): Way[] => (Array.isArray(value) ? value : [value]) as Way[];
   const worded = (way: Way) => 'name' in way || 'prefix' in way || 'contains' in way;
   const matchers = ['role', 'roles', 'class', 'keys', 'id', 'subrole', 'url', 'popup', 'inside', 'after', 'has', 'index', 'name', 'prefix', 'contains', 'named'];
-  for (const id of ['claude', 'codex']) {
+  for (const id of ['claude', 'codex', 'antigravity']) {
     const data = profile(id), locators = data.locators as Record<string, unknown>;
     for (const [key, value] of Object.entries(locators)) for (const way of waysOf(value)) {
       // Every matcher is one the driver reads, and a control placed by another names one that exists.
@@ -1390,6 +1390,24 @@ test('Windows: an engine can act through its window once it has a flow there', a
   desktop.runner = async () => ({ ok: true, trusted: false, running: true, ported }); desktop.state = null;
   assert.equal((await desktop.check()).code, 'not_trusted');
 });
+test('a desktop whose page has an address for each conversation is asked by it, and one with no window gets it back first', () => {
+  const driver = fs.readFileSync(path.join(__dirname, '../src/server/native/ax-driver.swift'), 'utf8');
+  const profile = JSON.parse(fs.readFileSync(path.join(__dirname, '../src/server/native/profiles/antigravity.json'), 'utf8'));
+  // Antigravity's page shows a conversation at /c/<id>, and its sidebar rows link there: two of one title are told apart.
+  assert.equal(profile.sessionAddress, '/c/{localId}');
+  for (const key of profile.refreshAnchors) assert.ok(key in profile.locators, key);
+  assert.ok('sessionList' in profile.locators && 'fileLink' in profile.locators);
+  assert.match(driver, /let here = \{ at\.isEmpty \? current\(\) == title : showing\(at\) \}/);
+  // A list drawn only near what is on screen is scrolled both ways until the row is there.
+  assert.match(driver, /for downward in \[true, false\] \{/);
+  assert.match(driver, /act\(edge, "AXScrollToVisible"\)/);
+  // Only the two commands that take the person to the desktop open a closed window (the Dock's reopen).
+  assert.match(driver, /\["open-file", "show-session"\]\.contains\(command\), windowless\(\) \{/);
+  assert.match(driver, /reopen\.arguments = \["-b", bundleId\]/);
+  // Where the page names a file elsewhere too (its open files' tabs), only the chat's own links count.
+  assert.match(driver, /if shaped, !fits\(e, "fileLink"\) \{ return false \}/);
+});
+
 test('Claude: a file from the chat is opened in the desktop, in its own session', async t => {
   const { ClaudeDesktop } = __claude_desktop;
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-home-'));

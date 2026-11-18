@@ -40,7 +40,9 @@ export const setup: PluginSetup = ({ config, registerEngine }) => {
     capabilities: { dictation: true, attachments: true, models: true, interrupt: true, createRequiresPrompt: true, send: true, steer: true,
       // A new chat can start in a folder (the language server takes the workspace), and what the
       // agent waits on the person for (a permission, its own question) is answered from a card in the chat.
-      cwd: true, approvals: true, openFile: true },
+      // Its window is driven only to take the person to a chat, or to a file in one (Accessibility):
+      // macOS only so far, as Windows has no flow for it (no antigravity-desktop.cs).
+      cwd: true, approvals: true, openFile: true, showInDesktop: process.platform !== 'win32' },
     usage: () => bridge.getUsage(),
     dictate: options => bridge.dictate(options), dictationReady: () => bridge.dictationReady(),
     status: () => bridge.getStatus(), models: () => bridge.getModels(),
@@ -49,10 +51,12 @@ export const setup: PluginSetup = ({ config, registerEngine }) => {
     create: input => bridge.newConversation(input),
     observe: id => bridge.observe(id),
     steer: (id, input) => bridge.steer(id, input),
-    // The language server's cancel, the call behind the desktop's stop button.
+    // The chat (and a file from it) shown in the desktop's window, which comes to the front.
+    show: id => bridge.show(id),
     openFile: (id, file) => bridge.openFile(id, file),
     // The documents the agent writes for a chat (its "artifacts") live in brain/<id>, outside the workspace.
     fileRoots: id => bridge.fileRoots(id),
+    // The language server's cancel, the call behind the desktop's stop button.
     interrupt: id => bridge.interrupt(id),
     decide: (id, decision) => bridge.decide(id, decision),
     media: (id, key) => bridge.media(id, key),

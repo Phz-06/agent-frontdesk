@@ -1,5 +1,7 @@
 node_modules/
 uploads/
+# Chats written out as Markdown for another agent to read (they are real chats)
+exports/
 .DS_Store
 .certs/
 # What the person chose in the console (which agents are switched on)

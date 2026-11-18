@@ -524,6 +524,29 @@ test('what an Antigravity step waits on the person for becomes a card in the cha
   emitter.emit('interrupt'); bridge.dispose(); fs.rmSync(dir, { recursive: true });
 });
 
+test('Antigravity: the header button and a file link take the person to the chat in the desktop window, found by its id', async t => {
+  const { bridge, dir } = antigravityFixture([], { t });
+  const calls: string[][] = [];
+  const desktop = bridge.desktop;
+  desktop.binary = '/bin/helper'; desktop.platform = 'darwin';
+  desktop.runner = async (file, args) => { calls.push(args); return args[0] === 'check' ? { ok: true, trusted: true, running: true } : { ok: true, pressed: true }; };
+  // The window is asked by the conversation's id (its page's address for it); the title goes along for the log.
+  await bridge.show('c1');
+  assert.deepEqual(at(calls, -1), ['show-session', 'Old chat', 'c1']);
+  assert.deepEqual(await bridge.openFile('c1', { path: 'a.html', absolute: '/w/app/a.html', relative: 'a.html', label: 'a.html' }, undefined, 'darwin'), { ok: true, pressed: true });
+  assert.deepEqual(at(calls, -1), ['open-file', 'Old chat', 'c1', 'a.html', '/w/app/a.html', 'a.html']);
+  await assert.rejects(bridge.show('missing'), error => errorField(error, 'status') === 404 && /没有这个会话/.test(String(error)));
+  // The app not running, or the window not finding the chat: said why, nothing pretended.
+  desktop.state = null;
+  desktop.runner = async (file, args) => args[0] === 'check' ? { ok: true, trusted: true, running: false } : { ok: true };
+  await assert.rejects(bridge.show('c1'), /Antigravity 桌面版没有在运行/);
+  desktop.state = null;
+  desktop.runner = async (file, args) => args[0] === 'check' ? { ok: true, trusted: true, running: true } : { ok: false, code: 'not_found', error: '没能在Antigravity 桌面版里打开这个会话' };
+  await assert.rejects(bridge.show('c1'), error => errorField(error, 'status') === 409);
+  await assert.rejects(bridge.openFile('c1', { path: 'a.html', absolute: '/w/app/a.html', relative: 'a.html', label: '' }, undefined, 'darwin'), /没能在Antigravity 桌面版里打开这个会话/);
+  fs.rmSync(dir, { recursive: true });
+});
+
 test('Antigravity starts a new chat in a folder through the language server, and serves the pictures a person attached', async t => {
   const { bridge, calls, dir } = antigravityFixture([], { t });
   const real = bridge.fetch;

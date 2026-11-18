@@ -46,6 +46,8 @@ function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
     httpsPort: env.HTTPS_PORT != null ? Number(env.HTTPS_PORT) : ['127.0.0.1', 'localhost', '::1'].includes(env.HOST || '127.0.0.1') ? 0 : Number(env.PORT || 4100) + 1,
     certDir: env.BRIDGE_CERT_DIR || path.join(ROOT, '.certs'),
     uploadsDir: env.BRIDGE_UPLOADS_DIR || path.join(ROOT, 'uploads'),
+    // The whole record of a long chat referred to from another, for an agent that reads files. Real chats: not committed.
+    exportsDir: env.BRIDGE_EXPORTS_DIR || path.join(ROOT, 'exports'),
     pluginDir: env.BRIDGE_PLUGIN_DIR || path.join(HERE, 'plugins'),
     defaultCwd: env.BRIDGE_DEFAULT_CWD || home,
     codexBin: executable('CODEX_BIN', ['codex', bundledCodexCli()]),

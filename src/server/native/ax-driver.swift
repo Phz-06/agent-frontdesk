@@ -169,7 +169,8 @@ let appRoot = AXUIElementCreateApplication(app.processIdentifier)
 // class BrowserCrApplication) has no such attribute and answers only AXEnhancedUserInterface, the
 // one VoiceOver sets. Asking the wrong one leaves the window a handful of empty groups for good.
 let accessibilitySwitches = settings("accessibilitySwitches").isEmpty ? ["AXManualAccessibility"] : settings("accessibilitySwitches")
-for name in accessibilitySwitches { AXUIElementSetAttributeValue(appRoot, name as CFString, kCFBooleanTrue) }
+func switchOn() { for name in accessibilitySwitches { AXUIElementSetAttributeValue(appRoot, name as CFString, kCFBooleanTrue) } }
+switchOn()
 
 // ---- reading the tree ----
 // Every attribute read is a round trip to the desktop's process, and a search asks every element
@@ -367,6 +368,23 @@ func labelled(_ text: String) -> (label: String, value: String)? {
   let found = [text.range(of: ": "), text.range(of: "：")].compactMap { $0 }
   guard let colon = found.min(by: { $0.lowerBound < $1.lowerBound }) else { return nil }
   return (String(text[..<colon.lowerBound]), String(text[colon.upperBound...]).trimmingCharacters(in: .whitespaces))
+}
+
+// ---- no window ----
+// A desktop whose last window was closed keeps running without one (macOS), and a page that is not
+// there cannot be read. The two commands that take the person to the desktop (open-file,
+// show-session) bring a window back the way the Dock does: `open -b` sends the app its reopen
+// event, and the app opens its window again (in front, where those commands leave it anyway).
+// No other command does this: they work out of the person's sight.
+func windowless() -> Bool { stale(); return (attr(appRoot, "AXWindows") as? [AXUIElement] ?? []).isEmpty && attr(appRoot, "AXMainWindow") == nil }
+if let command = args.first, ["open-file", "show-session"].contains(command), windowless() {
+  trace("no window: reopening")
+  let reopen = Process(); reopen.executableURL = URL(fileURLWithPath: "/usr/bin/open"); reopen.arguments = ["-b", bundleId]
+  try? reopen.run(); reopen.waitUntilExit()
+  for _ in 0..<50 where windowless() { usleep(100_000) }
+  if windowless() { fail("no_window", "\(appName)没有打开的窗口，工作台也没能让它重新打开：在程序坞里点一下它的图标再试") }
+  // (Set again for the new window's page: the switch is only ever set to true.)
+  switchOn()
 }
 
 // The page's tree is built some time after the accessibility switch is first set (seen on Codex
@@ -639,15 +657,74 @@ func openLink(_ template: String, _ values: [String: String]) {
   let open = Process(); open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
   open.arguments = ["-g", link]; try? open.run(); open.waitUntilExit(); stale()
 }
+// A conversation known by its address. A desktop whose page has an address of its own for each
+// conversation (profile "sessionAddress", its path with {localId}/{id}: Antigravity's "/c/{localId}")
+// is asked by that rather than by title, which two conversations may share and which the page
+// writes its own way ("<title> - <project> - Antigravity"): the page shows the conversation when
+// its web area's address has that path, and the sidebar's row for it is the link that points there
+// (looked for inside the profile's "sessionList" locator, when it has one). A long list is drawn
+// only near what is on screen, so rows it has not drawn are brought in by scrolling its last drawn
+// row into view, down to the list's end, then its first, up to its start, until the row is there.
+func address(_ ids: [String: String]) -> String {
+  var path = setting("sessionAddress")
+  guard !path.isEmpty else { return "" }
+  for (k, v) in ids where !v.isEmpty { path = path.replacingOccurrences(of: "{\(k)}", with: v) }
+  return path.contains("{") ? "" : path
+}
+func pathOf(_ e: AXUIElement) -> String { attr(e, "AXURL").map { "\($0)" }.flatMap { URL(string: $0)?.path } ?? "" }
+func showing(_ path: String) -> Bool { every { role($0) == "AXWebArea" }.contains { pathOf($0) == path } }
+// The rows that lead to a conversation, in the order the page lists them: links whose path has the
+// template's shape ("/c/{localId}" → "/c/" and one more part).
+let rowShape: NSRegularExpression? = {
+  let template = setting("sessionAddress")
+  guard !template.isEmpty else { return nil }
+  let pattern = NSRegularExpression.escapedPattern(for: template).replacingOccurrences(of: #"\\\{[A-Za-z]+\\\}"#, with: "[^/]+", options: .regularExpression)
+  return try? NSRegularExpression(pattern: "^\(pattern)$")
+}()
+func sessionRows() -> [AXUIElement] {
+  guard let shape = rowShape else { return [] }
+  let box = locators["sessionList"] == nil ? root() : find("sessionList") ?? root()
+  return within(box) { e in
+    guard ["AXLink", "AXButton"].contains(role(e)) else { return false }
+    let path = pathOf(e)
+    return !path.isEmpty && shape.firstMatch(in: path, range: NSRange(path.startIndex..., in: path)) != nil
+  }
+}
+func rowAt(_ path: String) -> AXUIElement? {
+  var seen = Set<String>()
+  for downward in [true, false] {
+    // The list's end in that direction: the row at its edge stays the same however it is scrolled.
+    var edgeBefore = "", still = 0
+    for _ in 0..<40 {
+      let rows = sessionRows()
+      if let hit = rows.first(where: { pathOf($0) == path }) { return hit }
+      seen.formUnion(rows.map(pathOf))
+      guard let edge = downward ? rows.last : rows.first else { break }
+      let edgePath = pathOf(edge)
+      still = edgePath == edgeBefore ? still + 1 : 0
+      if still >= 2 { break }
+      edgeBefore = edgePath
+      act(edge, "AXScrollToVisible"); wait(0.3)
+    }
+  }
+  trace("no row for \(path) among \(seen.count)")
+  return nil
+}
 // Brings the conversation on screen inside the desktop's window: its sidebar row, or, when the
 // row is not there (scrolled away, filtered), the profile's "sessionLink" with {localId}/{id}.
 func show(_ title: String, _ ids: [String: String] = [:]) -> Bool {
-  if current() == title { return true }
+  let at = address(ids)
+  let here = { at.isEmpty ? current() == title : showing(at) }
+  if here() { return true }
   let link = setting("sessionLink")
   for attempt in 0..<4 {
-    if let button = row(title) { press(button) }
+    if !at.isEmpty {
+      // Every row of the list was looked through: another try finds no more.
+      guard let found = rowAt(at) else { return false }
+      press(found)
+    } else if let button = row(title) { press(button) }
     else if attempt == 1, !link.isEmpty, !ids.values.contains(where: { $0.isEmpty }), !ids.isEmpty { openLink(link, ids) }
-    if until(2, { current() == title }) { trace("showing \(title.prefix(30))"); return true }
+    if until(2, here) { trace("showing \(title.prefix(30))"); return true }
   }
   return false
 }
@@ -1240,13 +1317,17 @@ func answerCard(question: String, option: String?) -> StepError? {
 // the desktop comes to the front — the one command that does, since the person asked to go there.
 // A link matches by the URL it points at, then by its text, then by the file's name; the newest
 // one in the chat wins. Without a match the conversation is still shown, and `pressed` is false.
+// A page that names the file elsewhere too (Antigravity: the tabs of the files it has open, after
+// the chat) says what the chat's own links are with the profile's "fileLink" locator: only those count.
 func fileLinks(path: String, absolute: String, text: String) -> [(AXUIElement, Int)] {
   let bare = path.replacingOccurrences(of: #":\d+(:\d+)?$"#, with: "", options: .regularExpression)
   let base = URL(fileURLWithPath: bare).lastPathComponent
+  let shaped = locators["fileLink"] != nil
   var hits: [(AXUIElement, Int)] = []
   _ = walk(root()) { e in
     let kind = role(e)
     guard kind == "AXLink" || kind == "AXButton" else { return false }
+    if shaped, !fits(e, "fileLink") { return false }
     let url = (attr(e, "AXURL").map { "\($0)" } ?? "").removingPercentEncoding ?? ""
     let own = label(e).trimmingCharacters(in: .whitespaces)
     var score = 0

@@ -174,5 +174,11 @@ test('a console turn and the desktop record of it are one turn, attachments or a
     [{ filename: 'abc.png', path: path.join(dir, 'abc.png'), originalname: '截屏.png', mimetype: 'image/png', url: '/uploads/abc.png' }]);
   assert.throws(() => files.resolve([{ filename: '../abc.png/../../x' }]), /附件不存在/);
   assert.throws(() => files.resolve(Array.from({ length: 11 }, () => ({ filename: 'abc.png' }))), /Invalid attachments/);
+  // Text the console made itself (a chat referred to) is kept like an upload, and a message can name it.
+  const kept = files.keep('# A chat\n', { stem: 'chat-codex/../x', name: 'Login\nrefactor.md' });
+  assert.match(kept.filename, /^chat-codexx-[0-9a-f]{8}\.md$/);
+  assert.deepEqual([kept.originalname, kept.size, kept.url], ['Login refactor.md', 9, `/uploads/${kept.filename}`]);
+  assert.deepEqual(files.resolve([{ filename: kept.filename, originalname: kept.originalname }]).map(item => [item.path, item.originalname]), [[path.join(dir, kept.filename), 'Login refactor.md']]);
+  assert.equal(withAttachments('看看', files.resolve([{ filename: kept.filename }]), 'mention'), `看看\n\n@${path.join(dir, kept.filename)}`);
   fs.rmSync(dir, { recursive: true });
 });
