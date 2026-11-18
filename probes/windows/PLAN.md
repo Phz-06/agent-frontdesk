@@ -7,24 +7,87 @@ This is the hand-off for whoever continues the Windows port, in particular a Cla
 - **Done:** the analysis below, and the probe (`uia-probe.cs`, `probe.ps1`).
 - **Step 1 runs:** on Windows 11 (build 26200, PowerShell 5.1, .NET 4.8.1) the helper compiles with `csc.exe` as written, and step 1 (read) runs end to end. The first run needed three fixes in `probe.ps1` and the helper: output paths past 260 characters, a second engine being handed the first engine's window, and a hidden Codex window being picked over its main one.
 - **Probe phase closed.** Development happens on the `windows` branch, verified step by step against the real apps, in test chats only. The probe's open questions that were not run (settle, off screen) are answered as the port reaches them.
-- **Where it stands (2026-11-18, end of the second round of step 3).** Claude sends end to end through its window on Windows: send, steer and Send now, stop, model / effort changes (with the "Switch model?" question), a question card, a card's own button, from behind the person's window, which keeps the foreground. Details: "Step 3" and "Step 3, second round" below. For whoever continues:
-  - **Nothing of this round is committed.** The work is in the working tree: `src/server/native/uia-driver.cs`, `claude-desktop.cs` (new), `profiles/claude.json`, `src/server/claude-bridge.ts`, `codex-bridge.ts`, `antigravity-bridge.ts`, `core/desktop-automation.ts`, `src/client/app.ts`, `test/claude.test.ts`, this file. `npm test` (154) and `npm run check` pass.
+- **Where it stands (2026-11-18, after the integration with PR 1).** Development continues on the branch `windows-integrate`: PR 1 (lokic7123-star's Windows 11 support) with the `windows` branch merged in. See "Integration with PR 1, and one quiet layer for every engine" just below. `npm test` (163) and `npm run check` pass on Windows; CI has a Windows job. Nothing is pushed.
+- **Before that (end of the second round of step 3).** Claude sends end to end through its window on Windows: send, steer and Send now, stop, model / effort changes (with the "Switch model?" question), a question card, a card's own button, from behind the person's window, which keeps the foreground. Details: "Step 3" and "Step 3, second round" below. For whoever continues:
   - **The console reads Claude's models, efforts and usage through Claude's CLI**, on Windows as on the Mac (`list_models`, `get_usage`, `auth status`). The Windows desktop signs its own sessions in through a local proxy, which the console must not use, so the CLI needs its own `claude auth login` once. Until then the model menu is empty and says why on hover.
   - **The Mac helper (`claude-desktop.swift`) does not answer `queued` yet** (the steer the desktop keeps in its own queue, second round). The console still works without it, but waits the full 12 s and calls such a steer lost. It needs porting on a Mac.
   - **Not tried:** `new` through the console, `open-file`, the Claude-mode chat commands on a real chat, a park from minimized since the second round, more than one monitor, a person moving to Claude itself mid-park.
   - **The test machine's Claude window lost its normal bounds** to the maximized ones, through the first way of parking a maximized window (second round). Showing it normal once and sizing it back fixes it. It was left as it is.
 
+## Integration with PR 1, and one quiet layer for every engine
+
+**Why.** Claude can be reached only through its window, so it was where the way of working a window from behind was found and measured (below). Nothing in that way is Claude's: the three facts it answers are Chromium's on Windows, so they hold for Codex and for any Electron desktop added later:
+1. any action that moves the page's focus makes the window take the foreground;
+2. a fully covered window stops updating its accessibility tree (Send never shows);
+3. a page's menus answer only while the app holds the foreground.
+
+So it is one layer of the shared driver, which every engine's flow acts through, and the measured rule ("never take the foreground, never send input") is held there once.
+
+**The layers** (`src/server/native/`):
+
+| Layer | Where | What |
+| --- | --- | --- |
+| Engine flows | `<engine>-desktop.cs` (`claude-desktop.cs`, `codex-desktop.cs`) | Only the driver's actions; no Win32 call of their own |
+| Actions | `uia-driver.cs` | Read, `Press`, `Fill`, `OpenMenu` / `CloseMenus`, a card's press (`Activate`), `BringForward` |
+| The window | `uia-driver.cs`, between `// ==== the window` and `// ==== end of the window` | Park, watchdog (gives the foreground back, follows the person, keeps the corner up), `HoldForeground`, put back, park record and recovery, park lock |
+| Locators | profiles + the role map | Sole, Confirmed (menuSigns), `via` |
+| UIA | COM UIA3, one cache request per read | about 480 nodes in 60 ms |
+
+What each kind of action costs the person, as measured (the layer decides it, not the flow):
+
+| Action | Parked | Foreground | Measured |
+| --- | --- | --- | --- |
+| Read (`warm`, `probe`, `chat-status`) | no | untouched | nothing |
+| Fill, then Send | yes | given straight back | each grab 31 to 63 ms |
+| A menu: open, pick | yes | held while it is open | about 0.5 s, window still off screen |
+| A card's own button | yes | `Activate()`, held for the press | about 0.45 s |
+| `show-session`, `open-file` | no | brought forward: the person asked to go there | |
+| The person is in the app | no, acts in place | as on the Mac | |
+
+**Added in this round** (commit "one quiet layer for every engine's window"):
+- **A park outlives its helper.** The server stops a helper that runs past its timeout, and a stopped process runs no clean-up. Before the window moves, how to put it back is written to `parked\<window>.json` next to the helper (`%LOCALAPPDATA%\agent-frontdesk`), and removed once it is back. Every helper start (any engine; the warm read comes every 10 s while the console is used) puts back a window whose record no live park owns, and the server runs `restore` right after a helper it had to stop (`unanswered` results). Tried on a Notepad window of the test's own, left off screen with a record: `restore` put its placement back exactly and removed the record.
+- **One park at a time on the machine**, by a named mutex (`Local\agent-frontdesk-park`): Claude's and Codex's helpers, or two servers, no longer run two watchdogs against each other. A helper that ends while parked leaves it abandoned; the next one takes it and recovers. A park that cannot start in 15 s answers `busy`, and nothing is done.
+- **The rule is a test** (`test/platform.test.ts`): no flow and no driver code sends keys, mouse input, the clipboard or UIA focus, and only the window section moves a window or the foreground.
+- **What a park did not put back** (placement, z-order, foreground, a hold past 4 s) is logged and kept as the engine's last park (`EngineStatus.park`); the page's status line says when the window did not go back where it was.
+
+**PR 1 against the `windows` branch**, file by file, and what was kept:
+
+| Part | PR 1 | `windows` | Kept |
+| --- | --- | --- | --- |
+| Window helper | `win32/uia-driver/Program.cs`, .NET 8 SDK (`dotnet publish`), managed UIA. Fill by `SetFocus` + clipboard (not restored) + `SendKeys ^a ^v`; Enter, Esc and arrow keys by `SendKeys`; `warm` un-minimized the window every 10 s. Interactive parts tried in unit tests only (its description: Claude desktop was not installed) | `uia-driver.cs` + flows, the `csc.exe` Windows ships, COM UIA3, parked; tried on the real Claude | `windows`. PR 1's Codex flow was a port of the Swift with nothing Windows-specific; `codex-desktop.cs` is written from the Swift on the shared driver. `Program.cs` is removed |
+| Places | in `config.ts`; `%APPDATA%\Claude`, `%LOCALAPPDATA%\Programs\…` (none of them exist on this machine's MSIX installs) | `services/desktop-places.ts`, MSIX through `Get-AppxPackage`, Claude-Data | `desktop-places.ts`, which now also tries PR 1's per-user installs, `~\.local\bin\claude.exe`, and Antigravity's icon in its app.asar |
+| Starting CLIs | `winSpawnArgs`: a `.cmd`/`.bat` through `cmd /d /s /c` | `windowsHide` on every child | Both. (Its `%` → `%%` does not escape in a command line; harmless for the fixed arguments it gets) |
+| Codex wake link | `cmd /c start` | `rundll32 url.dll,FileProtocolHandler` | `windows` (no cmd.exe, no escaping) |
+| The page | Windows paths in links, `repoKey`, file previews, `C:\` roots | (open item) | PR 1 |
+| Codex projects | separator- and case-insensitive roots | | PR 1, but a whole disk (`/`, `C:\`) is dropped again: it had come to match every chat |
+| Claude CLI choice, tmpDir | config's newest-modified copy; tmpDir `os.tmpdir()` everywhere | | The bridge's own search again (newest version); tmpDir `/tmp` on macOS, `%TEMP%` on Windows, where every `%TEMP%\claude\<hash>\<id>` is a file root |
+| Antigravity | conversation filtering as the desktop's list (archived, CLI, sub-agents, empty), grouping by worktree checkout, a turn completed only on the desktop's reply or notice, StartCascade with a model | `language_server.exe agentapi` started directly | Both. PR 1's changes here are on every platform: **to be checked on a Mac** |
+| Tests | 149; `.cs` strings in the i18n scan | 154 | 163. The i18n scan reads a C# concatenation as one text |
+
+**Codex on Windows now:**
+- sending, steering, stopping, queuing: routes A and B, no window (verified earlier);
+- an existing chat's model and effort: route B (`thread-follower-update-thread-settings`), brought back from `codex-ipc-settings`; with no window owning the chat, Windows does not send and says why;
+- a new chat: `codex-desktop.cs` `new` / `new-shown` / `new-leave`, parked. An effort other than the New chat page's is refused before anything is touched (the slider takes only arrow keys). **Compiled and `check`ed against the running Codex; `new` has not been run on the real app.**
+
+**Next, each with the person's agreement and in test chats only** (none of this was run in this round):
+1. Codex `new` through the console, in `D:\af\codex-test`: the project menu and a model pick from behind, and whether the project popover and the model menu close after a pick (Collapse does not close them). If the menus do not close, try the deep link (`codex://threads/new?path=…&prompt=…`) opened inside a park, then `Press` Send.
+2. Kill recovery on the real Claude window: a park stopped by the server's timeout, then the next `warm` or `restore`.
+3. Two engines at once: a Claude send and a Codex new chat in the same second (the park lock).
+4. A server at Medium integrity (UAC on, a normal user): this machine runs everything at High.
+5. The items from step 3 still not tried: `new` through the console, `open-file`, the chat modes on a real chat, a minimized park, two monitors, a person moving to the app itself mid-park.
+6. On a Mac: `claude-desktop.swift` answering `queued`, and PR 1's Antigravity changes.
+
 ## Development on Windows
 
-The runners and the foreground tool behind the measurements below are in `probes/windows/tools` (see its README: `build-tools.ps1`, then `node --import tsx probes\windows	ools\<runner>.mts`).
+The runners and the foreground tool behind the measurements below are in `probes/windows/tools` (see its README: `build-tools.ps1`, then `node --import tsx probes\windows\tools\<runner>.mts`).
 
-Order:
-1. The platform layer;
-2. the C# driver's skeleton, read-only;
-3. Claude sending;
-4. the settings menus;
-5. a Codex new chat by deep link;
-6. CI.
+Order (status as of the integration above):
+1. The platform layer: done;
+2. the C# driver's skeleton, read-only: done;
+3. Claude sending: done, tried on the real app;
+4. the settings menus: Claude's done; Codex's through route B instead;
+5. a Codex new chat: ported to the window (`codex-desktop.cs`), not tried on the real app; the deep link is the fallback;
+6. CI: a Windows job (compile + unit tests, no app driven).
 
 **Step 1, the platform layer.** Status: done for reading; sending: see step 3.
 
