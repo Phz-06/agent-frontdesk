@@ -1389,7 +1389,10 @@ $('conversation').addEventListener('click', async event => {
   if (button.dataset.approval && button.dataset.decision === 'desktop') { await showInDesktop(button); return; }
   if (button.dataset.approval) { button.disabled = true; try { await request(`${endpoint()}/approvals/${encodeURIComponent(button.dataset.approval)}`, { method: 'POST', body: JSON.stringify({ decision: button.dataset.decision }) }); } catch (err) { notify(messageOf(err)); button.disabled = false; } }
 });
+// Only where some agent's sending works its desktop's window and takes the focus (Windows): elsewhere
+// no helper waits on the person's typing, so the page does not say it.
 watchTyping(document, typing => {
+  if (!anyTakesFocus()) return;
   void fetch('/api/typing', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ typing }), keepalive: true }).catch(() => {});
 });
 document.addEventListener('keydown', event => {
@@ -1502,6 +1505,10 @@ $('close-onboard').addEventListener('click', () => $('onboard-dialog').close());
 // moment on this platform (capabilities.takesFocus: Windows), says so once, after the first message
 // sent to it (newTakesFocus: the first new chat); Settings can show it again.
 const FOCUS_NOTE_KEY = 'desktop-bridge:focus-note-seen';
+// Whether any agent on this machine sends by working its desktop's window in a way that takes the focus.
+function anyTakesFocus(): boolean {
+  return state.engines.some(item => item.capabilities.takesFocus || item.capabilities.newTakesFocus || (item.spaces || []).some(mode => mode.capabilities?.takesFocus));
+}
 function noteFocusOnce(kind: 'send' | 'new'): void {
   const caps = capsOf();
   if (!caps.takesFocus && !(kind === 'new' && caps.newTakesFocus)) return;
@@ -1830,7 +1837,7 @@ function renderSettings() {
     ? `<select id="setting-${escape(item.key)}" class="subtle-select" data-setting-select="${escape(item.key)}" aria-label="${escape(item.title)}">${item.choices.map(([value, label]) => `<option value="${escape(value)}"${appearance[item.key] === value ? ' selected' : ''}>${escape(label)}</option>`).join('')}</select>`
     : `<div class="setting-choices" role="radiogroup" aria-label="${escape(item.title)}">${item.choices.map(([value, label]) => `<button type="button" role="radio" class="setting-choice" data-setting="${escape(item.key)}" data-value="${escape(value)}" aria-checked="${appearance[item.key] === value}">${escape(label)}</button>`).join('')}</div>`;
   // Which agents are on is the console's first setting: the same switches as the rail's "+".
-  const takesFocus = state.engines.some(item => item.capabilities.takesFocus || item.capabilities.newTakesFocus || (item.spaces || []).some(mode => mode.capabilities?.takesFocus));
+  const takesFocus = anyTakesFocus();
   const agentsGroup = `<fieldset class="setting-group is-stacked"><legend>Agent</legend><div id="settings-agents">${agentsMarkup(true)}</div><button type="button" class="text-button" data-open-onboard>${t('接入其他桌面 AI…')}</button>${takesFocus ? `<button type="button" class="text-button" data-open-focus>${t('在 Windows 上代发消息时会短暂拿走焦点…')}</button>` : ''}</fieldset>`;
   $('settings-content').innerHTML = agentsGroup + avatarRow + SETTINGS.map(item => `<fieldset class="setting-group"><legend>${escape(item.title)}</legend>${control(item)}${item.note?.() ? `<p class="field-help setting-note">${escape(item.note())}</p>` : ''}</fieldset>`).join('') + '<fieldset class="setting-group" id="settings-voice"></fieldset>';
   renderVoiceSetting();
