@@ -128,10 +128,14 @@ namespace Frontdesk.Driver
             Until(2.4, () => (choice = ModelRows().FirstOrDefault(n => NormModel(Label(n)) == NormModel(model))) != null);
             if (choice == null) return stop(new[] { "model_unavailable", "Codex 桌面版的模型菜单里没有 " + model });
             Press(choice);
-            Until(2.4, () => Menus() == 0);
+            // Picked from behind, the menu goes back to its first page and stays open (Collapse does
+            // not close it), and the button shows the model only once it closes (both measured: the
+            // pick itself is made). The fill that follows moves the page's focus to the composer,
+            // which closes it; RunFlow checks the button then, before Send.
+            // (A menu that closes on a pick does so within about 0.1 s: the foreground is not held longer.)
+            bool closed = Until(1.0, () => Menus() == 0);
             HoldForeground(false);
-            if (Menus() > 0) return stop(new[] { "menu_open", "Codex 桌面版的模型菜单没有关上，没有发送：请到桌面版里关掉它" });
-            if (!Until(1.6, () => ShowsModel(model))) return new[] { "model_not_set", "在 Codex 桌面版里选了 " + model + "，但它没有切换过去" };
+            if (closed && !Until(1.6, () => ShowsModel(model))) return new[] { "model_not_set", "在 Codex 桌面版里选了 " + model + "，但它没有切换过去" };
             changed.Add("model");
             return null;
         }
@@ -172,6 +176,9 @@ namespace Frontdesk.Driver
             string[] notPicked = PickModel(changed);
             if (notPicked != null) giveUp(notPicked);
             if (!Fill("composer", text, "send") || !OnNewPage()) giveUp(new[] { "fill_failed", "没能把消息填进 Codex 桌面版的输入框" });
+            // A menu still open (the model menu after a pick) would take the press: nothing is sent.
+            if (!Until(1.6, () => Menus() == 0)) giveUp(new[] { "menu_open", "Codex 桌面版的模型菜单没有关上，没有发送：请到桌面版里关掉它" });
+            if (changed.Contains("model") && !Until(1.6, () => ShowsModel(wanted["model"]))) giveUp(new[] { "model_not_set", "在 Codex 桌面版里选了 " + wanted["model"] + "，但它没有切换过去" });
             Node send = Find("send");
             if (send == null || !Press(send)) giveUp(new[] { "no_send", "Codex 桌面版没有出现发送按钮" });
             // The page becomes the new chat once the desktop has started it.

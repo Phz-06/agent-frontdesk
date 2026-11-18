@@ -1194,7 +1194,8 @@ namespace Frontdesk.Driver
             if (Parking.MaxMoved) { Native.RECT r; Native.GetWindowRect(window, out r); same = same && r.Left == Parking.MaxRect.Left && r.Top == Parking.MaxRect.Top && r.Right == Parking.MaxRect.Right && r.Bottom == Parking.MaxRect.Bottom; }
             lock (Parking.Lock) parkReport = new Dictionary<string, object> {
                 { "ms", ms }, { "grabs", Parking.Grabs }, { "longestGrabMs", Parking.LongestGrabMs }, { "failedGiveBacks", Parking.Failed }, { "heldMs", Parking.HeldMs },
-                { "cornerReRaises", Parking.ReRaises }, { "placementBack", same }, { "underSame", AboveVisible(window) == Parking.InsertAfter },
+                // (a minimized window has no place in the visible z-order to go back to)
+                { "cornerReRaises", Parking.ReRaises }, { "placementBack", same }, { "underSame", Parking.Placement.showCmd == 2 || AboveVisible(window) == Parking.InsertAfter },
                 { "foregroundBack", Win.GetForegroundWindow() == Parking.Original }, { "followed", Parking.Followed } };
             Trace("put back after " + ms + "ms");
             RepairSavedBounds(ms);
