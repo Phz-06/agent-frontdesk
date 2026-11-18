@@ -6,18 +6,19 @@ import { CodexChatgpt, type ChatgptConversation, type ChatgptProject } from '../
 import { UnifiedSession } from '../types.js';
 import { ChatMode, CHAT_CAPABILITIES } from '../services/desktop-chat.js';
 import { appPlaces, firstExisting, readAsarFile } from '../services/app-assets.js';
+import { appAsar, appIconFile } from '../services/desktop-places.js';
 import type { Character, PluginAbout, PluginSetup } from '../../shared/contract.js';
 // The Codex character as the ChatGPT desktop app draws it: an 8 x 11 sprite sheet whose
 // first frame is the idle pose and whose eighth row is the "typing on a laptop" loop.
 const SPRITE = /\/webview\/assets\/codex-spritesheet-v\d+\.[0-9a-f]+\.webp$/;
 const CHARACTER: Character = { kind: 'sprite', url: '/api/characters/codex', columns: 8, rows: 11, cell: [192, 208], idle: [0, 0], working: { row: 7, frames: 6 } };
-const DEFAULT_ASAR = '/Applications/ChatGPT.app/Contents/Resources/app.asar';
+const DEFAULT_ASAR = appAsar('codex');
 // Who this is, the same whether the agent is on or off (the engine below is registered with it).
 const IDENTITY = { id: 'codex', label: 'Codex', description: 'Codex desktop', priority: 10, accent: '#5B7BFA' } as const;
 /** The agent as the console lists it before it is set up: found when the desktop app is on this machine (~/.codex alone is the command-line tool's, which the console does not drive). */
 export const about: PluginAbout = { ...IDENTITY,
-  // The app's own icon, beside its app.asar in the installed app (the host serves it; nothing is copied here).
-  appIcon: config => path.join(path.dirname(config.chatgptAppAsar || DEFAULT_ASAR), 'electron.icns'),
+  // The app's own icon in the installed app (the host serves it; nothing is copied here).
+  appIcon: config => appIconFile('codex', { asar: config.chatgptAppAsar || DEFAULT_ASAR }),
   detect: config => firstExisting(appPlaces(config.chatgptAppAsar || DEFAULT_ASAR)) };
 export const setup: PluginSetup = ({ config, registerEngine, registerAsset }) => {
   const archive = config.chatgptAppAsar || DEFAULT_ASAR;
@@ -33,7 +34,8 @@ export const setup: PluginSetup = ({ config, registerEngine, registerAsset }) =>
   const ELSEWHERE = 'ChatGPT 对话的正文不在本机，要从 Codex 桌面版的界面读';
   const mode = (): { conversations: ChatgptConversation[]; projects: ChatgptProject[] } => { try { return chatgpt.read(); } catch { return { conversations: [], projects: [] }; } };
   // Its conversations are read, started and answered in the desktop's own window (src/server/services/desktop-chat.ts).
-  const chats = new ChatMode({ automation: bridge.ui, space: 'chatgpt', label: 'Codex 桌面版', list: () => mode().conversations.filter(item => !item.local) });
+  // Its sidebar's Recents list the Codex threads too, so a title they share is not driven (sharedTitle).
+  const chats = new ChatMode({ automation: bridge.ui, space: 'chatgpt', label: 'Codex 桌面版', list: () => mode().conversations.filter(item => !item.local), sidebar: () => mode().conversations });
   const remote = (id: string) => chats.get(id);
   const asSession = (item: { id: string; title: string; updatedAt: string }, rank: number) => new UnifiedSession({ id: item.id, engine: 'codex', title: item.title, updatedAt: item.updatedAt, sendBlocked: ELSEWHERE,
     metadata: { space: 'chatgpt', contentUnavailable: ELSEWHERE, group: null, bySpace: { chatgpt: { rank } } } });
@@ -67,7 +69,9 @@ export const setup: PluginSetup = ({ config, registerEngine, registerAsset }) =>
     ],
     capabilities: { attachments: true, cwd: true, models: true, reasoning: true, interrupt: true, approvals: true, steer: true, createRequiresPrompt: true,
       // The New chat page's own model and effort, read from it: a new chat's menus start on them.
-      newSettings: true, openFile: true, showInDesktop: true },
+      newSettings: true, openFile: true, showInDesktop: true,
+      // A new chat is made in the desktop's window, which on Windows takes the focus for a moment (uia-driver.cs); other messages go by its queue and IPC.
+      newTakesFocus: process.platform === 'win32' },
     // How the Codex desktop writes a conversation (plugin-contract.md, "对话的样子"): the work folds
     // under "Worked for …" ("Working for …" live, "You stopped after …"), tool runs are named by kind,
     // code blocks have a header, a turn's edits end in a diff card, and no times are shown.

@@ -24,7 +24,7 @@ Frontdesk is a remote window onto each desktop AI: it shows the desktop app's co
 
 In the project root, `docs/architecture.md` (the overall structure, how each existing agent is reached, and the known limits) is the first place to look when unsure.
 
-**Living examples**: `src/server/plugins/claude.plugin.ts` + `src/server/claude-bridge.ts` + `src/server/native/claude-desktop.swift` (every action through the accessibility helper); `src/server/plugins/codex.plugin.ts` + `src/server/codex-bridge.ts` + `src/server/codex-desktop.ts` (an official interface, the window-to-window channel and the helper, mixed); `src/server/plugins/antigravity.plugin.ts` (everything through a local service's interface, no helper). Start from the one most like your desktop app.
+**Living examples**: `src/server/plugins/claude.plugin.ts` + `src/server/claude-bridge.ts` + `src/server/native/claude-desktop.swift` / `claude-desktop.cs` (every action through the accessibility helper, on macOS / Windows); `src/server/plugins/codex.plugin.ts` + `src/server/codex-bridge.ts` + `src/server/codex-desktop.ts` (an official interface, the window-to-window channel and the helper, mixed); `src/server/plugins/antigravity.plugin.ts` (everything through a local service's interface, no helper). Start from the one most like your desktop app.
 
 ## How to work
 
@@ -33,7 +33,7 @@ In the project root, `docs/architecture.md` (the overall structure, how each exi
 - **Make it resumable**: keep `docs/skins/<engine-id>/progress.md` with what each step finished, what comes next, how to start any temporary server, and the channel table from step 2. If your quota runs out midway, you or another session can pick up from there.
 - **Be frugal**: shrink screenshots before looking and look only at the region you need; keep temporary files in your temporary directory and clean them up.
 - **Write TypeScript**: all source is strict TypeScript. Your plugin is `export const setup: PluginSetup = …`, and its shapes come from `src/shared/contract.ts` ([Plugin contract](references/plugin-contract.md) explains it); a wrong field or a missing required method fails `npm run build` / `npm run typecheck`. No `any`; treat native records as `unknown` first and narrow them with `src/shared/guards.ts` and your tolerant parsing, skipping records you cannot read, never pretending to know a shape with `as`.
-- **Servers**: while you work, run `npm run dev` (`bridge-dev` in `.claude/launch.json`; the page is on 4110, page changes show at once and `tsx watch` restarts the server when it changes; it has no Accessibility permission). To test the helper, build and start a temporary port from a terminal (Bash), for example `npm run build && PORT=4131 node dist/server/server.js`; only a terminal-started server has Accessibility permission, and after a code change you build and start it again. Do not casually restart the instance the person is using (port 4100 by default; go by the one they actually use); before you must, check that its `/api/activity` shows nothing `running`, then build and start it again from a terminal on the same port.
+- **Servers**: while you work, run `npm run dev` (`bridge-dev` in `.claude/launch.json`; the page is on 4110, page changes show at once and `tsx watch` restarts the server when it changes; it has no Accessibility permission). To test the helper, build and start a temporary port from a terminal (Bash), for example `npm run build && PORT=4131 node dist/server/server.js` (Windows PowerShell: `npm run build; $env:PORT=4131; node dist/server/server.js`); on macOS only a terminal-started server has Accessibility permission, on Windows any server with the same rights as the desktop app can act on it; after a code change you build and start it again. Do not casually restart the instance the person is using (port 4100 by default; go by the one they actually use); before you must, check that its `/api/activity` shows nothing `running`, then build and start it again from a terminal on the same port.
 
 ## Steps
 
@@ -86,7 +86,7 @@ After each stage, open the page and look, add tests, and update `progress.md`. F
   If the person declines to spend quota, list what is "not verified with a real send" in your report.
 - Go through the [acceptance checklist](references/acceptance.md) item by item.
 - Before committing, make sure `git status` has no screenshots containing real chats.
-- Give the person a short report: which files changed; the channel table; which capabilities work, which do not and why; extension points the shared layer lacks; what the person still has to do (sign in, grant Accessibility permission, restart the Frontdesk server, delete test chats in the desktop app).
+- Give the person a short report: which files changed; the channel table; which capabilities work, which do not and why; extension points the shared layer lacks; what the person still has to do (sign in, grant Accessibility permission on macOS or run Frontdesk with the desktop app's rights on Windows, restart the Frontdesk server, delete test chats in the desktop app); which platforms you tried it on.
 
 ## Files you will create
 
@@ -98,11 +98,12 @@ After each stage, open the page and look, add tests, and update `progress.md`. F
 | `docs/skins/<id>/progress.md` | Yes | Progress, channel table, how to resume |
 | `src/server/<id>-desktop.ts` | With the helper | Extends `DesktopAutomation`, one method per command |
 | `src/server/native/<id>-desktop.swift` | With the helper | Steps only; actions come from the shared driver |
-| `src/server/native/profiles/<id>.json` | With the helper | How controls are recognised (without their names where possible) and other data |
+| `src/server/native/<id>-desktop.cs` | With the helper, on Windows | The same steps for the Windows driver (`uia-driver.cs`); without it every command on Windows answers `not_ported` |
+| `src/server/native/profiles/<id>.json` | With the helper | How controls are recognised (without their names where possible) and other data; on Windows also its `windows` section (`exe`, and locators the Windows app draws differently) |
 | `src/client/public/skins/<id>/skin.css` | Optional | Only `--kit-*` variables |
 | `src/client/public/assets/characters/<id>.svg` | Without official art | An original stand-in, marked as such |
 
-Change the shared layer (`src/server/core/`, `src/server/services/`, `src/client/kit/`, `src/client/js/`, `ax-driver.swift`) only when a shared part really lacks something, and make it an extension point every engine can use (defaults unchanged). List it separately in your report.
+Change the shared layer (`src/server/core/`, `src/server/services/`, `src/client/kit/`, `src/client/js/`, `ax-driver.swift`, `uia-driver.cs`) only when a shared part really lacks something, and make it an extension point every engine can use (defaults unchanged). List it separately in your report.
 
 ## Do not
 

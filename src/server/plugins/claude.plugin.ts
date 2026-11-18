@@ -5,13 +5,14 @@ import { ClaudeChats, type ClaudeChat, type ClaudeChatProject } from '../service
 import { UnifiedSession } from '../types.js';
 import { ChatMode, CHAT_CAPABILITIES, type ModeChat } from '../services/desktop-chat.js';
 import { appPlaces, firstExisting, readAsarFile } from '../services/app-assets.js';
+import { appAsar } from '../services/desktop-places.js';
 import { registerTool, type ToolSummary } from '../services/tool-catalog.js';
 import { get, list, parseJson, text } from '../../shared/guards.js';
 import type { Character, PluginAbout, PluginSetup } from '../../shared/contract.js';
 
 // Claude's own art and type, read at runtime from the installed desktop app (never vendored):
 // the pixel Clawd from the app's sprite data, and the Anthropic Sans faces the Code tab uses.
-const DEFAULT_ASAR = '/Applications/Claude.app/Contents/Resources/app.asar';
+const DEFAULT_ASAR = appAsar('claude');
 let APP_ASAR = DEFAULT_ASAR;
 const FONTS: Readonly<Record<string, RegExp>> = {
   'claude-font-text': /main_window\/assets\/AnthropicSansMicro-Text-Variable-[^/]+\.woff2$/,
@@ -137,7 +138,9 @@ export const setup: PluginSetup = ({ config = {}, registerEngine, registerAsset 
       // with what that page asks for picked there first (newOptions). A chat started from a
       // project's "+" has its folder picked there too: the page shows a Folder menu once its
       // Environment is "This computer" (newFolder, the desktop's own names).
-      createRequiresPrompt: true, newOptions: true, openFile: true, showInDesktop: true, newFolder: { control: 'Folder', via: { control: 'Environment', option: 'This computer' } } },
+      createRequiresPrompt: true, newOptions: true, openFile: true, showInDesktop: true, newFolder: { control: 'Folder', via: { control: 'Environment', option: 'This computer' } },
+      // Every message goes through the desktop's window, which on Windows takes the focus for a moment (uia-driver.cs).
+      takesFocus: process.platform === 'win32' },
     status: () => bridge.getStatus(), models: () => bridge.getModels(), usage: () => bridge.getUsage(),
     dictate: options => bridge.dictate(options), dictationReady: () => bridge.dictationReady(),
     list: async () => { const { projects } = chatSessions(); return [...await bridge.list(), ...mode.chats().map(chat => asSession(chat, projects))]; },

@@ -1,6 +1,6 @@
 {
   "name": "agent-frontdesk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "One web page for every desktop AI on your computer. Works with Codex, Claude and Antigravity today, and any other desktop AI can connect itself from a single prompt.",
   "homepage": "https://github.com/Phz-06/agent-frontdesk#readme",
@@ -16,7 +16,7 @@
     "build": "vite build && tsc -p tsconfig.server.json",
     "start": "npm run build && node dist/server/server.js",
     "dev": "concurrently -k -n server,web -c blue,magenta \"npm:dev:server\" \"npm:dev:web\"",
-    "dev:server": "PORT=${API_PORT:-$((${PORT:-4100}+1))} tsx watch --clear-screen=false src/server/server.ts",
+    "dev:server": "node scripts/dev-server.mjs",
     "dev:web": "vite",
     "test": "node --import tsx --test test/*.test.ts",
     "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.client.json && tsc -p tsconfig.test.json",

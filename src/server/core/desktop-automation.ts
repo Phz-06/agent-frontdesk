@@ -24,12 +24,12 @@
 // status (staleControls). A command that held something back says so in its answer (`ambiguous`,
 // `unconfirmed`): that is logged as well.
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 
 import { NATIVE } from '../paths.js';
+import { helperCacheDir } from '../services/desktop-places.js';
 import { arr, bag, bool, get, list, parseJson, str, text } from '../../shared/guards.js';
 import type { NewControl, NewOption, NewPick } from '../../shared/contract.js';
 
@@ -71,23 +71,105 @@ function helperResultOf(value: unknown, crashed: () => HelperResult): HelperResu
   return { ...result, ok: get(result, 'ok') === true, ...(typeof code === 'string' ? { code } : {}), ...(error != null ? { error: String(error) } : {}) };
 }
 const DRIVER = path.join(NATIVE, 'ax-driver.swift');
+const WINDOWS_DRIVER = path.join(NATIVE, 'uia-driver.cs');
+// The csc.exe of .NET Framework 4.x (64-bit first), or null.
+function cscPath(windir = process.env['WINDIR'] || 'C:\\Windows'): string | null {
+  for (const dir of ['Framework64', 'Framework']) {
+    const file = path.join(windir, 'Microsoft.NET', dir, 'v4.0.30319', 'csc.exe');
+    if (fs.existsSync(file)) return file;
+  }
+  return null;
+}
+// Windows has no accessibility permission; what can stop the helper is a desktop app that runs at a
+// higher integrity level (as administrator) than the console: UIPI lets it read the window, not act on it.
+const WINDOWS_NOT_TRUSTED = '桌面版以更高的权限运行（例如以管理员身份），工作台能读到它的界面但不能操作：请用相同的权限运行两者';
+// An engine with no Windows flow yet (<engine>-desktop.cs) presses nothing there. One that has one
+// says which commands it ports (`check` → `ported`); the others answer `not_ported` themselves.
+const WINDOWS_NOT_PORTED = 'Windows 上的桌面代发还在移植中，暂时不能通过窗口操作发送';
 // One wording for every engine (the page translates it by this exact text).
 const NOT_TRUSTED = '桌面代发需要辅助功能权限：在「系统设置 → 隐私与安全性 → 辅助功能」里允许运行工作台服务的程序（例如终端），然后重启工作台';
 
+// The helper's answer is read as soon as its line is written, not when the process ends: the Windows
+// helper finishes a park after answering (a minimized window's saved bounds, up to a few seconds:
+// uia-driver.cs, FinishPark), and the person need not wait for that. A park the next command makes
+// meanwhile waits for the machine's park lock, which the finishing helper still holds.
 function run(file: string, args: string[], { input, timeout = 30000, env }: RunOptions = {}): Promise<HelperResult> {
   return new Promise(resolve => {
-    const child = execFile(file, args, { timeout, maxBuffer: 1 << 20, env: { ...process.env, ...env } }, (err, stdout, stderr) => {
+    let answered = false, pending = '';
+    const answer = (result: HelperResult) => { if (!answered) { answered = true; resolve(result); } };
+    const child = execFile(file, args, { timeout, maxBuffer: 1 << 20, env: { ...process.env, ...env }, windowsHide: true }, (err, stdout, stderr) => {
       if (TRACE && stderr) process.stderr.write(stderr);
-      const crashed = (): HelperResult => ({ ok: false, code: 'crashed', error: err?.killed ? '桌面版没有及时响应' : '桌面代发程序没有正常返回' });
+      // `unanswered`: the helper was stopped (its timeout) or ended without its answer, so ran no clean-up.
+      const crashed = (): HelperResult => ({ ok: false, code: 'crashed', unanswered: true, error: err?.killed ? '桌面版没有及时响应' : '桌面代发程序没有正常返回' });
       let result: HelperResult;
       try { result = helperResultOf(parseJson(String(stdout).trim().split('\n').at(-1) ?? ''), crashed); } catch { result = crashed(); }
-      resolve(result);
+      answer(result);
+    });
+    child.stdout?.on('data', (chunk: string | Buffer) => {
+      pending += String(chunk);
+      const lines = pending.split('\n'); pending = lines.pop() ?? '';
+      for (const line of lines) {
+        // Only an answer with a park report: any other helper ends right after answering.
+        let value: unknown; try { value = parseJson(line.trim()); } catch { continue; }
+        if (typeof get(value, 'ok') === 'boolean' && bag(get(value, 'parked'))) answer(helperResultOf(value, () => ({ ok: false, code: 'crashed' })));
+      }
     });
     if (input != null) child.stdin?.end(input);
   });
 }
 
+/**
+ * The person is typing in the console's page (client/js/composing.ts): the Windows helper waits before
+ * each action while the time written here has not passed (uia-driver.cs, BeforeAct). An action's grab
+ * of the foreground would end a word being composed, and keys typed while the app holds the foreground
+ * (a menu open) go to the app's page. `composing` lasts until renewed (the page renews it while the word
+ * goes on, and a word the page never ends lapses by itself); `keys` lasts until a pause in typing.
+ */
+export const COMPOSING_MS = 1500, KEYS_PAUSE_MS = 800;
+export function markTyping(typing: 'composing' | 'keys', { dir = helperCacheDir(), now = Date.now() }: { dir?: string; now?: number } = {}): void {
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'person-typing'), String(now + (typing === 'composing' ? COMPOSING_MS : KEYS_PAUSE_MS)));
+  } catch { /* the helper then just does not wait */ }
+}
+
+/**
+ * An exclusive full-screen program (a game) is in front: the Windows helper did nothing and answered
+ * `fullscreen` (uia-driver.cs, ExclusiveFullscreen). A command with no run of its own the page shows as
+ * waiting and can stop (a new chat, a chat mode's message, a settings change before a message) is tried
+ * again every `everyMs` until the program has left the front, for at most `maxMs`; `held` is told once,
+ * when it starts waiting. Still full screen after that: nothing was done, and the answer says so.
+ * (A message to a session Claude's bridge sends waits as long as it takes: its run shows it and Stop takes it back.)
+ */
+export const FULLSCREEN_EVERY_MS = 3000, FULLSCREEN_HOLD_MS = 120_000;
+export const FULLSCREEN_GAVE_UP = '前台的程序一直独占全屏，工作台没有操作桌面版：离开它后再发一次';
+export async function throughFullscreen(attempt: () => Promise<HelperResult>, { everyMs = FULLSCREEN_EVERY_MS, maxMs = FULLSCREEN_HOLD_MS, held }: { everyMs?: number; maxMs?: number; held?: () => void } = {}): Promise<HelperResult> {
+  const until = Date.now() + maxMs;
+  let result = await attempt();
+  if (result.ok || result.code !== 'fullscreen') return result;
+  held?.();
+  while (!result.ok && result.code === 'fullscreen' && Date.now() + everyMs <= until) {
+    await new Promise(resolve => setTimeout(resolve, everyMs));
+    result = await attempt();
+  }
+  return !result.ok && result.code === 'fullscreen' ? { ...result, error: FULLSCREEN_GAVE_UP } : result;
+}
+
 export interface AutomationOptions { engine: string; label?: string; cacheDir?: string; platform?: string; runner?: HelperRunner; parkMs?: number; warmEveryMs?: number }
+/** A Windows park, as the helper reported it: `issues` names what it did not put back. */
+export interface ParkNote { at: number; command: string; ms: number; heldMs: number; grabs: number; issues: string[] }
+// A menu change holds the foreground about half a second (measured); several in one command, a few
+// times that. Longer means the app kept it.
+const HELD_TOO_LONG_MS = 4000;
+/** What a park report says did not come back: `placement` (the window is not where it was), `z-order`, `foreground`, `held`. */
+export function parkIssues(park: Record<string, unknown>): string[] {
+  return [
+    park['placementBack'] === false ? 'placement' : '',
+    park['underSame'] === false ? 'z-order' : '',
+    park['foregroundBack'] === false ? 'foreground' : '',
+    Number(park['heldMs'] || 0) > HELD_TOO_LONG_MS ? 'held' : '',
+  ].filter(Boolean);
+}
 
 class DesktopAutomation {
   engine: string; label: string; flow: string; profile: string; cacheDir: string; platform: string; runner: HelperRunner;
@@ -102,7 +184,7 @@ class DesktopAutomation {
   beats = 0; suspects = new Map<string, number>(); stale: string[] = [];
   // engine: the flow and profile name ('claude' → claude-desktop.swift + profiles/claude.json);
   // label: how the person knows the app ("Claude 桌面版").
-  constructor({ engine, label, cacheDir = path.join(os.homedir(), 'Library/Caches/agent-frontdesk'), platform = process.platform, runner = run, parkMs = 45_000, warmEveryMs = 10_000 }: AutomationOptions) {
+  constructor({ engine, label, cacheDir = helperCacheDir(), platform = process.platform, runner = run, parkMs = 45_000, warmEveryMs = 10_000 }: AutomationOptions) {
     this.engine = engine; this.label = label || engine; this.parkMs = parkMs; this.warmEveryMs = warmEveryMs;
     this.flow = path.join(NATIVE, `${engine}-desktop.swift`);
     this.profile = path.join(NATIVE, 'profiles', `${engine}.json`);
@@ -112,6 +194,7 @@ class DesktopAutomation {
   }
   async helper(): Promise<string | null> {
     if (this.binary) return this.binary;
+    if (this.platform === 'win32') return this.windowsHelper();
     if (!this.building) this.building = (async () => {
       const source = Buffer.concat([fs.readFileSync(DRIVER), Buffer.from('\n'), fs.readFileSync(this.flow)]);
       const base = path.join(this.cacheDir, `${this.engine}-desktop-${createHash('sha1').update(source).digest('hex').slice(0, 12)}`);
@@ -127,6 +210,30 @@ class DesktopAutomation {
     })().catch(() => null).finally(() => { this.building = null; });
     return this.building;
   }
+  // Windows: the C# driver (uia-driver.cs) and the engine's flow (<engine>-desktop.cs, once there is
+  // one), compiled with the csc.exe of .NET Framework 4.x that Windows ships: the twin of swiftc,
+  // nothing downloaded or signed. Cached the same way, as <engine>-desktop-<hash>.exe.
+  windowsHelper(): Promise<string | null> {
+    if (!this.building) this.building = (async () => {
+      const flow = path.join(NATIVE, `${this.engine}-desktop.cs`);
+      const sources = [WINDOWS_DRIVER, ...(fs.existsSync(flow) ? [flow] : [])];
+      const hash = createHash('sha1');
+      for (const file of sources) hash.update(fs.readFileSync(file)).update('\n');
+      const base = path.join(this.cacheDir, `${this.engine}-desktop-${hash.digest('hex').slice(0, 12)}.exe`);
+      if (!fs.existsSync(base)) {
+        fs.mkdirSync(this.cacheDir, { recursive: true });
+        const csc = cscPath();
+        if (!csc) throw new Error('no csc.exe');
+        const tmp = `${base}.tmp.exe`;
+        await new Promise<void>((resolve, reject) => execFile(csc, ['/nologo', '/target:exe', '/langversion:5', '/platform:anycpu', '/optimize+', '/codepage:65001', `/out:${tmp}`,
+          '/reference:System.dll', '/reference:System.Core.dll', '/reference:System.Web.Extensions.dll', ...sources], { timeout: 300000, windowsHide: true }, err => err ? reject(err) : resolve()));
+        fs.renameSync(tmp, base);
+        this.prune(base);
+      }
+      return (this.binary = base);
+    })().catch(() => null).finally(() => { this.building = null; });
+    return this.building;
+  }
   // Every source version leaves a helper behind; the ones not built or run for a month are removed.
   // Another checkout's server may still be running an old one: a server that finds its helper gone
   // builds it again (run).
@@ -136,20 +243,28 @@ class DesktopAutomation {
         const file = path.join(this.cacheDir, name);
         if (!name.startsWith(`${this.engine}-desktop-`) || file === current) continue;
         const { mtimeMs, atimeMs } = fs.statSync(file);
-        if (Date.now() - Math.max(mtimeMs, atimeMs) > 30 * 24 * 3600_000) fs.rmSync(file, { force: true });
+        if (Date.now() - Math.max(mtimeMs, atimeMs) > 30 * 24 * 3600_000) fs.rmSync(file, { recursive: true, force: true });
       }
     } catch {}
   }
   // { available, reason, code }. Cached briefly: permission and the app being open change rarely.
   async check(): Promise<AutomationState> {
-    if (this.platform !== 'darwin') return { available: false, reason: '桌面代发只支持 macOS' };
+    if (this.platform !== 'darwin' && this.platform !== 'win32') return { available: false, reason: '桌面代发只支持 macOS 和 Windows' };
     if (this.state && Date.now() - this.checkedAt < 10000) return this.state;
     const file = await this.helper();
+    const windows = this.platform === 'win32';
     let state: AutomationState;
-    if (!file) state = { available: false, reason: '桌面代发程序编译失败（需要 Xcode 命令行工具：xcode-select --install）' };
+    if (!file) state = { available: false, reason: windows ? '桌面代发程序编译失败（需要 Windows 自带的 .NET Framework 4 的 csc.exe）' : '桌面代发程序编译失败（需要 Xcode 命令行工具：xcode-select --install）' };
     else {
       const result = await this.runner(file, ['check'], { timeout: 5000, env: { AX_PROFILE: this.profile } });
-      state = !result.ok ? { available: false, ...(result.error !== undefined ? { reason: result.error } : {}) } : !result.trusted ? { available: false, reason: NOT_TRUSTED, code: 'not_trusted' } : !result.running ? { available: false, reason: `${this.label}没有在运行`, code: 'not_running' } : { available: true };
+      state = !result.ok ? { available: false, ...(result.error !== undefined ? { reason: result.error } : {}) }
+        : !result.trusted ? { available: false, reason: windows ? WINDOWS_NOT_TRUSTED : NOT_TRUSTED, code: 'not_trusted' }
+        : !result.running ? { available: false, reason: `${this.label}没有在运行`, code: 'not_running' }
+        // Windows: available once the engine has a flow there (<engine>-desktop.cs). Which commands it
+        // ports is the engine's own: Claude's sends through its window, Codex's only starts new chats
+        // (everything else of Codex's goes through its app-server and router).
+        : windows && !list(result['ported']).length ? { available: false, reason: WINDOWS_NOT_PORTED, code: 'not_ported' }
+        : { available: true };
     }
     this.state = state; this.checkedAt = Date.now();
     return state;
@@ -179,12 +294,35 @@ class DesktopAutomation {
         const again = await this.helper();
         if (again) { file = again; result = await this.runner(file, [...args, ...extra], { input, timeout, env: { AX_PROFILE: this.profile } }); }
       }
+      // Windows: a helper stopped mid-park (past its timeout) runs no clean-up and leaves the window
+      // off screen. It is put back now (the helper's `restore`), not at the next helper's start.
+      if (this.platform === 'win32' && !result.ok && result['unanswered'] === true) {
+        const restored = await this.runner(file, ['restore'], { timeout: 15000, env: { AX_PROFILE: this.profile } }).catch(() => null);
+        if (Number(restored?.['restored'] || 0) > 0) console.warn(`[ax ${this.engine}] ${args[0]}: the helper stopped while ${this.label}'s window was parked; it was put back`);
+      }
+      this.noteParked(args[0] || '', result);
       if (TRACE) console.error(`[ax ${this.engine}] ${args[0]} ${Date.now() - began}ms (helper ${String(result['ms'] ?? '?')}ms, ${String(result['reads'] ?? '?')} reads)${result.ok ? '' : ` failed: ${result.code || result.error || ''}`}${result['via'] ? ` via ${JSON.stringify(result['via'])}` : ''}`);
       // Held back rather than guessed at: the profile needs a look, whoever was at the console.
       for (const field of ['ambiguous', 'unconfirmed']) if (result[field] !== undefined) console.warn(`[ax ${this.engine}] ${args[0]}: ${field} ${JSON.stringify(result[field])} (src/server/native/profiles/${this.engine}.json)`);
       return result;
     });
   }
+  // ---- what a Windows park left (uia-driver.cs, "the window") ----
+  // Every acting command reports its park: how long, how often the page took the foreground and for
+  // how long the app was let keep it, and whether placement, z-order and foreground came back. What
+  // did not come back is kept as the engine's last park (EngineStatus `park`) and logged: the window
+  // not where the person left it is theirs to know about.
+  lastPark: ParkNote | null = null;
+  noteParked(command: string, result: HelperResult): void {
+    const park = bag(result['parked']);
+    if (!park) return;
+    const issues = parkIssues(park);
+    this.lastPark = { at: Date.now(), command, ms: Number(park['ms'] || 0), heldMs: Number(park['heldMs'] || 0), grabs: Number(park['grabs'] || 0), issues };
+    if (issues.length) console.warn(`[ax ${this.engine}] ${command}: the park did not put everything back: ${issues.join(', ')} ${JSON.stringify(park)}`);
+  }
+  // The last park, while it is recent and something did not come back.
+  parkTrouble(withinMs = 10 * 60_000): ParkNote | null { const last = this.lastPark; return last && last.issues.length && Date.now() - last.at < withinMs ? last : null; }
+
   // With the desktop parked on its new-chat page, a command is told which conversation the person
   // had before (`--previous`) and, when the page is in another mode than theirs, which mode
   // (`--previous-space`). A new-page command stays parked; any other one goes back there itself
@@ -208,7 +346,7 @@ class DesktopAutomation {
   // keeps the desktop's accessibility tree built. Skipped while a command is running or waiting
   // (it reads the page itself), and it stops by itself once the console has gone quiet.
   keepWarm(ms = 3 * 60_000): void {
-    if (this.platform !== 'darwin' || this.warmEveryMs <= 0) return;
+    if ((this.platform !== 'darwin' && this.platform !== 'win32') || this.warmEveryMs <= 0) return;
     const idle = Date.now() > this.warmUntil;
     this.warmUntil = Date.now() + ms;
     const beat = () => {

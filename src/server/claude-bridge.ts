@@ -1,5 +1,5 @@
 // Claude desktop (Code tab) owns its history: an index of desktop sessions under
-// ~/Library/Application Support/Claude/claude-code-sessions and one transcript per
+// <Claude desktop's data folder>/claude-code-sessions (see services/desktop-places.ts) and one transcript per
 // session under ~/.claude/projects. The console reads both read-only. Every message, a new
 // chat's first one too, is sent by the desktop app itself (src/server/claude-desktop.ts), so the
 // desktop is the one process that runs and writes its sessions. When the desktop cannot take a
@@ -19,8 +19,10 @@ import { questionCard, desktopCard } from './core/presentation.js';
 import { withAttachments } from './core/attachments.js';
 import { promptStarts } from '../shared/turn-match.js';
 import { ClaudeDesktop, type DesktopSession } from './claude-desktop.js';
-import { newControlsOf, type DesktopFlags, type HelperResult } from './core/desktop-automation.js';
+import { winSpawnArgs } from './config.js';
+import { newControlsOf, throughFullscreen, FULLSCREEN_HOLD_MS, type DesktopFlags, type HelperResult } from './core/desktop-automation.js';
 import { globalSocket } from './services/node-websocket.js';
+import { claudeCliIn, claudeDesktopHome, findExecutable, installedClaudeCli } from './services/desktop-places.js';
 import { arr, bag, errorField, get, list, messageOf, num, parseJson, str, text as asText } from '../shared/guards.js';
 import type {
   Approval, CardAction, CardRead, CreateInput, CreateResult, DesktopQueueItem, DesktopSettings, DictationHandlers, DictationReady, DictationStream, EngineEmitter, EngineStatus,
@@ -33,7 +35,13 @@ const NO_CLI = '没有找到 Claude Code 命令行。请先打开一次 Claude �
 // PATH, else the copy the desktop app installed, by its full path. That path holds the person's
 // name and a folder per version, so it is worked out here and never written into a document.
 function loginCommand(bin: string | null, env: NodeJS.ProcessEnv = process.env): string {
-  const onPath = !!bin && (env['PATH'] || '').split(path.delimiter).some(dir => path.join(dir, 'claude') === bin);
+  // Both separators are accepted so a PATH written for the other platform is still understood,
+  // and the comparison normalizes \ so a Windows join matches a /-written candidate.
+  const win = process.platform === 'win32';
+  const norm = (value: string) => { const p = value.replace(/\\/g, '/'); return win ? p.toLowerCase() : p; };
+  const names = win ? ['claude', 'claude.exe', 'claude.cmd'] : ['claude'];
+  const onPath = !!bin && (env['PATH'] || '').split(/;|(?<!(?:^|[;:])[A-Za-z]):/).filter(Boolean)
+    .some(dir => names.some(name => norm(path.join(dir, name)) === norm(bin)));
   return !bin || onPath ? 'claude auth login' : `"${bin}" auth login`;
 }
 const noSignIn = (bin: string | null): string => `读取不到 Claude Code 的登录信息，请先运行 ${loginCommand(bin)}`;
@@ -70,7 +78,7 @@ export interface SessionMeta extends DesktopSession {
 }
 /** A transcript, parsed once per change. */
 export interface ParsedTranscript {
-  file: string; size: number; mtimeMs: number; writtenAt?: number; turns: UnifiedTurn[]; cwd: string; title: string; queue: DesktopQueueItem[]; queuedAt?: number[]; lastStop?: unknown;
+  file: string; size: number; mtimeMs: number; writtenAt?: number; turns: UnifiedTurn[]; cwd: string; cwds?: string[]; title: string; queue: DesktopQueueItem[]; queuedAt?: number[]; lastStop?: unknown;
   /** Kept only while the transcript is being written (see ClaudeBridge.parse): its records so far, and how far into the file they reach. */
   tail?: { records: unknown[]; offset: number };
 }
@@ -85,24 +93,37 @@ export interface StreamRun {
 export interface DesktopRun extends StreamRun {
   desktop?: boolean; meta: SessionMeta; finished?: boolean; started?: number | null; steers?: string[]; error?: string;
   finish?: (status: string) => void; timer?: ReturnType<typeof setInterval>; stopRequested?: boolean; stopReason?: unknown; endedAt?: number; waiting?: string;
+  // Not sent yet: waiting for an exclusive full-screen program to leave the front (sendViaDesktop); `cancelled` by Stop meanwhile.
+  deferred?: boolean; cancelled?: boolean;
 }
 type Route = { error: string } | { desktop: true; meta: SessionMeta; file: string };
 
 // ---------- discovery ----------
-function findClaudeBin(env: NodeJS.ProcessEnv = process.env, home = os.homedir()): string | null {
+export interface FindClaudeBinOptions { env?: NodeJS.ProcessEnv; home?: string; appDir?: string }
+function findClaudeBin(options?: FindClaudeBinOptions): string | null;
+function findClaudeBin(env: NodeJS.ProcessEnv, home?: string): string | null;
+function findClaudeBin(envOrOptions: FindClaudeBinOptions | NodeJS.ProcessEnv = process.env, homeArg?: string): string | null {
+  const isOpts = homeArg === undefined && ('home' in envOrOptions || 'appDir' in envOrOptions || 'env' in envOrOptions);
+  const env = (isOpts ? (envOrOptions as FindClaudeBinOptions).env : envOrOptions as NodeJS.ProcessEnv) || process.env;
+  const home = (isOpts ? (envOrOptions as FindClaudeBinOptions).home : homeArg) || os.homedir();
+  const win = process.platform === 'win32';
+  const appDir = (isOpts ? (envOrOptions as FindClaudeBinOptions).appDir : undefined)
+    || env['CLAUDE_DESKTOP_HOME'] || claudeDesktopHome({ env, home });
   if (env['CLAUDE_BIN']) return env['CLAUDE_BIN'];
-  for (const dir of (env['PATH'] || '').split(path.delimiter)) {
-    const file = path.join(dir, 'claude');
-    try { fs.accessSync(file, fs.constants.X_OK); return file; } catch {}
-  }
+  const onPath = findExecutable(['claude', installedClaudeCli({ home })], { env });
+  if (onPath) return onPath;
   // The desktop app installs its own copy, one folder per version.
-  const root = path.join(home, 'Library/Application Support/Claude/claude-code');
+  const root = path.join(appDir, 'claude-code');
   try {
     const versions = fs.readdirSync(root).filter(name => /^\d+\.\d+\.\d+$/.test(name))
       .sort((a, b) => b.split('.').map(Number).reduce((d, n, i) => d || n - (a.split('.').map(Number)[i] ?? NaN), 0));
     for (const version of versions) {
-      for (const build of fs.readdirSync(path.join(root, version))) {
-        const file = path.join(root, version, build, 'claude.app/Contents/MacOS/claude');
+      const verDir = path.join(root, version);
+      // On Windows the exe may also sit straight in the version folder.
+      if (win && fs.existsSync(path.join(verDir, 'claude.exe'))) return path.join(verDir, 'claude.exe');
+      for (const build of fs.readdirSync(verDir, { withFileTypes: true })) {
+        if (!build.isDirectory()) continue;
+        const file = claudeCliIn(path.join(verDir, build.name));
         if (fs.existsSync(file)) return file;
       }
     }
@@ -446,17 +467,20 @@ interface AuthState { at: number; loggedIn: boolean; error: string }
 
 // ---------- the bridge ----------
 class ClaudeBridge {
-  home: string; appDir: string; indexDir: string; projectsDir: string; tmpDir: string; bin: string | null;
+  home: string; claudeDir: string; appDir: string; indexDir: string; projectsDir: string; tmpDir: string; bin: string | null;
   cache: Map<string, ParsedTranscript>; hot: string[] = []; metaCache: Map<string, { mtimeMs: number; meta: SessionMeta }>; repos: Map<string, string>;
   runs: Map<string, DesktopRun>; starts: Map<string, EngineEvents>;
   auth: AuthState | null; modelCache: { at: number; models: Model[] } | null;
   desktop: ClaudeDesktop;
-  constructor({ home = os.homedir(), env = process.env, bin, claudeHome, desktopHome, desktop, tmpDir = '/tmp' }: ClaudeBridgeOptions = {}) {
+  // tmpDir: where Claude Code keeps a session's scratchpad and task output: /tmp on macOS (not
+  // os.tmpdir(), which is a per-user folder under /var/folders there), the user's temp folder on Windows.
+  constructor({ home = os.homedir(), env = process.env, bin, claudeHome, desktopHome, desktop, tmpDir = process.platform === 'win32' ? os.tmpdir() : '/tmp' }: ClaudeBridgeOptions = {}) {
     this.home = home; this.tmpDir = tmpDir;
-    this.appDir = desktopHome || path.join(home, 'Library/Application Support/Claude');
+    this.claudeDir = claudeHome || path.join(home, '.claude');
+    this.appDir = desktopHome || claudeDesktopHome({ env, home });
     this.indexDir = path.join(this.appDir, 'claude-code-sessions');
-    this.projectsDir = path.join(claudeHome || path.join(home, '.claude'), 'projects');
-    this.bin = bin === undefined ? findClaudeBin(env, home) : bin;
+    this.projectsDir = path.join(this.claudeDir, 'projects');
+    this.bin = bin === null ? null : (bin || findClaudeBin({ home: this.home, appDir: this.appDir, env }));
     this.cache = new Map(); this.metaCache = new Map(); this.repos = new Map();
     this.runs = new Map(); this.starts = new Map();
     this.auth = null; this.modelCache = null;
@@ -526,9 +550,27 @@ class ClaudeBridge {
   // Besides its working directory, Claude Code keeps a folder of its own for each session, which its
   // replies name (its scratchpad, a background command's output):
   // /tmp/claude-<uid>/<the transcript's project folder>/<session id>. The desktop opens files there too.
-  fileRoots(id: string): string[] {
+  // macOS: /tmp/claude-<uid>/<project folder>/<id>. Windows has no uid: Claude Code keeps it under
+  // %TEMP%\claude\<hash>\<id>, one hash for the scratchpad and another for task output, so every
+  // folder there named after the session counts.
+  // And every folder the session moved to inside the one it started in (its transcript's `cwd`,
+  // newest first): a reply names a file relative to where the session was then, as the desktop's
+  // own links do. A folder outside the starting one (`cd ~`) does not widen what can be read.
+  fileRoots(id: string, platform: NodeJS.Platform = process.platform): string[] {
     const transcript = this.transcriptPath(id), uid = typeof process.getuid === 'function' ? process.getuid() : null;
-    return transcript && uid !== null ? [path.join(this.tmpDir, `claude-${uid}`, path.basename(path.dirname(transcript)), id)] : [];
+    if (!transcript) return [];
+    let worked: string[] = [];
+    try {
+      const cwds = this.parse(id)?.cwds || [], start = this.metaFor(id)?.cwd || cwds[cwds.length - 1] || '';
+      const paths = platform === 'win32' ? path.win32 : path.posix;
+      worked = start ? cwds.filter(dir => { const inner = paths.relative(start, dir); return !!inner && !inner.startsWith('..') && !paths.isAbsolute(inner); }) : [];
+    } catch {}
+    let own: string[] = [];
+    if (platform === 'win32') {
+      const base = path.join(this.tmpDir, 'claude');
+      try { own = fs.readdirSync(base).map(hash => path.join(base, hash, id)).filter(dir => fs.existsSync(dir)); } catch {}
+    } else if (uid !== null) own = [path.join(this.tmpDir, `claude-${uid}`, path.basename(path.dirname(transcript)), id)];
+    return [...worked, ...own];
   }
   // A session's transcript as turns, kept until the file changes. The list asks for every session
   // every few seconds (the activity feed), so every session the desktop lists stays in the cache:
@@ -556,8 +598,12 @@ class ClaudeBridge {
     const turns = buildTurns(records, id);
     const last = <T>(pick: (record: unknown) => T | undefined | null | false | ''): T | undefined => { for (let index = records.length - 1; index >= 0; index--) { const found = pick(records[index]); if (found) return found; } return undefined; };
     const cwd = asText(last(record => get(record, 'cwd')) || '');
+    // Every folder the session worked in, newest first: a session that moved (`cd` into a
+    // repository) names files relative to where it was when it wrote them.
+    const cwds: string[] = [];
+    for (let index = records.length - 1; index >= 0; index--) { const dir = asText(get(records[index], 'cwd') || ''); if (dir && !cwds.includes(dir)) cwds.push(dir); }
     const title = asText(last(record => get(record, 'type') === 'custom-title' && get(record, 'customTitle')) || '');
-    const entry: ParsedTranscript = { file, size: stat.size, mtimeMs: stat.mtimeMs, writtenAt: last(record => Date.parse(String(get(record, 'timestamp'))) || 0) || 0, turns, cwd, title, queue: desktopQueue(records), queuedAt: queueTimes(records), lastStop: last(record => get(record, 'type') === 'assistant' && !get(record, 'isSidechain') && get(record, 'message', 'stop_reason')) };
+    const entry: ParsedTranscript = { file, size: stat.size, mtimeMs: stat.mtimeMs, writtenAt: last(record => Date.parse(String(get(record, 'timestamp'))) || 0) || 0, turns, cwd, cwds, title, queue: desktopQueue(records), queuedAt: queueTimes(records), lastStop: last(record => get(record, 'type') === 'assistant' && !get(record, 'isSidechain') && get(record, 'message', 'stop_reason')) };
     // Changed since it was last read: its records stay for the next append. Only the transcripts
     // changed most recently keep theirs (HOT_TRANSCRIPTS): records are the bulk of the memory.
     if (cached) {
@@ -699,7 +745,13 @@ class ClaudeBridge {
   // ---------- Claude Code CLI: reads the model list and usage only ----------
   spawnCli(args: string[], cwd?: string): ChildProcessByStdio<Writable, Readable, Readable> {
     if (!this.bin) throw new Error(NO_CLI);
-    return spawn(this.bin, ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', ...args], { cwd: cwd && fs.existsSync(cwd) ? cwd : this.home, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: 'sdk-cli' } });
+    // A claude.cmd shim (an npm install) goes through cmd.exe, quoted by winSpawnArgs. No console window.
+    const [cmd, cmdArgs, cmdOpts] = winSpawnArgs(
+      this.bin,
+      ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', ...args],
+      { cwd: cwd && fs.existsSync(cwd) ? cwd : this.home, stdio: ['pipe', 'pipe', 'pipe'] as ['pipe', 'pipe', 'pipe'], env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: 'sdk-cli' }, windowsHide: true },
+    );
+    return spawn(cmd, cmdArgs, cmdOpts);
   }
   // Control requests that send no prompt and keep no session (list_models, get_usage).
   async control(subtypes: string[], timeoutMs = 15000): Promise<Record<string, unknown>> {
@@ -731,13 +783,19 @@ class ClaudeBridge {
     if (!this.bin) return { loggedIn: false, error: NO_CLI };
     if (this.auth && Date.now() - this.auth.at < 60000) return this.auth;
     try {
-      const loggedIn = !!get(parseJson(execFileSync(this.bin, ['auth', 'status'], { encoding: 'utf8', timeout: 8000 })), 'loggedIn');
+      // A Windows npm install arrives as claude.cmd, which execFileSync cannot start without
+      // cmd.exe; winSpawnArgs quotes the command line without Node's deprecated `shell: true`.
+      const [cmd, cmdArgs, cmdOpts] = winSpawnArgs(this.bin, ['auth', 'status'], { encoding: 'utf8' as const, timeout: 8000 });
+      const loggedIn = !!get(parseJson(execFileSync(cmd, cmdArgs, cmdOpts)), 'loggedIn');
       this.auth = { at: Date.now(), loggedIn, error: loggedIn ? '' : loggedOut(this.bin) };
     } catch (err) { this.auth = { at: Date.now(), loggedIn: false, error: /not logged|login/i.test(String(errorField(err, 'stdout') || messageOf(err))) ? loggedOut(this.bin) : `无法确认 Claude Code 登录状态：${messageOf(err).split('\n')[0]}` }; }
     return this.auth;
   }
   // Connected means the desktop app can take messages from here: that is the only way they go.
-  async getStatus(): Promise<EngineStatus> { const state = await this.desktop.check(), stale = this.desktop.staleControls?.() ?? []; return { connected: state.available, error: state.available ? undefined : state.reason, ...(stale.length ? { stale } : {}) }; }
+  async getStatus(): Promise<EngineStatus> {
+    const state = await this.desktop.check(), stale = this.desktop.staleControls?.() ?? [], park = this.desktop.parkTrouble?.();
+    return { connected: state.available, error: state.available ? undefined : state.reason, ...(stale.length ? { stale } : {}), ...(park ? { park: { command: park.command, issues: park.issues, at: park.at } } : {}) };
+  }
   async getModels(): Promise<Model[]> {
     if (this.modelCache && Date.now() - this.modelCache.at < 10 * 60000) return this.modelCache.models;
     if (!this.authStatus().loggedIn) return [];
@@ -789,25 +847,45 @@ class ClaudeBridge {
     }
     return null;
   }
-  // Claude Code's own sign-in, kept by the CLI in the macOS keychain. This is Claude's own
-  // credential (philosophy 2a): read fresh on the server for each dictation, never stored or
-  // sent to the page. An expiring token is refreshed by letting the CLI make a call.
+  // Claude Code's own sign-in, kept by the CLI in the macOS keychain (Windows and Linux: the
+  // CLI keeps the same JSON in ~/.claude/.credentials.json). This is Claude's own credential
+  // (philosophy 2a): read fresh on the server for each dictation, never stored or sent to the
+  // page. An expiring token is refreshed by letting the CLI make a call.
+  private readWindowsCredentials(): unknown {
+    for (const file of [path.join(this.claudeDir, '.credentials.json'), path.join(this.home, '.credentials.json')]) {
+      try { if (fs.existsSync(file)) return get(parseJson(fs.readFileSync(file, 'utf8')), 'claudeAiOauth') || null; } catch {}
+    }
+    return null;
+  }
   async oauthToken(): Promise<string | null> {
-    const read = () => new Promise<unknown>(resolve => execFile('security', ['find-generic-password', '-s', 'Claude Code-credentials', '-w'], { timeout: 15000 }, (err, stdout) => {
-      try { resolve(err ? null : get(parseJson(stdout), 'claudeAiOauth') || null); } catch { resolve(null); }
-    }));
+    const read = () => new Promise<unknown>(resolve => {
+      if (process.platform === 'win32') {
+        resolve(this.readWindowsCredentials());
+        return;
+      }
+      execFile('security', ['find-generic-password', '-s', 'Claude Code-credentials', '-w'], { timeout: 15000 }, (err, stdout) => {
+        try { resolve(err ? null : get(parseJson(stdout), 'claudeAiOauth') || null); } catch { resolve(null); }
+      });
+    });
     let auth = await read();
     const expiresAt = num(get(auth, 'expiresAt'));
     if (expiresAt && expiresAt - Date.now() < 120000) { await this.getUsage().catch(() => {}); auth = await read(); }
     return str(get(auth, 'accessToken')) || null;
   }
 
-  // Whether Claude Code's sign-in is in the keychain at all. Only the entry's attributes are
-  // asked for (no -w): the token is not read here, and asking does not bring up a keychain prompt.
-  // An entry about to expire is renewed when dictation starts (oauthToken).
+  // Whether Claude Code's sign-in is kept at all (keychain on macOS, the credentials file
+  // elsewhere). Only the entry's presence is checked: the token is not read here, and asking
+  // does not bring up a keychain prompt. An entry about to expire is renewed when dictation
+  // starts (oauthToken).
   dictationReady(): Promise<DictationReady> {
-    return new Promise(resolve => execFile('security', ['find-generic-password', '-s', 'Claude Code-credentials'], { timeout: 5000 }, err =>
-      resolve(err ? { ready: false, reason: noSignIn(this.bin) } : { ready: true })));
+    return new Promise(resolve => {
+      if (process.platform === 'win32') {
+        resolve(this.readWindowsCredentials() ? { ready: true } : { ready: false, reason: noSignIn(this.bin) });
+        return;
+      }
+      execFile('security', ['find-generic-password', '-s', 'Claude Code-credentials'], { timeout: 5000 }, err =>
+        resolve(err ? { ready: false, reason: noSignIn(this.bin) } : { ready: true }));
+    });
   }
   // Claude's dictation: the same speech stream Claude Code's voice mode uses. It is the console's
   // default speech service for every agent (BRIDGE_DICTATION_ENGINE); when it cannot start,
@@ -864,7 +942,8 @@ class ClaudeBridge {
     const known = new Set(this.desktopIndex().map(meta => meta.localId));
     let wanted: DesktopFlags;
     try { wanted = await this.desktopSettings(input); } catch (err) { refuse(messageOf(err)); }
-    const result = await this.desktop.create(input.cwd || '', withAttachments(input.prompt, input.attachments, 'mention'), wanted, input.expect || []);
+    // With a full-screen program in front, the request waits a while for it to go (throughFullscreen).
+    const result = await throughFullscreen(() => this.desktop.create(input.cwd || '', withAttachments(input.prompt, input.attachments, 'mention'), wanted, input.expect || []), { everyMs: this.fullscreenRetryMs, maxMs: this.fullscreenHoldMs });
     if (!result.ok) refuse(result.error || '没能在 Claude 桌面版里新建会话');
     const meta = await this.newDesktopSession(known);
     const id = meta?.id, file = id ? this.transcriptPath(id) : null;
@@ -944,7 +1023,7 @@ class ClaudeBridge {
   // `sent`: the desktop already has the message (a session it has just created with it);
   // `note`: what it changed in its settings for that message.
   async sendViaDesktop(id: string, { meta, file }: { meta: SessionMeta; file: string }, input: Partial<SendInput>, emitter: EngineEmitter, { sent = false, note = '' }: { sent?: boolean; note?: string } = {}): Promise<void> {
-    const offset = sent ? 0 : fs.statSync(file).size;
+    let offset = sent ? 0 : fs.statSync(file).size;
     const run: DesktopRun = { desktop: true, meta, emitter, interrupted: false, lastMessage: null, plan: (this.parse(id)?.turns || []).flatMap(turn => turn.steps).filter(step => step.plan).at(-1)?.plan || null, finished: false, started: null };
     this.runs.set(id, run);
     const message = withAttachments(input.prompt, input.attachments, 'mention');
@@ -952,12 +1031,30 @@ class ClaudeBridge {
     // Model, effort and permissions picked here are picked in the desktop app before it sends.
     let wanted: DesktopFlags = {};
     if (!sent) { try { wanted = await this.desktopSettings(input, meta); } catch (err) { fail(messageOf(err)); return; } }
-    let result: HelperResult = sent ? { ok: true } : await this.desktop.send(meta, message, wanted), joined = false;
-    if (sent) await new Promise(resolve => setTimeout(resolve, 50)); // let the caller subscribe first
+    let result: HelperResult = { ok: true }, joined = false;
     // The desktop is still running a turn the page took for finished (its index can mark the
     // turn's edge before the reply has ended). Do what the desktop's own composer does then:
     // hand it the message, which it puts into the running turn.
-    if (!sent && !result.ok && result.code === 'busy') { result = await this.desktop.steer(meta, message, wanted); joined = !!result.ok; }
+    const attempt = async () => {
+      joined = false; result = await this.desktop.send(meta, message, wanted);
+      if (!result.ok && result.code === 'busy') { result = await this.desktop.steer(meta, message, wanted); joined = !!result.ok; }
+    };
+    if (sent) await new Promise(resolve => setTimeout(resolve, 50)); // let the caller subscribe first
+    else await attempt();
+    // An exclusive full-screen program (a game) is in front: the helper did nothing (uia-driver.cs,
+    // ExclusiveFullscreen). The message waits here, shown as waiting, and goes out once the person has
+    // left it; Stop takes it back meanwhile (interrupt).
+    if (!sent && !result.ok && result.code === 'fullscreen') {
+      run.deferred = true;
+      emitter.emit('warning', { message: '前台的程序独占全屏，消息先留在工作台，你离开它后自动发出', retrying: true });
+      while (!result.ok && result.code === 'fullscreen') {
+        await new Promise(resolve => setTimeout(resolve, this.fullscreenRetryMs));
+        if (run.cancelled || this.runs.get(id) !== run) return;
+        offset = fs.statSync(file).size;
+        await attempt();
+      }
+      run.deferred = false;
+    }
     // Nothing was sent: the helper stops before typing when a setting could not be changed.
     if (!result.ok) { fail(result.error || '桌面代发失败'); return; }
     if (joined) emitter.emit('warning', { message: 'Claude 桌面版里这一轮还没结束，消息已交给桌面版，它会插进正在执行的这一轮', retrying: false });
@@ -1041,6 +1138,12 @@ class ClaudeBridge {
     timer.unref?.();
     emitter.on('interrupt', () => { run.finished = true; clearInterval(timer); if (this.runs.get(id) === run) this.runs.delete(id); });
   }
+  // How long a steer waits for the record to show the desktop took it (a moment only, when the helper saw it queued).
+  steerConfirmMs = 12000;
+  // How often a message held back by an exclusive full-screen program is tried again (sendViaDesktop).
+  fullscreenRetryMs = 3000;
+  // How long a new chat, which has no run to show it waiting, waits for such a program (create).
+  fullscreenHoldMs = FULLSCREEN_HOLD_MS;
   // Adds a message to the turn the desktop is running: typed into its composer and sent there,
   // the desktop queues it and puts it in at the next step (or at once with Send now).
   async steer(id: string, input: Partial<SendInput> = {}): Promise<Record<string, never>> {
@@ -1054,10 +1157,14 @@ class ClaudeBridge {
     try { wanted = await this.desktopSettings(input, route.meta); } catch (err) { throw Object.assign(errorOf(err), { status: 409 }); }
     const result = await this.desktop.steer(route.meta, message, wanted);
     const drop = () => { const index = run?.steers?.indexOf(message) ?? -1; if (index >= 0) run?.steers?.splice(index, 1); };
+    // An exclusive full-screen program in front: the console's queue keeps it, and sends it after this turn (then waiting for the person to leave it).
+    if (!result.ok && result.code === 'fullscreen') { drop(); throw Object.assign(new Error(result.error || '前台的程序独占全屏'), { fallback: 'queue' }); }
     if (!result.ok) { drop(); throw Object.assign(new Error(result.error || '没能由 Claude 桌面版插话'), { status: 409 }); }
     // Confirmed once the desktop records it: queued (enqueue) or already put in (a prompt).
-    const seen = await this.waitForRecord(route.file, offset, record => (get(record, 'type') === 'queue-operation' && get(record, 'operation') === 'enqueue') || (isHumanPrompt(record) && promptStarts(message, typedText(get(record, 'message', 'content')), 200)), 12000);
-    if (!seen) { drop(); throw Object.assign(new Error('Claude 桌面版没有收到这条插话'), { status: 409 }); }
+    const seen = await this.waitForRecord(route.file, offset, record => (get(record, 'type') === 'queue-operation' && get(record, 'operation') === 'enqueue') || (isHumanPrompt(record) && promptStarts(message, typedText(get(record, 'message', 'content')), 200)), result['queued'] === true ? Math.min(1500, this.steerConfirmMs) : this.steerConfirmMs);
+    // Still in the desktop's own queue (the helper saw its "Send now"): the desktop has it, and puts it in
+    // at the turn's next step; the run's follow takes its prompt as part of this turn then.
+    if (!seen && result['queued'] !== true) { drop(); throw Object.assign(new Error('Claude 桌面版没有收到这条插话'), { status: 409 }); }
     return {};
   }
   async sendNow(id: string): Promise<{ status: string }> {
@@ -1155,6 +1262,8 @@ class ClaudeBridge {
   }
   async interrupt(id: string): Promise<{ pending: boolean }> {
     const run = this.runs.get(id);
+    // A message still waiting for a full-screen program to leave the front never reached the desktop: taken back here.
+    if (run?.deferred) { run.cancelled = true; this.runs.delete(id); return { pending: false }; }
     const sessions = this.desktopIndex();
     const meta = sessions.find(session => session.id === id) ?? run?.meta;
     if (!meta?.title) throw Object.assign(new Error('这个会话不在 Claude 桌面版里'), { status: 409 });

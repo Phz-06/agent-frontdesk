@@ -1,6 +1,15 @@
 {
   "name": "Codex 桌面版",
   "bundleId": "com.openai.codex",
+  "windows": {
+    "exe": "ChatGPT.exe",
+    "locators": {
+      "fileCard": {
+        "role": "AXGroup",
+        "class": "group/turn-diff-header"
+      }
+    }
+  },
   "offscreenMenu": "press",
   "accessibilitySwitches": [
     "AXManualAccessibility",

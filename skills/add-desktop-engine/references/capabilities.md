@@ -230,6 +230,8 @@ Text you return for the person to read (`status().error`, `blocked()`, `usage().
 | `newSettings` | Start the new chat's menus from what the desktop's new-chat page shows | `newSettings` |
 | `openFile` | Show "Open in <you>" on file links | `openFile` |
 | `showInDesktop` | Show "Open in <you>" in the chat header (every engine has it), and on cards that can only be answered in the desktop app | `show` |
+| `takesFocus` | Tell the person once, at the first send, that sending takes the keyboard focus for a moment (a link in Settings shows it again) | Nothing: declare it `process.platform === 'win32'` when your messages go through the helper |
+| `newTakesFocus` | The same, said at the first new chat, for an engine whose other messages leave the focus alone | Nothing: declare it `process.platform === 'win32'` when only new chats go through the helper (Codex) |
 | `cardActions` | The desktop's own buttons on a summary card (commit, open a PR…) can be clicked, named and counted as read off the desktop's card, and pressed there | `readCard`, `pressAction` |
 
 The `send` and `approvals` flags are declarations only; the page does not read them: whether sending works depends on `blocked()`, whether cards appear depends on whether you send `approval` events. Fill them in truthfully so others can read your plugin.

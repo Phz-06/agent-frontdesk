@@ -7,9 +7,9 @@ Thanks for helping. Issues and pull requests can be written in English or Chines
 Frontdesk talks to desktop apps through interfaces that change when those apps update, so a report is most useful when it says:
 
 - which agent, and the desktop app's version
-- your macOS and Node.js versions
+- your macOS or Windows version and your Node.js version
 - what you did, what the page showed, and what the desktop app showed
-- the server's terminal output around that moment (start it with `AX_TRACE=1 npm start` for Accessibility problems)
+- the server's terminal output around that moment (start it with `AX_TRACE=1 npm start` for Accessibility problems; in Windows PowerShell `$env:AX_TRACE=1; npm start`)
 
 Remove anything private from logs and screenshots first. **Never attach raw screenshots of real chats.**
 
@@ -22,7 +22,7 @@ npm ci
 npm run dev
 ```
 
-You need macOS and Node.js 22.16 or later. `npm run dev` serves the page with HMR on `PORT` (4100) and runs the server under `tsx watch` on `PORT+1`. A server started this way is a child process without Accessibility permission, so anything that drives the Codex or Claude window has to be tried on an instance started with `npm start` from a terminal that has the permission.
+You need macOS or Windows 11 and Node.js 22.16 or later. `npm run dev` serves the page with HMR on `PORT` (4100) and runs the server under `tsx watch` on `PORT+1`. On macOS a server started this way is a child process without Accessibility permission, so anything that drives the Codex or Claude window has to be tried on an instance started with `npm start` from a terminal that has the permission. On Windows there is no permission to grant; run the server with the same rights as the desktop apps.
 
 Before you open a pull request:
 
@@ -39,7 +39,7 @@ npm run check    # type check + build
 | `src/server/plugins/` | One plugin per agent: what it can do, and which method does it |
 | `src/server/*-bridge.ts` | Each agent's data adapter |
 | `src/server/core/`, `src/server/services/` | Shared server layer: plugin host, run lifecycle, events, file preview |
-| `src/server/native/` | The shared Accessibility driver (Swift), each agent's steps, and how its controls are recognised, as data |
+| `src/server/native/` | The shared drivers (Accessibility in Swift on macOS, UI Automation in C# on Windows), each agent's steps for each, and how its controls are recognised, as data |
 | `src/client/kit/`, `src/client/js/` | The shared page: sidebar, composer, cards, rendering |
 | `test/` | `node:test` suites |
 

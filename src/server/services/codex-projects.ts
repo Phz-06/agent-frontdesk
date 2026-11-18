@@ -32,7 +32,15 @@ class CodexProjects {
   // rows: project/list data. Returns the projects in the desktop's order and resolve(thread).
   index(rows: unknown[] = []): { projects: CodexProject[]; resolve: (thread: { id: string; projectId?: unknown; cwd?: unknown }) => CodexProject | null | undefined } {
     const desktop = this.desktop();
-    const projects = rows.filter(row => get(row, 'id')).map((row): CodexProject => ({ id: String(get(row, 'id')), name: String(get(row, 'name') || ''), roots: list(get(row, 'roots')).map(root => String(get(root, 'path') || '').replace(/\/+$/, '')).filter(Boolean), position: Number(get(row, 'position') ?? 0), legacyId: String(get(row, 'metadata', 'codex.localProjectId') || '') }));
+    // A root without its trailing separator. A whole disk ("/", "C:\") is no project's root and is
+    // dropped, as "/" always was: it would hold every chat on the machine.
+    const stripTrail = (raw: string): string => { const trimmed = raw.replace(/[\\/]+$/, ''); return /^[a-zA-Z]:$/.test(trimmed) ? '' : trimmed; };
+    // Compared with "/" for "\" and a lower-case drive letter; on Windows, whole paths case-insensitively.
+    const normPath = (raw: string): string => {
+      const p = raw.replace(/\\/g, '/').replace(/^([A-Z]):/, (_, d: string) => `${d.toLowerCase()}:`).replace(/\/+$/, '');
+      return process.platform === 'win32' ? p.toLowerCase() : p;
+    };
+    const projects = rows.filter(row => get(row, 'id')).map((row): CodexProject => ({ id: String(get(row, 'id')), name: String(get(row, 'name') || ''), roots: list(get(row, 'roots')).map(root => stripTrail(String(get(root, 'path') || ''))).filter(Boolean), position: Number(get(row, 'position') ?? 0), legacyId: String(get(row, 'metadata', 'codex.localProjectId') || '') }));
     const byId = new Map(projects.map(project => [project.id, project]));
     const legacy = new Map<string, unknown>(desktop.legacy);
     for (const project of projects) if (project.legacyId) legacy.set(project.legacyId, project.id);
@@ -42,15 +50,20 @@ class CodexProjects {
     const ordered = [...projects].sort((a, b) => (Number(rank.has(a.id)) - Number(rank.has(b.id))) || (rank.has(a.id) ? (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0) : desktop.order.length ? b.position - a.position : a.position - b.position));
     const byRoot = [...projects].sort((a, b) => a.position - b.position);
     const under = (cwd: string): CodexProject | null => {
+      const c = normPath(cwd);
+      if (!c) return null;
       let best: CodexProject | null = null, length = -1;
-      for (const project of byRoot) for (const root of project.roots) if ((cwd === root || cwd.startsWith(`${root}/`)) && root.length > length) { best = project; length = root.length; }
+      for (const project of byRoot) for (const root of project.roots) {
+        const r = normPath(root);
+        if (r && (c === r || c.startsWith(`${r}/`)) && r.length > length) { best = project; length = r.length; }
+      }
       return best;
     };
     const resolve = (thread: { id: string; projectId?: unknown; cwd?: unknown }) => {
       const assigned = current(thread.projectId || '') || current(desktop.assignments.get(thread.id) || '');
       if (assigned) return byId.get(assigned);
       if (desktop.projectless.has(thread.id)) return null;
-      return under(String(thread.cwd || '').replace(/\/+$/, ''));
+      return under(String(thread.cwd || ''));
     };
     return { projects: ordered, resolve };
   }

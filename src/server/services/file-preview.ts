@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import type { FilePreview } from '../../shared/contract.js';
 export type { FilePreview };
@@ -24,18 +25,35 @@ const refuse = (status: number, message: string) => Object.assign(new Error(mess
 function resolveFile(cwd: string, requested: unknown, roots: string[] = []): { file: string; relative: string } {
   const bases = [cwd, ...roots].filter(Boolean);
   if (!bases.length) throw refuse(404, '这个会话没有记录工作目录，无法预览文件');
-  const asked = String(requested || '').trim().replace(/^file:\/\//, '').replace(/:(\d+)(:\d+)?$/, '');
-  // `~/…` is the home folder, as the agent's shell reads it.
-  const named = /^~(\/|$)/.test(asked) ? path.join(os.homedir(), asked.slice(1)) : asked;
+  const raw = String(requested || '').trim().replace(/:(\d+)(:\d+)?$/, '');
+  let asked = raw;
+  if (/^file:\/\//i.test(raw)) {
+    try { asked = fileURLToPath(raw); }
+    catch {
+      const stripped = raw.replace(/^file:\/\/\/?(?=[a-zA-Z]:[\\/])|^file:\/\//i, '');
+      try { asked = decodeURIComponent(stripped); } catch { asked = stripped; }
+    }
+  }
+  // `~/…` is the home folder, as the agent's shell reads it (HOME first: Git Bash and the like
+  // set it even where os.homedir() would look elsewhere, e.g. USERPROFILE on Windows).
+  const named = /^~([\\/]|$)/.test(asked) ? path.join(process.env.HOME || os.homedir(), asked.slice(1)) : asked;
   if (!asked || asked.length > 1024 || asked.includes('\0')) throw refuse(400, '文件路径无效');
   const real = (base: string): string | null => { try { return fs.realpathSync(base); } catch { return null; } };
   const reals = bases.map(real).filter((base): base is string => !!base);
   if (!reals.length) throw refuse(404, '会话的工作目录已经不存在');
-  let file: string;
-  try { file = fs.realpathSync(path.isAbsolute(named) ? named : path.join(reals[0] ?? '', named)); } catch { throw refuse(404, '找不到这个文件'); }
+  // A relative path is read in the working directory first, then in each folder the engine names
+  // (fileRoots): a session that moved names files relative to where it was.
+  let file = '';
+  for (const base of path.isAbsolute(named) ? [''] : reals) {
+    try { file = fs.realpathSync(path.isAbsolute(named) ? named : path.join(base, named)); break; } catch {}
+  }
+  if (!file) throw refuse(404, '找不到这个文件');
   for (const root of reals) {
-    const relative = path.relative(root, file);
-    if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) return { file, relative };
+    const native = path.relative(root, file);
+    // Written with "/" on every platform: the page shows it, and SECRET / INTERNAL below match on "/"
+    // (on Windows a bare path.relative gives ".git\config", which would slip past INTERNAL).
+    const relative = native.split(path.sep).join('/');
+    if (native && !native.startsWith('..') && !path.isAbsolute(native)) return { file, relative };
   }
   throw refuse(403, '只能预览这个会话工作目录里的文件');
 }

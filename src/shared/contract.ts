@@ -56,6 +56,10 @@ export interface Capabilities {
   sendBlocked?: string;
   /** true: interrupt can stop a desktop turn without a Frontdesk run record. */
   desktopInterrupt?: boolean;
+  /** true: a message is sent by working the desktop app's window, which on this platform takes the keyboard focus for a moment (Windows: docs/windows.md). The page says so once, at the first send. */
+  takesFocus?: boolean;
+  /** true: only a new chat (its first message) is sent that way; the others go by a channel that leaves the focus alone (Codex). The page says so once, at the first new chat. */
+  newTakesFocus?: boolean;
 }
 /** The flags of Capabilities only: what a desktop mode (space) or a session may narrow. */
 export type CapabilityFlags = { [K in keyof Capabilities as NonNullable<Capabilities[K]> extends boolean ? K : never]?: boolean };
@@ -224,7 +228,8 @@ export interface Model {
   [extra: string]: unknown;
 }
 /** `stale`: the controls of the desktop app that its accessibility profile no longer finds by their marks (DesktopAutomation#staleControls): sending still works where their names do. */
-export interface EngineStatus { connected: boolean; error?: string; stale?: string[]; [extra: string]: unknown }
+/** `park` (Windows): the engine's last park of its window, while recent, when it did not put everything back (DesktopAutomation#parkTrouble). */
+export interface EngineStatus { connected: boolean; error?: string; stale?: string[]; park?: { command: string; issues: string[]; at: number }; [extra: string]: unknown }
 export interface Project { id: string; name: string; cwd: string; space?: string }
 
 export interface UsageWindow { id: string; label?: string; windowMinutes?: number | null; remainingPercent?: number | null; usedPercent?: number | null; resetsAt?: number | null }
@@ -424,6 +429,8 @@ export interface BridgeConfig {
   settingsFile: string;
   agyHome: string;
   agentapiBin: string | null;
+  /** Arguments put before every agentapi command (Windows runs it as `language_server.exe agentapi …`). */
+  agentapiArgs?: string[];
   catalogs: Record<string, Model[]>;
 }
 

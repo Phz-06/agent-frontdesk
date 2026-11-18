@@ -2,14 +2,14 @@
 // every turn run by the Codex desktop app. The app-server's answers are its own JSON-RPC format:
 // they enter as unknown and are read through the guards, so a field that is missing or shaped
 // differently reads as nothing, as optional chaining did.
-import { spawn, execFile, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import readline from 'node:readline';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import { NATIVE } from './paths.js';
-import { loadConfig } from './config.js';
+import { loadConfig, winSpawnArgs } from './config.js';
 import EventEmitter from 'node:events';
 import { CodexLifecycle, resolveCodexTurn } from './services/codex-lifecycle.js';
 import { changesOf, questionCard } from './core/presentation.js';
@@ -17,8 +17,9 @@ import { withAttachments } from './core/attachments.js';
 import { characterReferences, promptStarts } from '../shared/turn-match.js';
 import * as codexDesktop from './codex-desktop.js';
 import type { CodexDesktopIpc, CodexInput, DesktopRequest, ThreadSettings } from './codex-desktop.js';
-import { DesktopAutomation, type DesktopFlags } from './core/desktop-automation.js';
+import { DesktopAutomation, throughFullscreen, FULLSCREEN_EVERY_MS, FULLSCREEN_HOLD_MS, type DesktopFlags } from './core/desktop-automation.js';
 import { CodexProjects } from './services/codex-projects.js';
+import { openLink } from './services/desktop-places.js';
 import { UnifiedSession, UnifiedTurn, UnifiedStep, EngineEvents } from './types.js';
 import { arr, bag, errorField, get, isBag, list, messageOf, num, parseJson, str, strOrNull, text } from '../shared/guards.js';
 import type {
@@ -143,7 +144,12 @@ class CodexBridge extends EventEmitter {
     const bin = this.codexBin;
     if (!bin) throw new Error('未发现 Codex，请设置 CODEX_BIN');
     this.starting = (async () => {
-      const proc = spawn(bin, ['app-server', '--stdio']);
+      // A codex.cmd shim (an npm install) goes through cmd.exe, quoted by winSpawnArgs; the desktop's
+      // own codex.exe starts directly. No console window either way.
+      const [cmd, cmdArgs, cmdOpts] = winSpawnArgs(bin, ['app-server', '--stdio'], {
+        stdio: ['pipe', 'pipe', 'pipe'] as ['pipe', 'pipe', 'pipe'], windowsHide: true,
+      });
+      const proc = spawn(cmd, cmdArgs, cmdOpts);
       this.proc = proc;
       proc.on('error', err => this.failPending(err));
       proc.on('exit', code => {
@@ -231,11 +237,13 @@ class CodexBridge extends EventEmitter {
   async getStatus(): Promise<EngineStatus> {
     let error;
     try { await this.start(); } catch (err) { error = messageOf(err); }
+    const park = this.ui.parkTrouble?.();
     return {
       connected: this.isReady, error,
       account: this.accountInfo,
       engine: 'codex',
-      ...(this.ui.staleControls?.().length ? { stale: this.ui.staleControls() } : {})
+      ...(this.ui.staleControls?.().length ? { stale: this.ui.staleControls() } : {}),
+      ...(park ? { park: { command: park.command, issues: park.issues, at: park.at } } : {}),
     };
   }
 
@@ -564,8 +572,12 @@ class CodexBridge extends EventEmitter {
     // The project is picked by its name in the desktop's project menu; no cwd = outside every project.
     let project = ':none';
     if (input.cwd) {
-      const cwd = path.resolve(input.cwd).replace(/\/+$/, '');
-      const match = (await this.listProjects()).find(item => item.cwd && path.resolve(item.cwd) === cwd);
+      const normCwd = (p: string) => {
+        const resolved = path.resolve(p);
+        return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+      };
+      const cwd = normCwd(input.cwd);
+      const match = (await this.listProjects()).find(item => item.cwd && normCwd(item.cwd) === cwd);
       if (!match) refuse('这个文件夹不是 Codex 桌面版里的项目，请在桌面版里先把它加为项目');
       project = match.name;
     }
@@ -574,7 +586,8 @@ class CodexBridge extends EventEmitter {
     // The desktop's composer takes text; attachments go in as their paths.
     const message = withAttachments(input.prompt, input.attachments);
     const known = new Set(list(get(await this.send('thread/list', { limit: 50 }), 'result', 'data')).map(thread => get(thread, 'id')));
-    const result = await this.ui.run(['new', project], { input: message, settings: wanted });
+    // With a full-screen program in front, the request waits a while for it to go (throughFullscreen).
+    const result = await throughFullscreen(() => this.ui.run(['new', project], { input: message, settings: wanted }), this.held());
     if (!result.ok) refuse(result.error || '没能在 Codex 桌面版里新建聊天');
     const thread = await this.newDesktopThread(known, message);
     if (!thread) throw Object.assign(new Error('消息已在 Codex 桌面版里发出，但还没在它的聊天列表里看到这个新聊天，请到桌面版里查看'), { status: 504 });
@@ -610,12 +623,27 @@ class CodexBridge extends EventEmitter {
       const thread = await this.readThread(threadId, true);
       const known = new Set(list(get(thread, 'turns')).map(turn => get(turn, 'id')));
       // A different model or effort is picked in the desktop first.
-      await this.pickInDesktop(thread, { model, reasoningEffort });
+      await this.pickInDesktop(thread, { model, reasoningEffort }, () => emitter.emit('warning', { message: '前台的程序独占全屏，消息先留在工作台，你离开它后自动发出', retrying: true }));
       const inputs = this.buildCodexInputs(prompt, attachments);
+      // After a stopped turn the desktop holds its queue: every queued message shows as paused
+      // until the person sends one, so a queued message would wait there (measured on Windows; the
+      // desktop's own code, so the Mac's too). The window that owns the chat starts the turn
+      // instead, as its composer does when no turn runs. With no window on the chat it is queued.
+      const paused = get(list(get(thread, 'turns')).at(-1), 'status') === 'interrupted';
+      if (paused && this.desktop.startTurn) {
+        try {
+          await this.desktop.startTurn({ threadId, inputs });
+          this.follow(threadId, { prompt, known, emitter });
+          return;
+        } catch (err) {
+          if (errorField(err, 'code') === 'timeout') throw Object.assign(new Error('Codex 桌面版没有确认开始这一轮，请在桌面版里看一下这条消息有没有发出'), { terminal: true });
+          if (!codexDesktop.unreached(err)) throw Object.assign(new Error(`没能让 Codex 桌面版开始这一轮（${messageOf(err)}），没有发送`), { terminal: true });
+        }
+      }
       const queued = await this.send('thread/queue/add', { threadId, clientUserMessageId: randomUUID(), input: inputs });
       emitter.queuedId = get(queued, 'result', 'queuedSubmission', 'id');
       await this.wake(threadId);
-      this.follow(threadId, { prompt, known, emitter });
+      this.follow(threadId, { prompt, known, emitter, paused });
     })().catch((err: unknown) => {
       const error = err instanceof Error ? err : new Error(String(err));
       emitter.emit('error', Object.assign(error, { terminal: Boolean(errorField(error, 'terminal') ?? !errorField(error, 'transport')) }));
@@ -633,7 +661,8 @@ class CodexBridge extends EventEmitter {
   //  3. Neither works (the IPC has changed, or the sidebar opened another chat of the same name):
   //     the desktop's model menu and Power slider pick it (5-7 s), unless another chat has the same
   //     name, since the menu finds the chat by its name.
-  async pickInDesktop(thread: unknown, { model, reasoningEffort }: { model?: string | undefined; reasoningEffort?: string | undefined }): Promise<void> {
+  // `held`: told when the desktop's window cannot be worked yet (a full-screen program in front), and the change waits for it.
+  async pickInDesktop(thread: unknown, { model, reasoningEffort }: { model?: string | undefined; reasoningEffort?: string | undefined }, held?: () => void): Promise<void> {
     const refuse = (message: string): never => { throw Object.assign(new Error(message), { terminal: true }); };
     const threadId = text(get(thread, 'id'));
     const current = { model: text(get(thread, 'model')), effort: text(get(thread, 'reasoningEffort')) };
@@ -647,7 +676,7 @@ class CodexBridge extends EventEmitter {
     if (ipc.owns && ipc.readSettings && ipc.updateSettings) {
       let owned = await ipc.owns(threadId);
       if (!owned && (await this.ui.check()).available) {
-        const opened = await this.ui.run(['settings', title]);
+        const opened = await throughFullscreen(() => this.ui.run(['settings', title]), this.held(held));
         // The menu finds the chat in the sidebar the same way: not there, so no use trying it.
         if (!opened.ok) refuse(`${opened.error || '没能在 Codex 桌面版里打开这个聊天'}，没有发送`);
         owned = await ipc.owns(threadId, { waitMs: 2000 });
@@ -671,9 +700,13 @@ class CodexBridge extends EventEmitter {
     const wanted = await this.desktopSettings({ model, reasoningEffort }, { model: current.model, reasoningEffort: current.effort });
     const state = await this.ui.check();
     if (!state.available) refuse(`要换模型或推理强度得在 Codex 桌面版里换，但${state.reason}，没有发送`);
-    const result = await this.ui.run(['settings', title], { settings: wanted });
+    const result = await throughFullscreen(() => this.ui.run(['settings', title], { settings: wanted }), this.held(held));
     if (!result.ok) refuse(`${result.error || '没能在 Codex 桌面版里换模型'}，没有发送`);
   }
+  // How a command through the window waits out a full-screen program in front (throughFullscreen).
+  fullscreenRetryMs = FULLSCREEN_EVERY_MS;
+  fullscreenHoldMs = FULLSCREEN_HOLD_MS;
+  held(held?: () => void): { everyMs: number; maxMs: number; held?: () => void } { return { everyMs: this.fullscreenRetryMs, maxMs: this.fullscreenHoldMs, ...(held ? { held } : {}) }; }
   // Whether another recent chat has this name in the desktop's sidebar.
   async sharesName(threadId: string, title: string): Promise<boolean> {
     const rows = list(get(await this.send('thread/list', { limit: 100 }).catch(() => null), 'result', 'data'));
@@ -682,13 +715,14 @@ class CodexBridge extends EventEmitter {
   // Asks the desktop to run what the thread has queued. `open -g` keeps it in the background;
   // a desktop that is not running starts just to do this.
   wake(threadId: string): Promise<void> {
-    return new Promise((resolve, reject) => execFile('/usr/bin/open', ['-g', `codex://threads/wake/${threadId}`], { timeout: 15000 }, err => err ? reject(Object.assign(new Error('没能唤起 Codex 桌面版来处理这条消息'), { cause: err })) : resolve()));
+    return openLink(`codex://threads/wake/${threadId}`).catch((err: unknown) => { throw Object.assign(new Error('没能唤起 Codex 桌面版来处理这条消息'), { cause: err }); });
   }
   // Follows the desktop's record of the thread: the first turn not in `known` that carries this
   // message, item by item, until the record says how it ended. The record has a reply only once it
   // is whole; while it is being written, its text so far is taken from the window that owns the
   // thread (see codex-desktop.ts watch), as that window draws it.
-  follow(threadId: string, { prompt, known, emitter }: { prompt: string; known: ReadonlySet<unknown>; emitter: CodexRun }): void {
+  // `paused`: queued after a stopped turn, where the desktop may hold it (startTurn).
+  follow(threadId: string, { prompt, known, emitter, paused = false }: { prompt: string; known: ReadonlySet<unknown>; emitter: CodexRun; paused?: boolean }): void {
     const seen = new Map<string, string>(), started = Date.now();
     let polling = false, warned = false;
     const writing = this.followReplies(emitter, id => seen.has(id));
@@ -705,7 +739,10 @@ class CodexBridge extends EventEmitter {
           return promptStarts(list(get(item, 'content')).map(part => text(get(part, 'text'))).join('\n'), prompt, 200);
         }));
         if (!turn) {
-          if (!warned && Date.now() - started > 20000) { warned = true; emitter.emit('warning', { message: '消息已排进 Codex 桌面版的队列，正在等桌面版接手', retrying: true }); }
+          if (!warned && Date.now() - started > 20000) {
+            warned = true;
+            emitter.emit('warning', { message: paused ? '消息已排进 Codex 桌面版的队列，但上一轮是被停止的，桌面版会先暂停它：在桌面版里打开这个会话把它发出去，或在这里停止撤回' : '消息已排进 Codex 桌面版的队列，正在等桌面版接手', retrying: true });
+          }
           return;
         }
         const turnId = text(get(turn, 'id'));

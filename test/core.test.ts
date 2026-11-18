@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import { once } from 'node:events';
 import { EngineEvents } from '../src/server/types.js';
 import { at, bridgeEvent, dig, fake, must, required } from './support.js';
-import { errorField, get } from '../src/shared/guards.js';
+import { errorField, get, list } from '../src/shared/guards.js';
 import { loadConfig } from '../src/server/config.js';
 import type { CodexDesktopIpc, DesktopRequest, LiveThread } from '../src/server/codex-desktop.js';
 import type { AnyBridgeEvent, BridgeEventMap, BridgeEventType, Engine, History, RunTurn, UnifiedSession, UnifiedStep, UnifiedTurn } from '../src/shared/contract.js';
@@ -115,8 +115,9 @@ test('history presentation removes patches, raw thinking and file contents', () 
   assert.doesNotMatch(JSON.stringify(output), /PRIVATE|SECRET/);
   assert.equal(at(at(output.turns, 0).artifacts, 0).title, 'brief.md');
 });
-test('tailer retains partial JSON and multibyte text and releases timer', () => {
+test('tailer retains partial JSON and multibyte text and releases timer', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-tail-')), file = path.join(dir, 'history.jsonl');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   fs.writeFileSync(file, ''); const records: unknown[] = [], errors: unknown[] = [];
   const tail = tailJsonl(file, 0, record => records.push(record), { onError: err => errors.push(err) });
   const bytes = Buffer.from('{"text":"你好"}\n');
@@ -306,7 +307,9 @@ test('a queued message can still be steered in, or taken back to edit', async ()
 
 test('Codex steers a desktop-run turn through the desktop IPC as a thread follower', async t => {
   const net = __node_net, codexDesktop = __codex_desktop;
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ipc-')), sock = path.join(dir, 's.sock');
+  // A stand-in router where the desktop's would be: a socket file, or on Windows a named pipe.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ipc-'));
+  const sock = process.platform === 'win32' ? `\\\\.\\pipe\\frontdesk-test-${path.basename(dir)}` : path.join(dir, 's.sock');
   const seen: unknown[] = [];
   const server = net.createServer(socket => {
     let buffer: Buffer = Buffer.alloc(0); socket.on('error', () => {});
@@ -431,7 +434,8 @@ test('what Codex waits on the person for is a card, followed from the owning win
 
 test('the window that owns a Codex thread is followed whole: its requests, and its turns with a reply as it is written', async t => {
   const { watch, frame } = __codex_desktop;
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ipc-')), sock = path.join(dir, 's.sock');
+  // (a socket file, or on Windows a named pipe, as the test above)
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ipc-')), sock = process.platform === 'win32' ? `\\\\.\\pipe\\frontdesk-test-${path.basename(dir)}` : path.join(dir, 's.sock');
   // The desktop's router: it answers the follower, then gives the owner's state and its changes.
   const items = (text: string) => [{ id: 'm', type: 'agentMessage', text }];
   const changed = (change: object) => frame({ type: 'broadcast', method: 'thread-stream-state-changed', params: { conversationId: 'th', change } });
@@ -487,4 +491,33 @@ test('every icon the page names in its sources is one it carries (the rest of lu
   const missing = [...named].filter(([name]) => !hasIcon(name)).map(([name, file]) => `${name} (${file})`);
   assert.deepEqual(missing, [], 'add these to src/client/js/icons.ts');
   assert.equal(hasIcon('zebra-crossing-not-an-icon'), false);
+});
+
+test('the Windows helper is compiled with the csc.exe Windows ships and speaks the same protocol', async t => {
+  const { DesktopAutomation } = await import('../src/server/core/desktop-automation.js');
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'uia-cache-'));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  // check on win32 says what the machine offers, not the macOS permission refusal: available once
+  // the engine's flow ports send.
+  const desktop = new DesktopAutomation({ engine: 'claude', platform: 'win32', cacheDir: temp, warmEveryMs: 0,
+    runner: async (_file, args) => args[0] === 'check' ? { ok: true, trusted: true, running: true, ported: ['send'] } : { ok: true } });
+  desktop.binary = 'C:\helper.exe';
+  assert.deepEqual(await desktop.check(), { available: true });
+  // A platform the codebase does not serve still refuses, with the wording both languages carry.
+  const refused = await new DesktopAutomation({ engine: 'claude', platform: 'linux' }).check();
+  assert.equal(refused.available, false);
+  assert.match(refused.reason || '', /macOS 和 Windows/);
+  if (process.platform === 'win32') {
+    // The real compile of each engine's flow, then the one command that only looks (nothing is
+    // pressed in a unit test): Claude's flow sends through its window, Codex's starts new chats.
+    for (const [engine, own] of [['claude', 'send'], ['codex', 'new']] as const) {
+      const real = new DesktopAutomation({ engine, platform: 'win32', cacheDir: temp, warmEveryMs: 0 });
+      const file = await real.helper();
+      assert.ok(file?.endsWith('.exe'), 'the helper is an .exe in the cache');
+      const checked = await real.runner(must(file), ['check'], { timeout: 10000, env: { AX_PROFILE: real.profile } });
+      assert.equal(checked.ok, true);
+      assert.ok(list(checked['ported']).includes(own), `${engine}'s flow ports ${own}`);
+      assert.ok(list(checked['ported']).includes('chat-send'), 'the chat modes come with any flow');
+    }
+  }
 });

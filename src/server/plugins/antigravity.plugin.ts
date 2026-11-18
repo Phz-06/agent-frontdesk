@@ -2,6 +2,7 @@ import { registerTool, type ToolSummary } from '../services/tool-catalog.js';
 import { AntigravityBridge } from '../antigravity-bridge.js';
 import { get } from '../../shared/guards.js';
 import { appPlaces, firstExisting } from '../services/app-assets.js';
+import { antigravityApp, antigravityIconFile } from '../services/desktop-places.js';
 import type { Character, PluginAbout, PluginSetup } from '../../shared/contract.js';
 const text = (value: unknown): string => String(value ?? '').replace(/\s+/g, ' ').trim();
 // A tool call's arguments, as Antigravity records them (its own names).
@@ -24,8 +25,8 @@ const CHARACTER: Character = { kind: 'image', url: '/assets/characters/antigravi
 /** The agent as the console lists it before it is set up: found when Antigravity's data folder, or the app, is on this machine. */
 export const about: PluginAbout = { ...IDENTITY, character: CHARACTER,
   // The app's own icon, read from the installed app (the host serves it; nothing is copied here).
-  appIcon: () => process.env.ANTIGRAVITY_APP_ICON || '/Applications/Antigravity.app/Contents/Resources/icon.icns',
-  detect: config => firstExisting([...appPlaces('/Applications/Antigravity.app/'), config.agyHome]) };
+  appIcon: () => process.env.ANTIGRAVITY_APP_ICON || antigravityIconFile(),
+  detect: config => firstExisting([...(antigravityApp() ? appPlaces(antigravityApp()) : []), config.agyHome]) };
 export const setup: PluginSetup = ({ config, registerEngine }) => {
   // Where Antigravity keeps its data: always set by the server's configuration (config.ts).
   const agyHome = config.agyHome;
@@ -39,7 +40,8 @@ export const setup: PluginSetup = ({ config, registerEngine }) => {
     capabilities: { dictation: true, attachments: true, models: true, interrupt: true, createRequiresPrompt: true, send: true, steer: true,
       // A new chat can start in a folder (the language server takes the workspace), and what the
       // agent waits on the person for (a permission, its own question) is answered from a card in the chat.
-      // Its window is driven only to take the person to a chat, or to a file in one (Accessibility).
+      // Its window is driven only to take the person to a chat, or to a file in one (Accessibility on
+      // macOS, UI Automation on Windows).
       cwd: true, approvals: true, openFile: true, showInDesktop: true },
     usage: () => bridge.getUsage(),
     dictate: options => bridge.dictate(options), dictationReady: () => bridge.dictationReady(),

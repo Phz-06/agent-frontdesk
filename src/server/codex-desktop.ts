@@ -1,5 +1,5 @@
 // Steering a Codex turn that the desktop app is running. The desktop (ChatGPT.app) keeps a local
-// IPC router at ~/.codex/ipc/ipc.sock where its own windows coordinate: a window that does not own
+// IPC router (~/.codex/ipc/ipc.sock on macOS, the pipe \\.\pipe\codex-ipc on Windows) where its own windows coordinate: a window that does not own
 // a thread asks the owner to act with "thread-follower-*" requests. We join briefly as one more
 // follower and send "thread-follower-steer-turn"; the owning window delivers the message exactly as
 // if it had been typed into its composer while the turn runs. Nothing is read from or written to
@@ -36,7 +36,12 @@ export type CodexInput = { type: string; [field: string]: unknown };
 
 const ipcError = (message: string, code: string): IpcError => Object.assign(new Error(message), { code });
 
-function socketPath(codexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex')): string {
+// Where the desktop's router listens: a socket under the Codex home on macOS; on Windows a named
+// pipe, since Node and Electron cannot listen on a socket path there (the desktop's own code:
+// `path.join("\\\\.\\pipe", "codex-ipc")`). net.createConnection takes either. CODEX_IPC_PATH
+// overrides it on Windows (tests, or a Codex build that names its pipe otherwise).
+function socketPath(codexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), platform: NodeJS.Platform = process.platform): string {
+  if (platform === 'win32') return process.env.CODEX_IPC_PATH || '\\\\.\\pipe\\codex-ipc';
   return path.join(codexHome, 'ipc', 'ipc.sock');
 }
 
@@ -117,6 +122,18 @@ function steer({ threadId, prompt, inputs, cwd }: { threadId: string; prompt: st
       responsesapiClientMetadata: { source: 'codex' },
     },
   }, { version: STEER_VERSION, ...options });
+}
+
+// Starts a turn in the window that owns the thread, as its own composer does when no turn runs.
+// Only the message is given: the owner fills in the chat's cwd, model, effort, mode and
+// permissions as for a message typed there (measured on Windows: the turn's turn_context matched
+// the desktop's own turns).
+const START_VERSION = 2;
+function startTurn({ threadId, inputs }: { threadId: string; inputs: CodexInput[] }, options?: RequestOptions): Promise<unknown> {
+  return request('thread-follower-start-turn', {
+    conversationId: threadId,
+    turnStart: { request: { threadId, clientUserMessageId: randomUUID(), input: inputs }, context: {} },
+  }, { version: START_VERSION, timeoutMs: 20000, ...options });
 }
 
 // Stops the turn the desktop is running, as its own Stop button does ("user-stop"); only that
@@ -242,10 +259,14 @@ async function updateSettings({ threadId, to, from }: { threadId: string; to: { 
   }, { version: SETTINGS_VERSION, timeoutMs: 5000, ...options });
   return get(result, 'applied') === true;
 }
+/** Router errors that mean no window of the desktop has this chat (or the desktop is not there): nothing was asked of it. */
+const NOT_REACHED = new Set(['no-client-found', 'ENOENT', 'ECONNREFUSED', 'EPIPE', 'unavailable', 'closed']);
+const unreached = (err: unknown): boolean => NOT_REACHED.has(String(get(err, 'code') || ''));
 
 /** What the bridge uses of the desktop's IPC; a stand-in replaces it in tests. */
 export interface CodexDesktopIpc {
   steer: typeof steer;
+  startTurn?: typeof startTurn;
   interrupt: typeof interrupt;
   watch?: typeof watch;
   answerUserInput: typeof answerUserInput;
@@ -255,4 +276,4 @@ export interface CodexDesktopIpc {
   updateSettings?: typeof updateSettings;
 }
 
-export { socketPath, frame, request, steer, interrupt, applyPatches, watch, answerUserInput, decideApproval, owns, readSettings, updateSettings };
+export { socketPath, frame, request, steer, startTurn, interrupt, unreached, applyPatches, watch, answerUserInput, decideApproval, owns, readSettings, updateSettings };

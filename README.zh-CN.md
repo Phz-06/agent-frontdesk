@@ -9,7 +9,7 @@
 
 [![CI](https://github.com/Phz-06/agent-frontdesk/actions/workflows/ci.yml/badge.svg)](https://github.com/Phz-06/agent-frontdesk/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)
+![Platform: macOS · Windows 11](https://img.shields.io/badge/platform-macOS%20%C2%B7%20Windows%2011-lightgrey.svg)
 ![Node 22.16+](https://img.shields.io/badge/node-%E2%89%A5%2022.16-brightgreen.svg)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-orange.svg)](CONTRIBUTING.md)
 
@@ -54,13 +54,13 @@ Agent Frontdesk 把这些桌面应用放进同一个网页。干活的还是各�
 - 在一个聊天里引用另一个 AI 的聊天：工作台把那个聊天整理好，作为附件卡片附在你的消息上（也可以转成文字修改）；聊天太长时较早的轮次会精简
 - AI 提的问题和要你确认的操作，直接在网页上回答
 - 回复按各家桌面版的样子显示，代码、公式、图表、工具步骤、计划清单都在
-- 回复里提到的文件，点一下就在右边打开预览，也可以在 Finder 里显示
+- 回复里提到的文件，点一下就在右边打开预览，也可以在 Finder 或资源管理器里显示
 - 任何一个聊天都能一键在桌面应用里打开，回到同一个会话接着用
 - AI 可以随时开关、改名、排序、换头像，有浅色和深色，中文和英文
 
 ## 快速开始
 
-需要 macOS 和 [Node.js](https://nodejs.org) 22.16 以上。
+需要 macOS 或 Windows 11 和 [Node.js](https://nodejs.org) 22.16 以上，不用另外安装别的：操作桌面应用窗口的辅助程序在你的电脑上现场编译，macOS 用 Xcode 命令行工具，Windows 用系统自带的 C# 编译器（.NET Framework 4）。
 
 ```sh
 git clone https://github.com/Phz-06/agent-frontdesk.git
@@ -73,11 +73,23 @@ npm start
 
 目前已经接好的有 Codex、Claude 和 Antigravity，用之前先把对应的桌面应用打开并登录。
 
-给 Codex 和 Claude 发消息需要辅助功能权限：在「系统设置 → 隐私与安全性 → 辅助功能」里允许你运行 `npm start` 的那个终端应用，然后重新启动 Frontdesk。桌面应用的界面语言建议先用英文。
+在 macOS 上，给 Codex 和 Claude 发消息需要辅助功能权限：在「系统设置 → 隐私与安全性 → 辅助功能」里允许你运行 `npm start` 的那个终端应用，然后重新启动 Frontdesk。Windows 11 没有要授予的权限，但 Frontdesk 要和桌面应用以相同的权限运行（都以管理员身份，或都不是）：Windows 允许程序读取更高权限应用的窗口，但不允许操作它。桌面应用的界面语言建议先用英文。
 
 Claude 的模型列表、额度和语音输入还要登录一次 Claude Code，用和桌面版相同的账号。没登录时页面会给出要运行的命令，在终端跑一次就行。
 
-端口被占用时用 `PORT=4200 npm start`。
+端口被占用时用 `PORT=4200 npm start`（Windows PowerShell 下用 `$env:PORT=4200; npm start`）。
+
+## Windows 上会遇到的情况
+
+在 macOS 上，Frontdesk 按桌面版窗口里的按钮时，那个窗口不会拿到键盘焦点。Windows 不允许这样做：Frontdesk 往 Claude 或 Codex 的窗口里填消息、按发送，那个窗口都会短暂拿走焦点。我们把这段时间压得尽量短，事后也会把一切放回原样，但你可能还是会注意到：
+
+- **发消息时在别的程序里打字。** 发一条消息，焦点会被拿走 2–3 次，每次 20–90 毫秒。如果你是在 Frontdesk 里打字，它会等你停顿后再动手；在别的程序里，用输入法拼到一半的字可能会被打断，也可能丢一个按键。
+- **改模型或推理强度。** 桌面版的菜单只在它拿着焦点时才能用，所以大约半秒内你打的字会进到桌面版里。
+- **全屏。** 前台的程序独占全屏时，Frontdesk 会等你离开它再发；无边框全屏可能会卡一下。
+- **屏幕角落的几个像素。** 操作期间，桌面版窗口会挪到屏幕外，只在角落留几个像素，结束后放回原处。如果中途服务器被关掉，下次启动时会自动放回。
+- Codex 的普通消息、插话、停止和大多数换模型走它自己的通道，不受影响。新建 Codex 聊天，以及给 Codex 还没打开过的聊天换模型，会和 Claude 一样经过它的窗口。
+
+如果你知道怎么在 Windows 上操作 Chromium / Electron 窗口而不让它拿到焦点，欢迎来聊。我们试过什么、测到了什么，都写在 [docs/windows.md](docs/windows.md)。
 
 ## 接入新的 AI
 
@@ -87,7 +99,7 @@ Frontdesk 的目标是所有桌面版 AI，所以接入这件事交给 AI 自己
 
 ## 工作原理
 
-Frontdesk 是跑在你电脑上的一个小服务。它读各家桌面应用留在本机的记录来显示历史和进度。发消息时走桌面应用自己的通道：应用有接口的用接口，没有的通过 macOS 辅助功能在后台操作应用的窗口，填好消息、按下发送，不会把窗口抢到前台。
+Frontdesk 是跑在你电脑上的一个小服务。它读各家桌面应用留在本机的记录来显示历史和进度。发消息时走桌面应用自己的通道：应用有接口的用接口，没有的在 macOS 通过辅助功能（在 Windows 11 通过 UI Automation）在后台操作应用的窗口，填好消息、按下发送，不会把窗口抢到前台。在 Windows 上，应用窗口每次都会短暂拿走键盘焦点，Frontdesk 会立刻把焦点还给你，并把窗口放回原处（见 [Windows 上会遇到的情况](#windows-上会遇到的情况)）。全程不发任何按键，也不碰剪贴板。
 
 ```
  浏览器 ──▶ Frontdesk 服务 ──▶ 每个 AI 一个插件 ──▶ 桌面应用
@@ -96,8 +108,8 @@ Frontdesk 是跑在你电脑上的一个小服务。它读各家桌面应用留�
 
 | AI | 历史从哪读 | 消息怎么发 |
 | --- | --- | --- |
-| Codex | Codex 本机的 app-server | Codex 自己的消息队列和窗口间通道（改模型也走它），新建聊天用 macOS 辅助功能 |
-| Claude | Claude Code 的会话记录 | macOS 辅助功能 |
+| Codex | Codex 本机的 app-server | Codex 自己的消息队列和窗口间通道（改模型也走它），新建聊天在 macOS 用辅助功能 / 在 Windows 用 UIA |
+| Claude | Claude Code 的会话记录 | macOS 辅助功能 / Windows UIA |
 | Antigravity | 它的本地数据库和会话记录 | 它本机的 language server |
 
 一轮对话有没有完成，以桌面应用自己的记录为准。桌面应用更新后这些通道可能会变，我们会跟着更新。
@@ -122,11 +134,11 @@ Frontdesk 是跑在你电脑上的一个小服务。它读各家桌面应用留�
 | `BRIDGE_PLUGIN_DIR` | 从哪个目录加载插件 | `dist/server/plugins` |
 | `BRIDGE_MODEL_CATALOG` | 给列不出自己模型的 AI 用的模型 ID JSON 文件 | 无 |
 | `BRIDGE_DICTATION_ENGINE` | 语音输入先试哪个 AI 的识别，用不了时换其他 AI 的或浏览器的 | `claude` |
-| `CODEX_BIN` / `CODEX_HOME` | Codex 可执行文件和数据目录 | 从 `PATH` 或 ChatGPT.app 里找 / `~/.codex` |
+| `CODEX_BIN` / `CODEX_HOME` | Codex 可执行文件和数据目录 | 从 `PATH`、ChatGPT.app、MSIX 包或 `~/.codex` 探测 |
 | `CLAUDE_BIN` / `CLAUDE_HOME` | Claude Code 可执行文件和会话目录 | 从 `PATH` 或 Claude 的应用数据里找 / `~/.claude` |
-| `CLAUDE_DESKTOP_HOME` | Claude 桌面应用的数据目录 | `~/Library/Application Support/Claude` |
+| `CLAUDE_DESKTOP_HOME` | Claude 桌面应用的数据目录 | `~/Library/Application Support/Claude`（Windows 为 `%LOCALAPPDATA%\Claude-Data\claude_<id>`，没有时为 `%APPDATA%\Claude`） |
 | `AGENTAPI_BIN` / `ANTIGRAVITY_HOME` | Antigravity 的命令行工具和数据目录 | `~/.gemini/antigravity` |
-| `CHATGPT_APP_ASAR` / `CLAUDE_APP_ASAR` / `ANTIGRAVITY_APP_ICON` | 从这些已安装的应用里读图标、角色和字体 | `/Applications` 下 |
+| `CHATGPT_APP_ASAR` / `CLAUDE_APP_ASAR` / `ANTIGRAVITY_APP_ICON` | 从这些已安装的应用里读图标、角色和字体 | macOS 在 `/Applications` 下，Windows 在 `%LOCALAPPDATA%\Programs` 或 MSIX 下 |
 
 </details>
 
@@ -135,13 +147,12 @@ Frontdesk 是跑在你电脑上的一个小服务。它读各家桌面应用留�
 - 服务只监听本机，没有登录，不要把它暴露到公网
 - 聊天都留在你的电脑上，没有遥测，也没有我们的服务器
 - 语音输入和额度用的是 Claude Code 自己的登录信息，只在服务端读取
-- 辅助功能权限给的是运行 Frontdesk 的那个终端
+- 在 macOS 上，辅助功能权限给的是运行 Frontdesk 的那个终端（Windows 使用 UI Automation，无需系统级辅助功能授权）
 
 报告漏洞见 [SECURITY.md](SECURITY.md)。
 
 ## 未来计划
 
-- 支持 Windows
 - 接入更多桌面版 AI
 - 桌面应用用中文等其他界面语言时也能完整使用
 - 加上登录，在手机上远程查看和发消息

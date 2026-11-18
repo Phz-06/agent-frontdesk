@@ -13,13 +13,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import readline from 'node:readline';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import EventEmitter from 'node:events';
 import { UnifiedSession, UnifiedTurn, UnifiedStep, EngineEvents, assignPhases } from './types.js';
 import { questionCard } from './core/presentation.js';
 import { withAttachments } from './core/attachments.js';
-import { loadConfig } from './config.js';
+import { loadConfig, winSpawnArgs } from './config.js';
 import { tailJsonl } from './services/jsonl-tail.js';
 import { readSqlite } from './services/sqlite-reader.js';
 import { DesktopAutomation, type HelperResult } from './core/desktop-automation.js';
@@ -64,7 +64,23 @@ function toolOutput(content: unknown): string {
 // The live run (watchTurn) and the record (parseRecords) use this one rule.
 function editedFile(step: Pick<Step, 'type' | 'paths'>): string {
   const target = step.paths?.[0];
-  return step.type === 'file_change' && target && !target.includes(`${path.sep}.system_generated${path.sep}`) ? target : '';
+  return step.type === 'file_change' && target && !/[\\/]\.system_generated[\\/]/.test(target) ? target : '';
+}
+function uriPath(raw: unknown): string {
+  const value = String(raw || '');
+  if (/^file:\/\//i.test(value)) { try { return fileURLToPath(value); } catch {} }
+  return value;
+}
+function normPath(raw: unknown): string {
+  const value = uriPath(raw);
+  if (!value) return '';
+  const resolved = path.resolve(value).replace(/\\/g, '/');
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+function repoKeyOf(cwd: string): string {
+  const norm = cwd.replace(/\\/g, '/').replace(/^([A-Z]):/, (_, d: string) => `${d.toLowerCase()}:`);
+  const s = /^[a-z]:\/+$/i.test(norm) ? `${norm.slice(0, 2)}/` : /^\/+$/.test(norm) ? '/' : norm.replace(/\/+$/, '');
+  return s ? `repo:${s}` : '';
 }
 function stepOf(tool: unknown, id: string): UnifiedStep {
   const input = decodeArgs(get(tool, 'args'));
@@ -88,12 +104,16 @@ function workspaceOf(uris: unknown): string {
   try {
     const first = list(parseJson(String(uris || '[]')))[0];
     if (typeof first !== 'string') return '';
-    return first.startsWith('file://') ? fileURLToPath(first) : first || '';
+    if (!first.startsWith('file://')) return first || '';
+    // A file URL without a drive letter is refused by fileURLToPath on Windows (POSIX-style
+    // records kept from elsewhere); its decoded path is still better than nothing.
+    try { return fileURLToPath(first); } catch { return decodeURIComponent(new URL(first).pathname); }
   } catch { return ''; }
 }
 
 // The language server's own record of a conversation (GetCascadeTrajectorySteps), rewritten as the
 // transcript's records so one parser reads both. Older conversations have no transcript file at all.
+const TRACE = !!process.env.AGY_TRACE;
 const stepKind = (step: unknown): string => String(get(step, 'type') || '').replace('CORTEX_STEP_TYPE_', '');
 const stepStatus = (step: unknown): string => String(get(step, 'status') || '').replace('CORTEX_STEP_STATUS_', '');
 const SETTLED = new Set(['DONE', 'ERROR', 'CANCELED', 'INTERRUPTED', 'INVALID', 'CLEARED']);
@@ -173,6 +193,10 @@ class AntigravityBridge extends EventEmitter {
   fetch: typeof fetch; stopping: Set<string>; watchMs: number; settleMs: number; giveUpMs: number;
   catalog: { at: number; models: Model[] } | null; lastModels: Map<string, string>; asks: Map<string, AgAsk>;
   recentCache?: Map<string, { key: string; messages: RecentMessage[] }>;
+  lsCache: { at: number; value: LsEnv } | null;
+  pidCache: Map<number, { ok: boolean; at: number }>;
+  ownIds: Set<string>;
+  checkouts: Map<string, string>;
   desktop: DesktopAutomation;
   constructor(config: AntigravityConfig = loadConfig(), env: NodeJS.ProcessEnv = process.env) {
     super();
@@ -191,6 +215,10 @@ class AntigravityBridge extends EventEmitter {
     this.catalog = null; // the desktop's model list, kept for a minute
     this.lastModels = new Map(); // conversation → the model it last used, once read
     this.asks = new Map(); // what the agent is waiting on the person for, by card id
+    this.lsCache = null;
+    this.pidCache = new Map();
+    this.ownIds = new Set();
+    this.checkouts = new Map();
     this.desktop = new DesktopAutomation({ engine: 'antigravity', label: 'Antigravity 桌面版' }); // its window, through Accessibility
   }
 
@@ -208,6 +236,24 @@ class AntigravityBridge extends EventEmitter {
     return response.json();
   }
 
+  private isValidLsPid(pid: number): boolean {
+    if (!Number.isInteger(pid) || pid <= 0) return false;
+    try { process.kill(pid, 0); } catch { return false; }
+    if (process.platform !== 'win32' || pid === process.pid) return true;
+    const now = Date.now(), cached = this.pidCache.get(pid);
+    if (cached && now - cached.at < 30_000) return cached.ok;
+    let ok = false;
+    try {
+      const out = execFileSync('tasklist', ['/FI', `PID eq ${pid}`, '/NH', '/FO', 'CSV'], {
+        encoding: 'utf8', timeout: 1500, windowsHide: true,
+      });
+      ok = /language_server|antigravity|codeium|node/i.test(out);
+    } catch { ok = false; }
+    if (this.pidCache.size > 64) this.pidCache.clear();
+    this.pidCache.set(pid, { ok, at: now });
+    return ok;
+  }
+
   // Address and CSRF token of the running language server. Antigravity injects them
   // into processes it starts; otherwise the app's own daemon record holds them
   // (daemon/hub_<port>.json, rewritten on every launch, so it is read each time).
@@ -216,20 +262,25 @@ class AntigravityBridge extends EventEmitter {
     if (address && token) {
       return { ANTIGRAVITY_LS_ADDRESS: address, ANTIGRAVITY_CSRF_TOKEN: token };
     }
+    const now = Date.now();
+    if (this.lsCache && now - this.lsCache.at < 2000) return this.lsCache.value;
     const dir = path.join(this.agyDir, 'daemon');
     let records: string[] = [];
     try { records = fs.readdirSync(dir).filter(file => /^hub_\d+\.json$/.test(file)).map(file => path.join(dir, file)); } catch { return null; }
     const live = records.map(file => {
       try {
         const data = parseJson(fs.readFileSync(file, 'utf8')), pid = get(data, 'pid');
-        // process.kill takes a number only; any other pid is not a live process (it threw before).
-        if (typeof pid !== 'number') return null;
-        process.kill(pid, 0);
+        if (typeof pid !== 'number' || !this.isValidLsPid(pid)) return null;
         const port = get(data, 'httpPort'), csrf = get(data, 'csrfToken');
-        return port && csrf ? { port, csrf, mtime: fs.statSync(file).mtimeMs } : null;
+        return typeof port === 'number' && Number.isInteger(port) && port >= 1 && port <= 65535 && csrf
+          ? { port, csrf, mtime: fs.statSync(file).mtimeMs }
+          : null;
       } catch { return null; }
     }).filter(item => item !== null).sort((a, b) => b.mtime - a.mtime)[0];
-    return live ? { ANTIGRAVITY_LS_ADDRESS: `127.0.0.1:${live.port}`, ANTIGRAVITY_CSRF_TOKEN: String(live.csrf) } : null;
+    if (!live) return null;
+    const value: LsEnv = { ANTIGRAVITY_LS_ADDRESS: `127.0.0.1:${live.port}`, ANTIGRAVITY_CSRF_TOKEN: String(live.csrf) };
+    this.lsCache = { at: now, value };
+    return value;
   }
 
   // Why sending is impossible right now, or '' when agentapi can reach the app.
@@ -273,23 +324,93 @@ class AntigravityBridge extends EventEmitter {
     return { connected: fs.existsSync(this.dbPath) && !reason, canSend: !reason, error: reason, engine: 'antigravity', appDataDir: this.agyDir };
   }
 
-  summaries(): Bag[] {
-    if (!fs.existsSync(this.dbPath)) return [];
-    return readSqlite(this.dbPath, 'SELECT conversation_id, title, preview, last_modified_time, workspace_uris, not_fully_idle, killed, status, step_count, last_user_input_time, last_user_input_step_index FROM conversation_summaries WHERE nesting_depth = 0 ORDER BY last_modified_time DESC LIMIT 200;');
+  checkoutOf(cwd: string): string {
+    if (!cwd) return '';
+    const cached = this.checkouts.get(cwd);
+    if (cached !== undefined) return cached;
+    let resolved = '';
+    try {
+      let dir = cwd;
+      while (dir && !fs.existsSync(path.join(dir, '.git'))) {
+        const up = path.dirname(dir);
+        if (up === dir) { dir = ''; break; }
+        dir = up;
+      }
+      if (dir) {
+        const git = path.join(dir, '.git');
+        if (fs.statSync(git).isFile()) {
+          const gitdirRaw = fs.readFileSync(git, 'utf8').match(/gitdir:\s*(.+)/)?.[1]?.trim() || '';
+          if (gitdirRaw) {
+            const gitdir = path.resolve(dir, gitdirRaw), commonFile = path.join(gitdir, 'commondir');
+            const commonGit = fs.existsSync(commonFile)
+              ? path.resolve(gitdir, fs.readFileSync(commonFile, 'utf8').trim())
+              : (/[\\/]\.git[\\/]worktrees[\\/][^\\/]+[\\/]?$/i.test(gitdir) ? path.resolve(gitdir, '../..') : '');
+            if (commonGit && path.basename(commonGit).toLowerCase() === '.git') resolved = path.dirname(commonGit);
+          }
+        }
+      }
+    } catch {}
+    if (!resolved) {
+      const agentWt = cwd.match(/^(.*?)[\\/]\.(?:agents|claude)[\\/]worktrees[\\/]/);
+      if (agentWt?.[1]) resolved = agentWt[1];
+      else {
+        const wtBase = path.join(this.agyDir, 'worktrees'), rel = path.relative(wtBase, cwd);
+        if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) {
+          const proj = rel.split(/[\\/]/)[0] || '';
+          if (proj && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(proj)) resolved = proj;
+        }
+      }
+    }
+    const out = resolved || cwd;
+    this.checkouts.set(cwd, out);
+    return out;
   }
 
-  sessionOf(item: Bag): UnifiedSession {
+  summaries(): Bag[] {
+    if (!fs.existsSync(this.dbPath)) return [];
+    const rows = readSqlite(this.dbPath, 'SELECT * FROM conversation_summaries WHERE nesting_depth = 0 ORDER BY last_modified_time DESC;');
+    const archived = new Set<string>();
+    try {
+      for (const r of readSqlite(this.dbPath, 'SELECT DISTINCT conversation_id FROM conversations_fts WHERE archived != 0;')) {
+        const id = asText(r['conversation_id']);
+        if (id) archived.add(id);
+      }
+    } catch {}
+    return rows.filter(item => {
+      const id = asText(item['conversation_id']);
+      if (this.ownIds.has(id) || this.activeWatchers.has(id)) return true;
+      if (archived.has(id)) return false;
+      if (asText(item['last_modified_time']).startsWith('0001-')) return false;
+      if (item['source'] === 'CORTEX_TRAJECTORY_SOURCE_CLI' || item['project_id'] === 'default-cli-project') return false;
+      if (item['parent_conversation_id'] || item['agent_name']) return false;
+      if ('project_id' in item) {
+        if (!asText(item['title']) && !asText(item['preview'])) return false;
+        if (item['project_id'] === '' && Number(item['last_user_input_step_index']) < 0) return false;
+      }
+      return true;
+    }).slice(0, 200);
+  }
+
+  sessionOf(item: Bag, sendBlocked = this.sendBlockedReason()): UnifiedSession {
+    const cwd = workspaceOf(item['workspace_uris']), root = this.checkoutOf(cwd);
+    const group = root && root !== cwd
+      ? { id: repoKeyOf(root), name: path.basename(root) || root, cwd: path.isAbsolute(root) ? root : cwd }
+      : undefined;
     return new UnifiedSession({
       id: asText(item['conversation_id']),
       engine: 'antigravity',
       title: asText(item['title'] || item['preview'] || 'Antigravity 会话'),
       updatedAt: toIso(item['last_modified_time']),
-      cwd: workspaceOf(item['workspace_uris']),
+      cwd,
       status: Number(item['not_fully_idle']) && !Number(item['killed']) ? 'busy' : 'idle',
       isDesktopActive: !!Number(item['not_fully_idle']),
-      sendBlocked: this.sendBlockedReason(),
+      sendBlocked,
       // When the running turn began: the avatar's bubble shows only what was said since.
-      metadata: { status: item['status'], turnStartedAt: Date.parse(String(item['last_user_input_time'])) > 0 ? toIso(item['last_user_input_time']) : undefined },
+      metadata: {
+        status: item['status'],
+        turnStartedAt: Date.parse(String(item['last_user_input_time'])) > 0 ? toIso(item['last_user_input_time']) : undefined,
+        ...(group ? { group } : {}),
+      },
     });
   }
 
@@ -316,8 +437,9 @@ class AntigravityBridge extends EventEmitter {
   }
 
   async listConversations(): Promise<UnifiedSession[]> {
+    const blocked = this.sendBlockedReason();
     return this.summaries().map(item => {
-      const session = this.sessionOf(item), id = asText(item['conversation_id']);
+      const session = this.sessionOf(item, blocked), id = asText(item['conversation_id']);
       const model = this.lastModels.get(id);
       session.metadata = { ...session.metadata, recentMessages: this.recentMessages(id), ...(model !== undefined ? { model } : {}) };
       return session;
@@ -362,12 +484,16 @@ class AntigravityBridge extends EventEmitter {
         // Pictures the person attached: the desktop keeps them in the conversation's own folder,
         // and they are served from there (media()). One kept elsewhere is only counted.
         const images = list(get(record, 'media')).filter(item => /^image\//.test(asText(get(item, 'mime_type') || '')));
-        const shown = images.filter(item => conversationId && this.uploadOf(conversationId, path.basename(String(get(item, 'uri') || ''))) === get(item, 'uri'));
+        const shown = images.filter(item => {
+          const uri = get(item, 'uri');
+          const expected = conversationId && uri ? this.uploadOf(conversationId, path.basename(uriPath(uri))) : '';
+          return !!expected && normPath(expected) === normPath(uri);
+        });
         const rest = images.length - shown.length;
         turn = new UnifiedTurn({
           id: `turn-${stepIndex}`,
           userPrompt: [rest ? `[图片 ×${rest}]` : '', this.cleanUserPrompt(content)].filter(Boolean).join(' '),
-          userImages: shown.map(item => ({ url: `/api/sessions/antigravity/${conversationId}/media/${path.basename(String(get(item, 'uri')))}`, alt: '' })),
+          userImages: shown.map(item => ({ url: `/api/sessions/antigravity/${conversationId}/media/${path.basename(uriPath(get(item, 'uri')))}`, alt: '' })),
           timestamp: timeOf(get(record, 'created_at')), status: 'completed',
         });
       } else if (turn && type === 'SYSTEM_MESSAGE') {
@@ -556,7 +682,10 @@ class AntigravityBridge extends EventEmitter {
       const bin = this.binPath;
       // Callers check sendBlockedReason() first; without agentapi there is nothing to run.
       if (!bin) { reject(new Error(NO_AGENTAPI)); return; }
-      execFile(bin, args, { env: { ...this.env, ...this.lsEnv() }, timeout: 60000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+      // Windows: agentapi is the language server's exe (agentapiArgs), started directly; an AGENTAPI_BIN
+      // that is a .bat/.cmd goes through cmd.exe, quoted by winSpawnArgs. No console window either way.
+      const [cmd, cmdArgs, cmdOpts] = winSpawnArgs(bin, [...(this.config.agentapiArgs || []), ...args], { env: { ...this.env, ...this.lsEnv() }, timeout: 60000, maxBuffer: 4 * 1024 * 1024, windowsHide: true });
+      execFile(cmd, cmdArgs, cmdOpts, (err, stdout, stderr) => {
         let data: unknown = null;
         try { data = parseJson(String(stdout).trim()); } catch {}
         const failed = get(data, 'error');
@@ -618,8 +747,21 @@ class AntigravityBridge extends EventEmitter {
     return {};
   }
 
-  // The documents the agent writes for a conversation (its artifacts) live in brain/<id>, outside its workspace.
-  fileRoots(conversationId: string): string[] { return /^[\w-]{1,80}$/.test(String(conversationId)) ? [path.join(this.brainDir, conversationId)] : []; }
+  // The documents the agent writes for a conversation (its artifacts) live in brain/<id>, outside its
+  // workspace; a chat in a worktree also names files in the checkout it belongs to.
+  fileRoots(conversationId: string): string[] {
+    if (!/^[\w-]{1,80}$/.test(String(conversationId))) return [];
+    const roots = [path.join(this.brainDir, conversationId)];
+    try {
+      const row = fs.existsSync(this.dbPath)
+        ? readSqlite(this.dbPath, 'SELECT workspace_uris FROM conversation_summaries WHERE conversation_id = ? LIMIT 1', [conversationId])[0]
+        : null;
+      const cwd = row ? workspaceOf(row['workspace_uris']) : '';
+      const checkout = cwd ? this.checkoutOf(cwd) : '';
+      if (checkout && checkout !== cwd && path.isAbsolute(checkout)) roots.push(checkout);
+    } catch {}
+    return roots;
+  }
   // Takes the person to this conversation in the desktop app: its window shows it and comes to the
   // front (the driver's show-session). The window finds it by the id in its own address for it
   // (/c/<id>), so two conversations with one title are told apart; the title is only for the log.
@@ -633,6 +775,7 @@ class AntigravityBridge extends EventEmitter {
   // the chat): the conversation is shown and the chat's link to the file pressed (the driver's
   // open-file). `pressed: false`: the chat is shown but no link to the file is drawn in it.
   // (Antigravity's app has been an agent window since 2.0, not an editor: a file handed to it is not opened.)
+  // macOS: antigravity-desktop.swift; Windows: antigravity-desktop.cs.
   async openFile(conversationId: string, file: FileTarget): Promise<HelperResult> {
     const title = this.titleOf(conversationId);
     const result = await this.inWindow(() => this.desktop.openFile({ title, localId: conversationId, ...file }));
@@ -711,13 +854,19 @@ class AntigravityBridge extends EventEmitter {
     if (reason) throw Object.assign(new Error(reason), { status: 503 });
     if (cwd) {
       if (!path.isAbsolute(cwd) || !fs.existsSync(cwd)) throw Object.assign(new Error('这个文件夹不存在，聊天没有新建'), { status: 400 });
+      // The executor refuses to start without a model ("plan model not specified"), so a
+      // cascade the console starts carries one explicitly: the pick the person made, else the
+      // first model the desktop offers (verified against the live language server, 2.32.1).
+      const wanted = model || (await this.getModels())[0]?.id;
+      const config = wanted ? { plannerConfig: { requestedModel: { model: wanted } } } : undefined;
       let started: unknown;
-      try { started = await this.ls('StartCascade', { source: 'CORTEX_TRAJECTORY_SOURCE_CASCADE_CLIENT', trajectoryType: 'CORTEX_TRAJECTORY_TYPE_CASCADE', workspaceUris: [pathToFileURL(cwd).href] }); }
+      try { started = await this.ls('StartCascade', { source: 'CORTEX_TRAJECTORY_SOURCE_CASCADE_CLIENT', trajectoryType: 'CORTEX_TRAJECTORY_TYPE_CASCADE', workspaceUris: [pathToFileURL(cwd).href], ...(config ? { config } : {}) }); }
       catch (err) { throw Object.assign(new Error(`Antigravity 没有在这个文件夹里新建聊天（${lsDetail(err)}）`), { status: lsStatus(err) }); }
       const cascadeId = get(started, 'cascadeId');
       if (!cascadeId) throw new Error('Antigravity 未返回会话 ID');
       const id = String(cascadeId);
-      await this.sendUserMessage(id, this.buildAgyPrompt(prompt, attachments), { model });
+      this.ownIds.add(id);
+      await this.sendUserMessage(id, this.buildAgyPrompt(prompt, attachments), { model: wanted });
       return { id, engine: 'antigravity', started: true, cwd };
     }
     const args = ['new-conversation'];
@@ -728,6 +877,7 @@ class AntigravityBridge extends EventEmitter {
     const { data, stdout } = await this.agentapi(args);
     const id = asText(get(data, 'response', 'conversationId') || get(data, 'conversationId') || stdout.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i)?.[0] || '');
     if (!id) throw new Error('Antigravity 未返回会话 ID');
+    this.ownIds.add(id);
     return { id, engine: 'antigravity', started: true };
   }
 
@@ -736,11 +886,16 @@ class AntigravityBridge extends EventEmitter {
   async turnOutcome(conversationId: string, row: Bag, { failure = '', received = false }: { failure?: string; received?: boolean } = {}): Promise<Outcome | null> {
     try {
       const steps = list(get(await this.ls('GetCascadeTrajectorySteps', { cascadeId: conversationId, stepOffset: Math.max(0, Number(row['last_user_input_step_index']) || 0) }), 'steps'));
-      const last = steps.slice(1).at(-1);
+      // System notices (an MCP's context injections among them) are not how a turn ends, and a
+      // cascade the desktop already calls idle may not have written its ending yet: completed is
+      // said only when the desktop answered (its reply, or the notification it shows), failed on
+      // its error, interrupted on its stop. Anything else is still waiting for its ending.
+      const last = steps.slice(1).filter(step => stepKind(step) !== 'EPHEMERAL_MESSAGE').at(-1);
       if (!last) return null;
       const error = shownError(last);
       if (error) return { status: 'failed', error: { message: errorText(error) } };
-      return { status: ['CANCELED', 'INTERRUPTED'].includes(stepStatus(last)) ? 'interrupted' : 'completed' };
+      if (['CANCELED', 'INTERRUPTED'].includes(stepStatus(last))) return { status: 'interrupted' };
+      return ['PLANNER_RESPONSE', 'NOTIFY_USER'].includes(stepKind(last)) ? { status: 'completed' } : null;
     } catch {
       return failure ? { status: 'failed', error: { message: failure } } : received ? { status: 'completed' } : null;
     }
@@ -819,6 +974,7 @@ class AntigravityBridge extends EventEmitter {
       try {
         const row = this.row(conversationId);
         const idle = !!row && Number(row['not_fully_idle']) === 0;
+        if (TRACE) console.error(`[agy watch] ${conversationId.slice(0, 8)} check: row=${!!row} idle=${idle} received=${received} elapsed=${Date.now() - started}ms`);
         if (!row) {
           // Antigravity has no record of this conversation (never created, or deleted there):
           // nothing can follow the message, so the turn is not left running forever.
@@ -832,6 +988,7 @@ class AntigravityBridge extends EventEmitter {
         const accepted = received || Number(row['last_user_input_step_index']) > baseline;
         const outcome = accepted ? await this.turnOutcome(conversationId, row, { failure, received }) : null;
         if (stopped) return;
+        if (TRACE) console.error(`[agy watch] ${conversationId.slice(0, 8)} outcome: accepted=${accepted} outcome=${JSON.stringify(outcome)} failure=${JSON.stringify(failure)}`);
         if (!outcome) {
           // Idle with nothing recorded after the message: give Antigravity time, then say so.
           if (Date.now() - started > this.giveUpMs) { cleanup(); emitter.emit('error', new Error('Antigravity 没有开始这一轮：它的记录里没有这条消息的回应')); }

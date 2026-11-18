@@ -11,7 +11,7 @@ import { nativeDictation, browserDictation, VoiceUnavailable } from './js/dictat
 import { dictationOrder, AUTO_VOICE, BROWSER_VOICE } from '../shared/dictation.js';
 import { escape, icon, hydrateIcons, registerRenderer, renderers, markdown, character, quotaMeter, quotaCard, speechLine, windowName, onRenderers, needRenderer } from './js/renderers.js';
 import { enhanceSelect, showMenu } from './js/menu.js';
-import { renderSidebar, projectChoices, SidebarPrefs, clampSidebarWidth, spacesOf, homeSpace, shownSpace, spaceOfItem, isInSpace, inSpace, renderSpaceSwitch, spaceMenuItems } from './js/sidebar.js';
+import { renderSidebar, projectChoices, repoKey, SidebarPrefs, clampSidebarWidth, spacesOf, homeSpace, shownSpace, spaceOfItem, isInSpace, inSpace, renderSpaceSwitch, spaceMenuItems } from './js/sidebar.js';
 import { avatarSvg, newAvatarSeed } from './js/avatar.js';
 import './js/diagrams.js';
 import { NewOptions } from './js/new-options.js';
@@ -19,6 +19,7 @@ import { agentRows, newAgentsView, AVATAR_TYPES, AVATAR_MAX_BYTES } from './js/a
 import { referenceChoices, insertReference, referenceMeta } from './js/references.js';
 import { fileActions, actionButtons, filePopover } from './js/file-actions.js';
 import { byId, closest, find, findAll, nodeOf } from './js/dom.js';
+import { watchTyping } from './js/composing.js';
 import { get, isBag, messageOf, str } from '../shared/guards.js';
 import type { ConversationStore, PageTurn } from './js/store.js';
 import type { DictationSession } from './js/dictation.js';
@@ -40,6 +41,9 @@ const ELEMENTS = {
   'close-info': HTMLButtonElement,
   'close-reference': HTMLButtonElement,
   'close-onboard': HTMLButtonElement,
+  'close-focus': HTMLButtonElement,
+  'focus-dialog': HTMLDialogElement,
+  'focus-ok': HTMLButtonElement,
   'close-settings': HTMLButtonElement,
   'close-sidebar': HTMLButtonElement,
   'close-usage': HTMLButtonElement,
@@ -324,7 +328,9 @@ function renderDock() {
     // controls are found by their names only, which another language of the desktop would not have.)
     const stale = reach?.connected ? reach.stale ?? [] : [];
     const link = !reach ? null : reach.connected ? stale.length ? { kind: 'limited', text: t('桌面版界面有改动') } : { kind: 'on', text: t('引擎已就绪') } : reach.error ? { kind: 'limited', text: t('仅可查看历史') } : { kind: 'off', text: t('引擎未连接') };
-    const reachNote = reach?.error ? say(reach.error) : stale.length ? t('{n} 个控件的认法要更新：{keys}', { n: stale.length, keys: stale.join(', ') }) : '';
+    // (Windows: the last time the console worked the app's window from behind, the window did not come back where it was.)
+    const misplaced = reach?.park?.issues.includes('placement') ? t('上次在后台操作后，窗口没有回到原位') : '';
+    const reachNote = reach?.error ? say(reach.error) : [stale.length ? t('{n} 个控件的认法要更新：{keys}', { n: stale.length, keys: stale.join(', ') }) : '', misplaced].filter(Boolean).join(' · ');
     const status = running ? t('正在工作') : unread.length ? t('{n} 条新消息', { n: unread.length }) : t('就绪');
     const name = escape(provider.label), key = `<kbd>⌥${index + 1}</kbd>`;
     // The hover card: who this is, whether it can be reached, then every quota window by name.
@@ -490,7 +496,7 @@ function renderHeader() {
   const accent = engine()?.accent;
   if (accent) document.documentElement.style.setProperty('--engine-accent', accent); else document.documentElement.style.removeProperty('--engine-accent');
   $('session-title').textContent = state.session?.title || t('新建聊天');
-  $('session-cwd').textContent = state.session?.cwd?.split('/').filter(Boolean).at(-1) || '';
+  $('session-cwd').textContent = state.session?.cwd?.split(/[\\/]/).filter(Boolean).at(-1) || '';
   $('session-cwd').title = state.session?.cwd || '';
   $('engine-label').textContent = engine()?.label || '';
   // The sidebar's head says whose chats these are; the header's button names the app it opens.
@@ -560,6 +566,9 @@ function renderControls() {
   $('dictate').title = dictating ? t('结束语音输入') : voice.label ? `${t('语音输入 ·')} ${voice.label}` : `${t('语音输入不可用：')}${voice.why}`;
   $('prompt').disabled = !!blocked || state.loading || !state.ready || state.creating;
   $('model').disabled = !!blocked || !(state.models[state.engine] || []).length || !capsOf().models;
+  // No models to pick from: say why where the engine's usage says (Claude: its CLI is not signed in).
+  const why = (state.models[state.engine] || []).length ? '' : state.usage[state.engine]?.reason || '';
+  if (why) $('model').title = say(why);
   // A mode whose own model applies (a chat mode) shows no model, effort or permission menus.
   $('model').hidden = capsOf().models === false;
   // The effort and permission menus follow the mode too (they are rebuilt when it changes).
@@ -567,14 +576,15 @@ function renderControls() {
   if ((capsOf().permissions === false) !== ($('permission').dataset.mode === 'off')) renderPermissions();
   setHTML($('run-state'), state.dictation ? `<span class="recording-dot" aria-hidden="true"></span>${state.dictation.stopping ? t('正在整理识别结果…') : `${t('正在听写 ·')} ${escape(source)} ${t('· 再点话筒结束，Esc 取消')}`}` : stopRequested ? t('正在停止…') : state.uploading ? t('正在上传附件…') : state.creating ? t('正在新建聊天…') : state.submitting ? t('正在发送…') : (active || desktopActive) ? `<span class="activity-spinner" aria-hidden="true"></span>${active?.approvals?.length ? t('等待操作批准') : active?.status === 'reconnecting' ? t('正在确认引擎状态') : t('正在执行')}${!canStop ? t(' · 请在桌面端停止任务') : ''}` : '');
   renderQueue();
-  $('composer-context').textContent = state.session?.cwd ? `${t('工作目录 ·')} ${state.session.cwd.split('/').filter(Boolean).at(-1)}` : t('任务由 {name} 执行', { name: engine()?.label || t('桌面引擎') });
+  $('composer-context').textContent = state.session?.cwd ? `${t('工作目录 ·')} ${state.session.cwd.split(/[\\/]/).filter(Boolean).at(-1)}` : t('任务由 {name} 执行', { name: engine()?.label || t('桌面引擎') });
   $('new-chat').disabled = !state.engines.length || !!noNewReason();
   renderNewTarget();
 }
 // A new chat is the empty composer itself, as in the desktop apps: pick the project it belongs
 // to under the composer, type, send. The session is created by that first message. An engine
 // whose desktop page asks for its own choices first (newOptions) has them as cards instead.
-const folderName = (path: string) => String(path || '').split('/').filter(Boolean).at(-1) || path || '';
+const folderName = (path: string) => String(path || '').split(/[\\/]/).filter(Boolean).at(-1) || path || '';
+const sameRepo = (a: string | undefined, b: string | undefined): boolean => { const ka = repoKey(a); return !!ka && ka === repoKey(b); };
 const newOptions = new NewOptions({ onChange: () => renderNewOptions() });
 // What a new chat's first message will run with: the settings the engine's desktop page shows
 // now, when it reports them (null: not known, so the menus name no model of their own).
@@ -594,7 +604,7 @@ function newTarget() {
   if (!capsOf().cwd || capsOf().newOptions) return null;
   const choices = newChoices();
   const cwd = newTargets[state.engine]?.cwd || '';
-  const project = choices.find(item => item.cwd === cwd);
+  const project = choices.find(item => sameRepo(item.cwd, cwd));
   return { cwd, project, name: project?.name || folderName(cwd), choices };
 }
 function setNewTarget(cwd: string): void {
@@ -612,9 +622,9 @@ function renderNewTarget() {
 }
 function pickNewTarget() {
   const target = newTarget(); if (!target) return;
-  const known = target.choices.some(item => item.cwd === target.cwd);
+  const known = target.choices.some(item => sameRepo(item.cwd, target.cwd));
   showMenu($('new-target'), [
-    ...target.choices.map(item => ({ group: t('项目'), value: item.cwd, label: item.name, description: item.cwd, selected: item.cwd === target.cwd })),
+    ...target.choices.map(item => ({ group: t('项目'), value: item.cwd, label: item.name, description: item.cwd, selected: sameRepo(item.cwd, target.cwd) })),
     ...(target.cwd && !known ? [{ group: t('其他'), value: target.cwd, label: folderName(target.cwd), description: target.cwd, selected: true }] : []),
     { group: t('其他'), value: '', label: t('不指定项目'), description: state.defaultCwd, selected: !target.cwd },
     { group: t('其他'), value: '\0custom', label: t('其他文件夹…') },
@@ -632,7 +642,7 @@ function newChat(project: { id: string; name: string; cwd?: string | undefined }
   newProject = newInMode() && project ? { engine: state.engine, space: spaceId(), id: project.id, name: project.name } : null;
   // Starting from inside a project (or from its "+") keeps the new chat in that project.
   const here = project?.cwd || state.session?.cwd;
-  if (here && caps.cwd && !caps.newOptions && (project || newChoices().some(item => item.cwd === here))) newTargets[state.engine] = { cwd: here };
+  if (here && caps.cwd && !caps.newOptions && (project || newChoices().some(item => sameRepo(item.cwd, here)))) newTargets[state.engine] = { cwd: here };
   // An engine whose desktop page asks for the folder itself has it picked there.
   newOptions.aim(project?.cwd && caps.newOptions && caps.newFolder ? { ...caps.newFolder, ...project, cwd: project.cwd, engine: state.engine } : null);
   // What was read and chosen last time shows at once; the desktop's page is read again behind it.
@@ -837,6 +847,7 @@ async function sendMessage(event?: Event | null, queue = false): Promise<void> {
     const result = await request<{ status?: string; reason?: string } | null>(`${url}/messages`, { method: 'POST', body: JSON.stringify({ prompt, attachments, cwd: state.session.cwd || undefined, mode, ...options() }) });
     if (mode === 'steer' && result?.status === 'queued' && view === state.view) notify(`${say(result.reason) || t('这一轮没法插进去，消息已排队')}${t('，可以在队列里再点“插入”')}`);
     drafts.clearSent(owner, originalInput, attachments);
+    noteFocusOnce('send');
     if (owner !== currentKey()) return;
     if ($('prompt').value === originalInput) { $('prompt').value = ''; $('prompt').style.height = ''; }
     const sent = new Set(attachments.map(item => item.filename));
@@ -881,6 +892,7 @@ async function sendFirst() {
     newOptions.sent();
     (state.sessions[provider.id] ||= []).unshift({ ...session, title: session.title || title || t('新建聊天'), updatedAt: new Date().toISOString(), cwd: session.cwd || cwd || '', engine: provider.id, metadata: { ...session.metadata, ...(mode ? { space: mode } : {}), ...(group === undefined ? {} : { group }) } });
     drafts.clearSent(owner, originalInput, attachments);
+    noteFocusOnce('new');
     if (view === state.view) {
       $('prompt').value = ''; $('prompt').style.height = ''; state.attachments = []; saveDraft();
       await selectSession(session.id, { engineId: provider.id });
@@ -1042,7 +1054,7 @@ function pickSpace(id: string): void {
   sidePrefs.setSpace(state.engine, id);
   const spaces = spacesOf(engine());
   if (state.session && !isInSpace(state.session, spaces, id)) switchEngine(state.engine, { restore: false });
-  else { renderSessionList(); renderControls(); }
+  else { renderSessionList(); renderControls(); if (!state.session) renderConversation(); }
 }
 $('space-switch').addEventListener('click', event => {
   const button = closest(event.target, '[data-space-menu]');
@@ -1082,7 +1094,10 @@ $('new-target').addEventListener('click', pickNewTarget);
 $('new-target-path').addEventListener('keydown', event => {
   if (!['Enter', 'Escape'].includes(event.key) || event.isComposing) return;
   event.preventDefault(); event.stopPropagation();
-  if (event.key === 'Enter') setNewTarget($('new-target-path').value.trim().replace(/(.)\/+$/, '$1'));
+  if (event.key === 'Enter') {
+    const trimmed = $('new-target-path').value.trim();
+    setNewTarget(/^[a-zA-Z]:[\\/]+$/.test(trimmed) ? trimmed.slice(0, 3) : trimmed.replace(/(.)[\\/]+$/, '$1'));
+  }
   $('new-target-path').hidden = true; $('new-target').hidden = false; $('new-target').focus();
 });
 $('new-target-path').addEventListener('blur', () => { $('new-target-path').hidden = true; $('new-target').hidden = false; });
@@ -1244,7 +1259,7 @@ const panel: { tabs: PanelTab[]; active: number; open: boolean; width: number } 
 try { const saved: unknown = JSON.parse(storageFor('localStorage')?.getItem('desktop-bridge:side-panel') || '{}'), width = get(saved, 'width'); if (typeof width === 'number' && width) panel.width = width; } catch {}
 const savePanel = () => { try { storageFor('localStorage')?.setItem('desktop-bridge:side-panel', JSON.stringify({ width: panel.width })); } catch {} };
 const isMarkdown = (path: string | undefined) => /\.(md|mdx|markdown)$/i.test(path || '');
-const fileName = (target: string) => target.replace(/:(\d+)(:\d+)?$/, '').split('/').filter(Boolean).at(-1) || target;
+const fileName = (target: string) => target.replace(/:(\d+)(:\d+)?$/, '').split(/[\\/]/).filter(Boolean).at(-1) || target;
 function setPanel(open: boolean): void {
   panel.open = open;
   $('side-panel').hidden = !open;
@@ -1374,6 +1389,9 @@ $('conversation').addEventListener('click', async event => {
   if (button.dataset.approval && button.dataset.decision === 'desktop') { await showInDesktop(button); return; }
   if (button.dataset.approval) { button.disabled = true; try { await request(`${endpoint()}/approvals/${encodeURIComponent(button.dataset.approval)}`, { method: 'POST', body: JSON.stringify({ decision: button.dataset.decision }) }); } catch (err) { notify(messageOf(err)); button.disabled = false; } }
 });
+watchTyping(document, typing => {
+  void fetch('/api/typing', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ typing }), keepalive: true }).catch(() => {});
+});
 document.addEventListener('keydown', event => {
   if (event.key === 'Escape' && state.dictation) { event.preventDefault(); cancelDictation(); return; }
   if (event.key === 'Escape' && document.body.classList.contains('sidebar-open')) sidebar(false);
@@ -1397,9 +1415,13 @@ matchMedia('(max-width:767px)').addEventListener('change', () => { document.body
 // The "+" after the dock: a prompt anyone can give their own desktop AI so it joins this
 // console the same way the existing engines do (see skills/add-desktop-engine).
 // The guide is written once, in English (an agent reads it, whatever language the person uses).
+const skillPath = (dir: string): string => {
+  const sep = dir.includes('\\') ? '\\' : '/';
+  return `${dir}${sep}skills${sep}add-desktop-engine${sep}SKILL.md`;
+};
 function onboardingPrompt() {
   if (language === 'en') return onboardingPromptEn();
-  const dir = state.projectDir || '<工作台项目目录>', skill = `${dir}/skills/add-desktop-engine/SKILL.md`;
+  const dir = state.projectDir || '<工作台项目目录>', skill = skillPath(dir);
   const joined = state.engines.map(item => item.label).join('、') || '无';
   return `你是我这台电脑上的桌面版 AI。请把你自己接入我本机的「Agent Frontdesk」统一工作台，做到和工作台里的 Claude、Codex 一样：我能在工作台里看你的历史、给你发消息、停止、插话、排队、改模型和推理强度、新建聊天、回答你的提问卡片、从聊天标题栏的「在 <你> 打开」一键回到你桌面版里的这个会话，而这一切都由你的桌面版自己执行，桌面版里实时看得到。
 
@@ -1414,10 +1436,10 @@ function onboardingPrompt() {
 请这样做：
 1. 先完整读手册（英文），以及 references/ 下的设计哲学、选通道、能力链路、插件契约、验收清单，再读 docs/architecture.md。插件用 TypeScript 写在 src/server/plugins/<你的引擎 id>.plugin.ts，导出 about（名字、主色、应用图标，以及只探测这台电脑上有没有你的桌面版的 detect，不能有副作用）和 setup（启用时才运行，停用时要能把它起的东西全部放掉）；数据适配写在 src/server/ 下，形状以 src/shared/contract.ts 为准，字段写错构建就会失败。照着和你最像的现有插件写（全走辅助程序的 Claude、官方接口加窗口间通道的 Codex、全走本机服务的 Antigravity）。开发时用 npm run dev（改前端即时生效，改服务端自动重启）。
 2. 摸清你在本机的数据（只读，不改）：会话记录、项目归属和顺序、"正在跑"和"结束了"的原生证据、每个会话的模型 / 推理强度 / 权限、步骤清单和提问卡片在记录里的样子。
-3. 选通道，写成表放进 docs/skins/<你的引擎 id>/progress.md：发送、插话、停止、改设置、新建、回答卡片、在桌面版里打开这个会话、打开文件各走哪条路，附证据。每条都要满足：这一轮由你的桌面版自己的进程执行、桌面版里马上显示为我本人发的、不用别人的令牌。优先用你桌面版进程对外的接口（像 Codex 的 app-server 队列、Antigravity 的 language server），其次是桌面版窗口之间的协调通道（像 Codex 的 IPC），都不行才用工作台共用的辅助功能驱动（像 Claude），只写步骤和控件名，不重写动作。绝不另起一个 CLI 进程去跑这一轮；通道做不到就不发，并说明原因（插话做不到就退回排队）。
+3. 选通道，写成表放进 docs/skins/<你的引擎 id>/progress.md：发送、插话、停止、改设置、新建、回答卡片、在桌面版里打开这个会话、打开文件各走哪条路，附证据。每条都要满足：这一轮由你的桌面版自己的进程执行、桌面版里马上显示为我本人发的、不用别人的令牌。优先用你桌面版进程对外的接口（像 Codex 的 app-server 队列、Antigravity 的 language server），其次是桌面版窗口之间的协调通道（像 Codex 的 IPC），都不行才用工作台共用的辅助功能驱动（像 Claude），只写步骤和控件名，不重写动作；这个驱动在 macOS 是 Swift，在 Windows 是 UI Automation（C#），两边的步骤各写一份（<你的引擎 id>-desktop.swift / .cs），Windows 上要注意的事见手册的选通道一节。绝不另起一个 CLI 进程去跑这一轮；通道做不到就不发，并说明原因（插话做不到就退回排队）。
 4. 按手册的阶段做：只读能看 → 发送和实时 → 停止、插话、排队 → 设置跟着走 → 新建 → 卡片和文件 → 长得像。每个阶段打开页面看一遍。
 5. 我在工作台改了的模型 / 推理强度 / 权限，要先在你的桌面版里改过去再发；改不成就不发。不要做只读模式，也不要因为会话正在桌面版里运行就禁止发送：我自己保证不会两边同时写。
-6. 不读取其他程序的私有令牌或密钥；你自己官方 CLI 的登录凭据可以在服务端现读现用（例如额度），但不能进页面、日志、测试和文件。需要我授权的事（例如辅助功能权限）先问我。你的桌面版有自家的语音识别时，接上 dictate 和 dictationReady，话筒就多一个可用的来源。
+6. 不读取其他程序的私有令牌或密钥；你自己官方 CLI 的登录凭据可以在服务端现读现用（例如额度），但不能进页面、日志、测试和文件。需要我授权的事（例如 macOS 的辅助功能权限）先问我。你的桌面版有自家的语音识别时，接上 dictate 和 dictationReady，话筒就多一个可用的来源。
 7. 想更像你的桌面版，只填插件的 look、改套件的 --kit-* 变量，你独有的东西用渲染器补；不复制套件样式，不在共用代码里写死你的名字。除非我明确要求一比一还原，否则不用截图对比。
 8. 做完后运行 npm run build、npm test 和 npm run check（含类型检查），都要通过；按手册第 4 步用最便宜的模型真实走一遍（先问我同意）：发一条、换模型再发、运行中插话和停止、作答一次卡片、点一次聊天标题栏的「在 <你> 打开」，确认桌面版里都看得到；按验收清单逐项核对。结束前关掉你开的后台进程。
 9. 最后告诉我：改了哪些文件；通道表；哪些做到了，哪些做不到以及原因；共用件不够用、需要新增的地方；我还需要做什么（例如登录、授权、重启工作台服务后在 Agent 栏的「+」里把你打开、删掉测试会话）。
@@ -1426,7 +1448,7 @@ function onboardingPrompt() {
 }
 // The same prompt for a person using Frontdesk in English; it points at the English guide.
 function onboardingPromptEn() {
-  const dir = state.projectDir || '<Frontdesk project folder>', skill = `${dir}/skills/add-desktop-engine/SKILL.md`;
+  const dir = state.projectDir || '<Frontdesk project folder>', skill = skillPath(dir);
   const joined = state.engines.map(item => item.label).join(', ') || 'none';
   return `You are the desktop AI on this computer. Please connect yourself to "Agent Frontdesk", the console on this machine, so that you can do everything Claude and Codex already do there: I can read your history in Frontdesk, send you messages, stop you, steer a running turn, queue messages, change the model and reasoning effort, start new chats, answer your question cards and jump from the chat header's "Open in <you>" to that very chat in your desktop app, while every bit of it is carried out by your own desktop app and shows up there live.
 
@@ -1441,10 +1463,10 @@ Work the way you normally do: before you start, list the steps with your own tas
 Please:
 1. Read the whole guide first, plus the philosophy, choosing channels, capability paths, plugin contract and acceptance checklist under references/, then docs/architecture.md. Write your plugin in TypeScript as src/server/plugins/<your engine id>.plugin.ts, exporting about (your name, colour and app icon, and a detect that only looks whether your desktop app is on this machine, with no side effects) and setup (run only when you are switched on, and able to release everything it started when you are switched off); your data adapter goes under src/server/. The shapes come from src/shared/contract.ts, and a wrong field fails the build. Model your work on the existing plugin most like you (Claude: everything through the accessibility helper; Codex: an official interface plus the window-to-window channel; Antigravity: everything through a local service). While you work, run npm run dev (page changes show at once, server changes restart it).
 2. Find out your data on this machine (read-only, change nothing): session records, project membership and order, the native evidence for "running" and "ended", each session's model / reasoning effort / permissions, what step lists and question cards look like in the record.
-3. Pick the channels and put them in a table in docs/skins/<your engine id>/progress.md: which route sending, steering, stopping, changing settings, new chats, answering cards, opening the chat in your desktop app and opening files each take, with evidence. Every one must meet three conditions: the turn is run by your desktop app's own process, your desktop app shows the message right away as my own, and no one else's token is used. Prefer an interface your desktop process exposes (like Codex's app-server queue or Antigravity's language server), then the channel between your desktop's own windows (like Codex's IPC), and only then the shared accessibility driver (like Claude), writing only your steps and control names, never the actions again. Never start a separate CLI process to run the turn; when a channel cannot do something, do not send, and say why (a steer that cannot join falls back to the queue).
+3. Pick the channels and put them in a table in docs/skins/<your engine id>/progress.md: which route sending, steering, stopping, changing settings, new chats, answering cards, opening the chat in your desktop app and opening files each take, with evidence. Every one must meet three conditions: the turn is run by your desktop app's own process, your desktop app shows the message right away as my own, and no one else's token is used. Prefer an interface your desktop process exposes (like Codex's app-server queue or Antigravity's language server), then the channel between your desktop's own windows (like Codex's IPC), and only then the shared accessibility driver (like Claude), writing only your steps and control names, never the actions again; that driver is Swift on macOS and UI Automation (C#) on Windows, with your steps written once for each (<your engine id>-desktop.swift / .cs), and what to mind on Windows is in the guide's channels section. Never start a separate CLI process to run the turn; when a channel cannot do something, do not send, and say why (a steer that cannot join falls back to the queue).
 4. Build in the guide's stages: read-only and visible → sending and live updates → stop, steer, queue → settings follow the message → new chats → cards and files → looking like yourself. Open the page and look after each stage.
 5. When I change the model / reasoning effort / permissions in Frontdesk, change it in your desktop app first, then send; if it cannot be changed, do not send. Do not add a read-only mode, and do not block sending because a session is running in the desktop app: I make sure I never write from both places at once.
-6. Do not read other programs' private tokens or keys; your own official CLI's sign-in credentials may be read on the server at the moment of use (for quota, say), but never in the page, logs, tests or files. Ask me first for anything that needs my authorization (Accessibility permission, for example). If your desktop app has its own speech-to-text, wire up dictate and dictationReady: the microphone gains one more source it can use.
+6. Do not read other programs' private tokens or keys; your own official CLI's sign-in credentials may be read on the server at the moment of use (for quota, say), but never in the page, logs, tests or files. Ask me first for anything that needs my authorization (macOS's Accessibility permission, for example). If your desktop app has its own speech-to-text, wire up dictate and dictationReady: the microphone gains one more source it can use.
 7. To look more like your desktop app, only fill in the plugin's look field and the kit's --kit-* variables, and register renderers for what only you have; do not copy the kit's styles or hard-code your name in shared code. Unless I explicitly ask for a one-to-one match, no screenshot comparison is needed.
 8. When done, run npm run build, npm test and npm run check (which includes the type check); all must pass; following step 4 of the guide, try it for real with the cheapest model (ask me first): send one message, change the model and send again, steer and stop a running turn, answer one card, press "Open in <you>" in the chat header once, and confirm all of it shows in your desktop app; go through the acceptance checklist item by item. Close any background processes you started before you finish.
 9. Finally tell me: which files you changed; the channel table; what works and what does not, and why; where the shared parts fell short and need a new extension point; what I still need to do (sign in, authorize, restart the Frontdesk server and switch you on under the rail's "+", delete test chats, for example).
@@ -1470,17 +1492,31 @@ async function readCard(card: WrapUpCard): Promise<CardRead | { error: string }>
 function openOnboard(): void {
   for (const id of ['agents-dialog', 'settings-dialog'] as const) if ($(id).open) $(id).close();
   $('onboard-prompt').textContent = onboardingPrompt();
-  $('onboard-path').textContent = `${t('手册位置：')}${state.projectDir || ("<" + t('工作台项目目录') + ">")}/skills/add-desktop-engine/SKILL.md`;
+  $('onboard-path').textContent = `${t('手册位置：')}${skillPath(state.projectDir || `<${t('工作台项目目录')}>`)}`;
+  $('copy-skill-path').disabled = !state.projectDir;
   $('copy-onboard').textContent = t('复制提示词');
   $('onboard-dialog').showModal();
 }
 $('close-onboard').addEventListener('click', () => $('onboard-dialog').close());
+// An engine that sends by working its desktop app's window, which takes the keyboard focus for a
+// moment on this platform (capabilities.takesFocus: Windows), says so once, after the first message
+// sent to it (newTakesFocus: the first new chat); Settings can show it again.
+const FOCUS_NOTE_KEY = 'desktop-bridge:focus-note-seen';
+function noteFocusOnce(kind: 'send' | 'new'): void {
+  const caps = capsOf();
+  if (!caps.takesFocus && !(kind === 'new' && caps.newTakesFocus)) return;
+  try { if (storageFor('localStorage')?.getItem(FOCUS_NOTE_KEY)) return; storageFor('localStorage')?.setItem(FOCUS_NOTE_KEY, '1'); } catch {}
+  if (!$('focus-dialog').open) $('focus-dialog').showModal();
+}
+$('close-focus').addEventListener('click', () => $('focus-dialog').close());
+$('focus-ok').addEventListener('click', () => $('focus-dialog').close());
 $('copy-onboard').addEventListener('click', async () => {
   try { await navigator.clipboard.writeText($('onboard-prompt').textContent); $('copy-onboard').textContent = t('已复制'); }
-  catch { const range = document.createRange(); range.selectNodeContents($('onboard-prompt')); getSelection()?.removeAllRanges(); getSelection()?.addRange(range); $('copy-onboard').textContent = t('已选中，按 ⌘C 复制'); }
+  catch { const range = document.createRange(); range.selectNodeContents($('onboard-prompt')); getSelection()?.removeAllRanges(); getSelection()?.addRange(range); $('copy-onboard').textContent = t(/Mac|iPhone|iPad/.test(navigator.platform) ? '已选中，按 ⌘C 复制' : '已选中，按 Ctrl+C 复制'); }
 });
 $('copy-skill-path').addEventListener('click', async () => {
-  try { await navigator.clipboard.writeText(`${state.projectDir}/skills/add-desktop-engine/SKILL.md`); $('copy-skill-path').textContent = t('已复制路径'); setTimeout(() => { $('copy-skill-path').textContent = t('复制手册路径'); }, 1600); } catch {}
+  if (!state.projectDir) return;
+  try { await navigator.clipboard.writeText(skillPath(state.projectDir)); $('copy-skill-path').textContent = t('已复制路径'); setTimeout(() => { $('copy-skill-path').textContent = t('复制手册路径'); }, 1600); } catch {}
 });
 
 // ---------- agents on and off ----------
@@ -1732,6 +1768,7 @@ document.addEventListener('click', event => {
   else if (force) void toggleAgent(data(force, 'agentForce'), false, true);
   else if (closest(event.target, '[data-agent-cancel]')) { agentsView.ask = null; renderAgents(); }
   else if (closest(event.target, '[data-open-onboard]')) openOnboard();
+  else if (closest(event.target, '[data-open-focus]')) $('focus-dialog').showModal();
 });
 // Right-click an agent in the rail: take it out of the rail, or open the list of agents.
 $('engine-dock').addEventListener('contextmenu', event => {
@@ -1793,7 +1830,8 @@ function renderSettings() {
     ? `<select id="setting-${escape(item.key)}" class="subtle-select" data-setting-select="${escape(item.key)}" aria-label="${escape(item.title)}">${item.choices.map(([value, label]) => `<option value="${escape(value)}"${appearance[item.key] === value ? ' selected' : ''}>${escape(label)}</option>`).join('')}</select>`
     : `<div class="setting-choices" role="radiogroup" aria-label="${escape(item.title)}">${item.choices.map(([value, label]) => `<button type="button" role="radio" class="setting-choice" data-setting="${escape(item.key)}" data-value="${escape(value)}" aria-checked="${appearance[item.key] === value}">${escape(label)}</button>`).join('')}</div>`;
   // Which agents are on is the console's first setting: the same switches as the rail's "+".
-  const agentsGroup = `<fieldset class="setting-group is-stacked"><legend>Agent</legend><div id="settings-agents">${agentsMarkup(true)}</div><button type="button" class="text-button" data-open-onboard>${t('接入其他桌面 AI…')}</button></fieldset>`;
+  const takesFocus = state.engines.some(item => item.capabilities.takesFocus || item.capabilities.newTakesFocus || (item.spaces || []).some(mode => mode.capabilities?.takesFocus));
+  const agentsGroup = `<fieldset class="setting-group is-stacked"><legend>Agent</legend><div id="settings-agents">${agentsMarkup(true)}</div><button type="button" class="text-button" data-open-onboard>${t('接入其他桌面 AI…')}</button>${takesFocus ? `<button type="button" class="text-button" data-open-focus>${t('在 Windows 上代发消息时会短暂拿走焦点…')}</button>` : ''}</fieldset>`;
   $('settings-content').innerHTML = agentsGroup + avatarRow + SETTINGS.map(item => `<fieldset class="setting-group"><legend>${escape(item.title)}</legend>${control(item)}${item.note?.() ? `<p class="field-help setting-note">${escape(item.note())}</p>` : ''}</fieldset>`).join('') + '<fieldset class="setting-group" id="settings-voice"></fieldset>';
   renderVoiceSetting();
   for (const select of $('settings-content').querySelectorAll('select')) enhanceSelect(select, { variant: 'field' });

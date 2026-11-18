@@ -38,16 +38,16 @@ src/
   server/core/          plugin-host, run-service, event-hub, presentation, desktop-automation, settings-store, agent-looks, attachments
   server/services/      session-observer, activity-feed, usage-service, file-preview, dictation, tool-catalog, readers for the apps' files
   server/plugins/       <agent>.plugin.ts: what an agent declares and how its methods map to its bridge
-  server/native/        the Swift accessibility helper (ax-driver.swift + one flow per agent) and profiles/*.json
+  server/native/        the desktop helpers: macOS ax-driver.swift, Windows uia-driver.cs, one flow per agent for each (<agent>-desktop.swift / .cs), and profiles/*.json
   client/               index.html, app.ts, js/ (store, sidebar, renderers, i18n, ...), kit/ (the shared chat UI)
   client/public/        copied as is: skins/<agent>/skin.css, the logo, stand-in characters
 test/                   node:test, run through tsx; no real agent is ever contacted
 ```
 
 - `npm start` builds, then runs `node dist/server/server.js`, which also serves the page from `dist/public`.
-- `npm run dev` runs Vite with HMR on `PORT` (4100) and the server under `tsx watch` on `PORT+1`. A server started this way is a child process without the macOS Accessibility permission, so anything that drives a desktop window has to be tried on a server started from a terminal (`npm start`).
+- `npm run dev` runs Vite with HMR on `PORT` (4100) and the server under `tsx watch` on `PORT+1`. On macOS a server started this way is a child process without the Accessibility permission, so anything that drives a desktop window has to be tried on a server started from a terminal (`npm start`). Windows has no such permission: any server that runs with the same rights as the desktop app can drive it.
 - `npm run check` is the type check (three `tsconfig` files, one each for server, page and tests) plus the build.
-- The Swift helper is not part of `dist/`. It is compiled on first use (Xcode Command Line Tools) and cached by source hash in `~/Library/Caches/agent-frontdesk/`.
+- The helper is not part of `dist/`. It is compiled on first use and cached by source hash: on macOS with the Xcode Command Line Tools in `~/Library/Caches/agent-frontdesk/`, on Windows with the `csc.exe` of .NET Framework 4 that Windows ships in `%LOCALAPPDATA%gent-frontdesk\`.
 - Art and fonts that belong to a desktop app (icons, characters, typefaces) are read from the installed app at run time and served from `/api/characters/:name`. None are copied into the repository.
 
 ## Server
@@ -59,7 +59,7 @@ test/                   node:test, run through tsx; no real agent is ever contac
 | `core/run-service.ts` | One turn at a time per chat, the message queue, steering, stop, approvals, time-outs, and a single final state per turn. |
 | `core/presentation.ts` | Turns each agent's history and live events into one shape: commentary, final answer, tool activity, artifacts. Raw reasoning and patches never enter the event stream. |
 | `core/event-hub.ts` | A bounded in-memory log per chat (by count and bytes) with its own sequence, replayed to a page that reconnects. After a restart the page reads the app's history again. |
-| `core/desktop-automation.ts` | Compiles and runs the accessibility helper, one command at a time, and keeps the app's accessibility tree warm while Frontdesk is in use. |
+| `core/desktop-automation.ts` | Compiles and runs the accessibility helper (UI Automation on Windows), one command at a time, and keeps the app's accessibility tree warm while Frontdesk is in use. |
 | `core/settings-store.ts`, `core/agent-looks.ts` | What the person chose in the console: which agents are on, their names, order and faces (`.frontdesk.json`, `.frontdesk-avatars/`, both git-ignored). |
 | `services/session-observer.ts` | While a page is watching a chat that Frontdesk is not running, re-reads the app's record and emits `session.snapshot` when it changes. Polling lives only at this boundary. |
 | `services/activity-feed.ts` | The lightweight overview stream behind the agent rail: who is running, what just finished, the last line each agent said. Prompts and tool output are not in it. |
@@ -105,7 +105,7 @@ export const setup: PluginSetup = ({ config, registerEngine }) => {
 | | Reads history from | Sends, steers and stops through |
 | --- | --- | --- |
 | **Codex** | Its app-server (`thread/read`, which takes no writer lock) and its session logs | Its own queue (`thread/queue/add`) plus a background wake link; steer, stop and model or effort changes over the desktop's window-to-window IPC (a chat the desktop has not loaded is first opened in its sidebar; the model menu is the fallback); new chats through the accessibility helper |
-| **Claude** | Claude Code's session transcripts and the desktop app's index | The accessibility helper: it opens the chat in the background, fills the composer and presses Send, without bringing the app to the front |
+| **Claude** | Claude Code's session transcripts and the desktop app's index | The accessibility helper: it opens the chat in the background, fills the composer and presses Send, without bringing the app to the front (on Windows the window takes the focus for a moment: [windows.md](windows.md)) |
 | **Antigravity** | Its local database and transcripts | Its local language server, the channel its own composer uses |
 
 Why each channel was chosen, what was ruled out, and how the accessibility helper is built are in [channels.md](../skills/add-desktop-engine/references/channels.md). Two things are worth knowing here:
@@ -137,7 +137,7 @@ The parts Frontdesk draws itself (agent rail, sidebar, header, dialogs, its own 
 
 - The channels are private interfaces of each desktop app and can change with any update. Codex and Claude are used daily. For Antigravity, new chats in a folder, stop, answering cards and reading old chats without a transcript are covered by tests with doubles but have not been tried against the live app.
 - With a desktop app set to a language other than English, most controls are still found. What is still recognised by its English text: dialogs and cards (`Switch model?`, `Trust this workspace`, `Submit` / `Skip`), the labels on Claude's new-session page (`Folder`, `Environment`), Codex's project picker, and the stop button of Codex's ChatGPT mode. Where a control is not recognised the command fails with the reason and nothing is sent.
-- macOS only. The accessibility helper and the apps' data locations are macOS-specific.
+- macOS and Windows 11. The accessibility helper (macOS, `src/server/native/ax-driver.swift`) and the C# UI Automation driver (Windows, `src/server/native/uia-driver.cs`) are platform-specific, as are the apps' data locations. On Windows the app's window takes the keyboard focus for a moment at each action: [windows.md](windows.md).
 - The server listens on `127.0.0.1` and has no login. Event logs and drafts live in the process. Remote or multi-user use would need authentication and a different design.
 
 ## Further reading
