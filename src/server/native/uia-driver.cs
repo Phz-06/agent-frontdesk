@@ -1126,8 +1126,11 @@ namespace Frontdesk.Driver
             bool minimized = Native.IsIconic(window);
             // The person is in the app: its own window is the one in front (not just some window of its process).
             if (fg != IntPtr.Zero && Root(fg) == window && !minimized) { Parking.Front = true; Parking.Skipped = "front"; return false; }
-            if (Cloaked(window) || !Native.IsWindowVisible(window)) { Parking.Skipped = "hidden"; return false; }
-            if (!TakeParkLock(15000)) { Parking.Skipped = "busy"; Fail("busy", "另一个桌面版正在后台操作，稍后再试"); }
+            FailIfHidden();
+            // On another virtual desktop: not parked, acted on where it is (measured: probes/windows/PLAN.md).
+            if (Cloaked(window)) { Parking.Skipped = "cloaked"; return false; }
+            // Not "busy": a flow's "busy" means the chat is running (the Claude bridge then steers).
+            if (!TakeParkLock(15000)) { Parking.Skipped = "busy"; Fail("park_busy", "另一个桌面版正在后台操作，稍后再试"); }
             Recover();
             fg = Win.GetForegroundWindow();
             Parking.Placement = PlacementOf(window);
@@ -1252,8 +1255,18 @@ namespace Frontdesk.Driver
         }
         // open-file and show-session: the person asked to go there, so the app comes to the front.
         [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
+        // Closed to the tray: the app hid its window rather than closing it. Nothing is done then. Its
+        // page is not read while hidden (Codex: 22 elements, measured), and an app may keep a second
+        // hidden window titled like its main one (Codex does), so the console cannot tell which to show.
+        static void FailIfHidden()
+        {
+            if (window == IntPtr.Zero || Native.IsWindowVisible(window)) return;
+            Parking.Skipped = "hidden";
+            Fail("hidden", appName + "的窗口关到了托盘（现在没有显示），工作台在后台操作不了它：从托盘图标把" + appName + "的窗口打开（打开后最小化也行）再试");
+        }
         static void BringForward()
         {
+            FailIfHidden();
             if (Native.IsIconic(window)) ShowWindow(window, 9);   // SW_RESTORE
             GiveBack(window);
             Stale();
@@ -1283,6 +1296,7 @@ namespace Frontdesk.Driver
         }
         static void FailPageEmpty()
         {
+            FailIfHidden();
             Fail("page_empty", OnScreen() && !Parking.Active && !Parking.Front
                 ? appName + "的窗口被别的窗口完全挡住，或者刚启动后还没显示过，页面没有接进 UI Automation：把它的窗口切到前台看一眼再发"
                 : OnScreen() ? appName + "的页面没有接进 UI Automation，工作台读不到它的界面：把它的窗口切到前台看一眼再发"

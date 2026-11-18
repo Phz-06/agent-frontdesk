@@ -136,6 +136,12 @@ test('Windows: no flow sends input or moves a window itself; only the driver\'s 
     assert.doesNotMatch(line, input, `uia-driver.cs:${i + 1} sends input`);
     if (i < start || i > end) assert.doesNotMatch(line, window, `uia-driver.cs:${i + 1} moves a window or the foreground outside the window section`);
   });
+  // A window closed to the tray is not acted on, parked or brought forward: the command says why.
+  const body = (name: string) => { const from = raw.findIndex(line => new RegExp(`static \\w+ ${name}\\(\\)`).test(line)); return raw.slice(from, raw.findIndex((line, i) => i > from && /^ {8}\}/.test(line))).join('\n'); };
+  for (const step of ['Park', 'BringForward', 'FailPageEmpty']) assert.match(body(step), /FailIfHidden\(\);/, `${step} refuses a hidden window`);
+  assert.match(body('FailIfHidden'), /IsWindowVisible\(window\)[\s\S]*Fail\("hidden"/);
+  // The park lock's own code: a flow's "busy" means the chat is running, and the Claude bridge then steers.
+  assert.doesNotMatch(body('Park'), /Fail\("busy"/);
 });
 
 test('Windows: a helper stopped mid-park is followed by `restore`, and a park that left something out is reported', async () => {

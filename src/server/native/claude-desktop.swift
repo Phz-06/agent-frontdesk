@@ -238,7 +238,8 @@ case "send":
   guard show(title, ["localId": localId]) else { back(); fail("not_found", "没能在 Claude 桌面版里打开这个会话") }
   // While a turn runs the desktop shows Stop until the composer has text, then Send, which
   // queues the message into the running turn. A plain send still waits for the turn to end.
-  if button("Stop") != nil && !steer { back(); fail("busy", "这个会话正在 Claude 桌面版里运行，等这一轮结束再发") }
+  let running = button("Stop") != nil
+  if running && !steer { back(); fail("busy", "这个会话正在 Claude 桌面版里运行，等这一轮结束再发") }
   let settings = applySettings()
   if let error = settings.error { back(); out(["ok": false, "code": error.code, "error": error.message, "changed": settings.changed]) }
   let draft = prompt().map(value) ?? ""
@@ -255,10 +256,14 @@ case "send":
   // The accessibility value can lag behind the editor, so this is only a hint; the caller
   // confirms the send by finding the message in the session's transcript.
   let cleared = until(5) { button("Send") == nil || button("Stop") != nil || prompt().map(value)?.isEmpty == true }
+  // A message sent into a running turn waits in the desktop's own queue (its "Send now" shows)
+  // until the turn's next step; the record has it only then (seen 30 s later on Windows, on a turn
+  // with no steps). The console then takes the steer instead of waiting for the record.
+  let queued = steer && running && until(1.5) { !findAll("sendNow").isEmpty }
   // Put back whatever the person had typed there before.
   if cleared, !draft.isEmpty, let field = prompt() { setValue(field, draft) }
   back()
-  out(["ok": true, "cleared": cleared, "restored": previous, "changed": settings.changed, "notes": settings.notes])
+  out(["ok": true, "cleared": cleared, "queued": queued, "restored": previous, "changed": settings.changed, "notes": settings.notes])
 case "new":
   // A new session is made by the desktop app itself: its "New session" page takes the first
   // message with what that page has picked (environment, folder, worktree: see new-controls),
