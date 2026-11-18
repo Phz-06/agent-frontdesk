@@ -16,6 +16,8 @@ Read-only queries (quota, model list, sign-in status) are not subject to questio
 
 Decide per action, not one route per engine: Codex sends through the official queue, steers and changes settings through the window-to-window channel, and starts chats through the helper, all three at once.
 
+**Why this order.** All three routes keep the desktop app and Frontdesk in step, since the desktop app does the work either way. Routes A and B are the desktop app's own calls: fast (Codex changes a model in 0.1 s through route B, against 5-7 s through its menus), invisible (no window moves, nothing is pressed), and unaffected by the interface's language or a redesign. Route C works for almost anything a person can do, but it is slow, it briefly moves the desktop window, and it breaks when the interface changes. So route C is the fallback, not the default: **an action that works through route C is still worth checking for route A or B**, and when one is found later, move the action onto it and keep route C as its fallback. Codex's model changes ran through the menus until its window-to-window channel turned out to do the same thing.
+
 ## 2. The three routes (best first)
 
 ### Route A: the desktop process's own public interface
@@ -38,6 +40,13 @@ Some desktop apps have a channel between their windows: one window "owns" a sess
 
 - **Codex**: `~/.codex/ipc/ipc.sock`. Steer is `thread-follower-steer-turn`, stop is `thread-follower-interrupt-turn` (with `expectedTurnId`), answering a question is `thread-follower-submit-user-input`, approvals are `*-approval-decision`; following a session gives you the requests it is waiting on the person for (`watch`). The next turn's model and effort are `thread-follower-update-thread-settings` (version 2, with a condition on what the owner holds), the very function the desktop's model menu calls; it takes about 0.1 s where the menu takes 5-7 s. Only a session the desktop has loaded since it started has an owner: `thread-owner-discovery` answers within milliseconds when one does, but the router waits 10 s when none does, so stop waiting after 0.5 s. A session with no owner is opened in the sidebar in the background (route C, about 1.5 s), which makes it owned. See `src/server/codex-desktop.ts` and `pickInDesktop` in `src/server/codex-bridge.ts`.
 - Conditions: when no desktop window owns the session, or the turn has ended, fall back to the queue; never resend after a timeout; the native record decides. For versioned protocols, pin the version you verified, and report a reason rather than forcing a send when it does not match.
+
+How to find this kind of channel:
+
+- Sockets and pipes the desktop app holds: `lsof -U -a -p <pid>` (paths such as `~/.codex/ipc/ipc.sock`); on Windows, named pipes (`\\.\pipe\…`).
+- Inside the app's `app.asar`, the method names its windows send each other and the versions they expect (Codex keeps a table: `"thread-follower-steer-turn":1`, `"thread-follower-update-thread-settings":2`…), and the handler on the owning side: what each request makes the owner do. A request whose handler calls the same function as one of the desktop's own controls is as good as pressing that control.
+- **Probe read-only requests first** (Codex: `thread-follower-read-model-settings`, `thread-owner-discovery`) on a session the desktop has open and on one it has not: how fast an answer comes, and what happens when nobody owns the session (Codex's router waits 10 s, so Frontdesk stops waiting after 0.5 s). Then try one write on a test session, check that the desktop app shows and keeps it, and put it back.
+- When the channel needs something only the interface can bring about (Codex: a session is owned only once the desktop has opened it), use route C for that step alone and route B for the action itself, and check by the session's id, not its name, that it worked. Time the whole chain, including the fallback when route B fails.
 
 ### Route C: the Accessibility driver (the helper)
 

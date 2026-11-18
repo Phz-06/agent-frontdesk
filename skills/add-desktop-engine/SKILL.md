@@ -43,7 +43,7 @@ In the project root, `docs/architecture.md` (the overall structure, how each exi
 - **Data**: where the session records are and in what format; where titles, working folders and update times are kept; which project a session belongs to (a field in an official interface, or the desktop app's own state file) and the project order; sub-sessions; the native evidence for "running" and for "this turn ended"; where each session's model / reasoning effort / permission mode is kept; whether the desktop app's own message queue is recorded; a quota interface; character art.
 - **What appears in a conversation**: step lists, commands and their output, screenshots and generated images, images the person pasted, changed files, permission prompts, questions with options, the end-of-turn summary card, subtasks. What each looks like in the native record.
 - **Sidebar**: the projects in your desktop app's sidebar, how many sessions each has (write it down to compare later), and whether there is a mode switch at the top of the sidebar.
-- **Channels**: look for the interfaces your desktop app exposes (a local service, an IPC socket, deep links, your official CLI's protocol), as described in section 2 of [Choosing channels](references/channels.md). Write down the evidence (`--help` output, protocol definitions, interface names found in the asar, the result of one test session). Do not guess.
+- **Channels**: look for the interfaces your desktop app exposes (a local service, the socket or pipe its windows talk over, deep links, your official CLI's protocol), as described in section 2 of [Choosing channels](references/channels.md). Look for these before settling on the accessibility helper: they keep the desktop app and Frontdesk in step just as well, and they are faster and do not touch the window. Write down the evidence (`--help` output, protocol definitions, interface names found in the asar, the result of one test session). Do not guess.
 - **Shared capabilities**: if your desktop app has speech-to-text, wire up `dictate` and `dictationReady` (contract section 6) and it becomes one of the microphone's sources; without it nothing breaks for anyone, since the microphone uses another engine's or the browser's.
 
 ### 2. Pick the channels (write them down before you build)
@@ -60,7 +60,7 @@ Fill in a table in `progress.md`, one row per action: route A, B or C, the evide
 | Answer a question / permission card | | | Say to answer it in the desktop app |
 | Open a file in the desktop app | | | Do not declare `openFile` |
 
-Every row must pass the three questions in section 1 of [Choosing channels](references/channels.md). Any row that plans to "start another process to run this turn" gets crossed out and rethought. If you need the helper, get `probe` working first (Choosing channels, section 4) before going further.
+Every row must pass the three questions in section 1 of [Choosing channels](references/channels.md). Any row that plans to "start another process to run this turn" gets crossed out and rethought. A row on route C says why routes A and B cannot do it; a row on route A or B names its fallback (route C, the queue, or not doing it and saying why). If you need the helper, get `probe` working first (Choosing channels, section 4) before going further.
 
 ### 3. Build it in stages
 
