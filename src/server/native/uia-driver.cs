@@ -1403,9 +1403,13 @@ namespace Frontdesk.Driver
             }
             else
             {
-                Node box = control(), option = box == null ? null : Within(box).FirstOrDefault(n => n.ControlType == CT_RadioButton && n.Name == word);
+                Func<Node> optionNow = () => { Node box = control(); return box == null ? null : Within(box).FirstOrDefault(n => n.ControlType == CT_RadioButton && n.Name == word); };
+                Node option = optionNow();
                 if (option == null) return appName + "的模式切换里没有「" + word + "」";
                 Activate(option);
+                // A press that came while the page was settling is lost (measured: Claude's switch to its chat
+                // mode missed about one run in four, with no error): pressed once more, as a menu's is.
+                if (!Until(1.2, () => ShownSpace() == id)) { Node again = optionNow(); if (again != null) { Trace("mode " + id + ": pressed again"); Activate(again); } }
             }
             if (Until(3.2, () => ShownSpace() == id)) { Until(3.2, () => ModeDrawn(id)); Wait(0.4); Trace("mode " + id); return null; }
             Trace("mode " + id + " not reached (shows " + ShownSpace() + ")");
