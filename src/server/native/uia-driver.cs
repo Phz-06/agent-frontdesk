@@ -16,8 +16,11 @@
 //   inspect [<locator>…]  → what the controls those locators find go by besides their names
 //   warm [check]  → reads the page once so the desktop keeps its accessibility tree; with `check`,
 //            also whether the profile still matches that page
+//   restore  → puts back a window a helper left parked when it was stopped (every command does this
+//            first; the server runs `restore` alone right after it had to stop a helper)
 // The commands an engine's flow ports act on the page, with the window parked in a corner (below);
-// any other command answers `not_ported` until its flow is ported.
+// any other command answers `not_ported` until its flow is ported. One window is parked at a time on
+// the machine, whichever engine's helper parks it.
 //
 // The three things ax-driver.swift holds for every flow hold here too, written once below:
 // "one control, or none" (Sole), "a control found by its place" (Confirmed, against the profile's
@@ -177,6 +180,7 @@ namespace Frontdesk.Driver
         [DllImport("user32.dll")] public static extern bool GetMonitorInfo(IntPtr m, ref MONITORINFO mi);
         [DllImport("user32.dll")] public static extern IntPtr MonitorFromWindow(IntPtr h, uint flags);
         [DllImport("user32.dll")] public static extern bool FlashWindowEx(ref FLASHWINFO fi);
+        [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
         [DllImport("shcore.dll")] public static extern int GetDpiForMonitor(IntPtr m, int type, out uint x, out uint y);
         [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out Native.RECT r, int size);
         [DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr h, int attr, ref int v, int size);
@@ -821,19 +825,6 @@ namespace Frontdesk.Driver
             finally { Stale(); }
             return Activate(n);
         }
-        // The app's window takes the foreground (parked off screen, nothing of it shows) for the presses its
-        // page takes only while the window is active: a chat card's controls (measured on Claude's question
-        // card: from behind a press only moves the focus, and pressing again after the foreground was given
-        // back does not help; with the window active first, one press picks, one press submits). The caller
-        // holds the foreground (HoldForeground) for as long as those presses take.
-        static void Activate()
-        {
-            if (Root(Win.GetForegroundWindow()) == window) return;
-            GiveBack(window);
-            Until(0.3, () => Root(Win.GetForegroundWindow()) == window);
-            Thread.Sleep(80);
-            Trace("activated: " + (Root(Win.GetForegroundWindow()) == window));
-        }
         static void ScrollIntoView(IUIAutomationElement e)
         {
             try { IUIAutomationScrollItemPattern s = e.GetCurrentPattern(Pat_ScrollItem) as IUIAutomationScrollItemPattern; if (s != null) s.ScrollIntoView(); } catch { }
@@ -851,6 +842,11 @@ namespace Frontdesk.Driver
             return text.Substring(at + (text[at] == '：' ? 1 : 2)).Trim();
         }
 
+        // ==== the window: parked, put back, brought forward ====
+        // The only code that moves a window, changes the z-order or hands the foreground anywhere
+        // (test/platform.test.ts checks that no other code, and no engine's flow, does). Every engine's
+        // flow acts through it: Begin(park), HoldForeground, Activate(), BringForward.
+        //
         // ---- parked in a corner (probes/windows/PLAN.md, "Parked in a corner") ----
         // Chromium stops updating a window that is fully covered, and on Windows nothing reaches its
         // page without the page taking the foreground for a moment. So while a flow acts, the window is
@@ -959,6 +955,19 @@ namespace Frontdesk.Driver
         // While a menu is open the page needs the foreground (on: the watchdog leaves it to the app;
         // off: it is given back at once).
         static void HoldForeground(bool on) { if (Parking.Active) Parking.Held = on; }
+        // The app's window takes the foreground (parked off screen, nothing of it shows) for the presses its
+        // page takes only while the window is active: a chat card's controls (measured on Claude's question
+        // card: from behind a press only moves the focus, and pressing again after the foreground was given
+        // back does not help; with the window active first, one press picks, one press submits). The caller
+        // holds the foreground (HoldForeground) for as long as those presses take.
+        static void Activate()
+        {
+            if (Root(Win.GetForegroundWindow()) == window) return;
+            GiveBack(window);
+            Until(0.3, () => Root(Win.GetForegroundWindow()) == window);
+            Thread.Sleep(80);
+            Trace("activated: " + (Root(Win.GetForegroundWindow()) == window));
+        }
         // Where the corner goes: a corner of a monitor's work area from which the rest of the window lies
         // outside every monitor (the top left, with the taskbar at the bottom). The window's own monitor
         // is tried first, then the others at its scale (primary first), then the rest: moved to a monitor
@@ -1004,8 +1013,113 @@ namespace Frontdesk.Driver
             frame = new Native.RECT(); probe = new Win.POINT();
             return false;
         }
+        // ---- a park that outlives its helper ----
+        // The server kills a helper that runs past its timeout, and a killed process runs no `finally`:
+        // its window would stay off screen. So before the window moves, how to put it back is written to
+        // parked\<window>.json next to the helper (the shared cache), and removed once it is back. Every
+        // helper start, of any engine (the warm read comes every ten seconds while the console is in use),
+        // puts back a window whose record no live park owns (Recover), and the server runs `restore` right
+        // after a helper it had to stop.
+        // One park at a time on the machine (Claude's and Codex's helpers, or two servers): two watchdogs
+        // would hand the foreground back and forth. The lock is a named mutex; a helper that ended while
+        // parked leaves it abandoned, and the next one takes it and recovers what it left.
+        static Mutex parkLock;
+        static bool parkLockHeld;
+        static string ParkDir { get { return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "parked"); } }
+        static string RecordOf(IntPtr h) { return Path.Combine(ParkDir, Hex(h) + ".json"); }
+        static bool TakeParkLock(int waitMs)
+        {
+            if (parkLockHeld) return true;
+            if (parkLock == null) parkLock = new Mutex(false, @"Local\agent-frontdesk-park");
+            try { parkLockHeld = parkLock.WaitOne(waitMs); }
+            catch (AbandonedMutexException) { parkLockHeld = true; Trace("took the park lock from a helper that ended while parked"); }
+            return parkLockHeld;
+        }
+        static void DropParkLock() { if (!parkLockHeld) return; parkLockHeld = false; try { parkLock.ReleaseMutex(); } catch { } }
+        static uint PidOf(IntPtr h) { uint pid = 0; if (h != IntPtr.Zero) Native.GetWindowThreadProcessId(h, out pid); return pid; }
+        static int[] Four(Native.RECT r) { return new[] { r.Left, r.Top, r.Right, r.Bottom }; }
+        static Native.RECT RectOf(object value) { object[] v = (object[])value; Native.RECT r; r.Left = Convert.ToInt32(v[0]); r.Top = Convert.ToInt32(v[1]); r.Right = Convert.ToInt32(v[2]); r.Bottom = Convert.ToInt32(v[3]); return r; }
+        static void WriteRecord()
+        {
+            try
+            {
+                Directory.CreateDirectory(ParkDir);
+                Win.WINDOWPLACEMENT p = Parking.Placement;
+                Dictionary<string, object> record = new Dictionary<string, object> {
+                    { "window", window.ToInt64() }, { "pid", (long)PidOf(window) }, { "helper", (long)Process.GetCurrentProcess().Id }, { "began", Parking.Began.ToString("o", CultureInfo.InvariantCulture) },
+                    { "flags", p.flags }, { "showCmd", p.showCmd }, { "ptMin", new[] { p.ptMin.X, p.ptMin.Y } }, { "ptMax", new[] { p.ptMax.X, p.ptMax.Y } }, { "normal", Four(p.rcNormal) },
+                    { "maxMoved", Parking.MaxMoved }, { "maxRect", Four(Parking.MaxRect) }, { "insertAfter", Parking.InsertAfter.ToInt64() }, { "original", Parking.Original.ToInt64() } };
+                string file = RecordOf(window), tmp = file + ".tmp";
+                File.WriteAllText(tmp, new JavaScriptSerializer().Serialize(record));
+                if (File.Exists(file)) File.Delete(file);
+                File.Move(tmp, file);
+            }
+            catch (Exception e) { Trace("park record not written: " + e.Message); }
+        }
+        // Puts back the windows that helpers which ended while parked left off screen; how many.
+        static int Recover()
+        {
+            string[] files;
+            try { files = Directory.Exists(ParkDir) ? Directory.GetFiles(ParkDir, "*.json") : new string[0]; } catch { return 0; }
+            if (files.Length == 0) return 0;
+            bool had = parkLockHeld;
+            if (!TakeParkLock(0)) return 0;   // a live park: its own helper puts its window back
+            try { return files.Count(PutBack); }
+            finally { if (!had) DropParkLock(); }
+        }
+        static bool PutBack(string file)
+        {
+            bool done = false;
+            try
+            {
+                Dictionary<string, object> r = new JavaScriptSerializer().DeserializeObject(File.ReadAllText(file)) as Dictionary<string, object>;
+                IntPtr h = r == null ? IntPtr.Zero : new IntPtr(Convert.ToInt64(r["window"], CultureInfo.InvariantCulture));
+                uint pid = r == null ? 0 : Convert.ToUInt32(r["pid"], CultureInfo.InvariantCulture);
+                // The same window of the same process (a handle is reused only once the window is gone).
+                if (h != IntPtr.Zero && Win.IsWindow(h) && PidOf(h) == pid)
+                {
+                    Win.WINDOWPLACEMENT was = PlacementOf(h);
+                    was.flags = Convert.ToInt32(r["flags"]); was.showCmd = Convert.ToInt32(r["showCmd"]);
+                    object[] min = (object[])r["ptMin"], max = (object[])r["ptMax"];
+                    was.ptMin.X = Convert.ToInt32(min[0]); was.ptMin.Y = Convert.ToInt32(min[1]); was.ptMax.X = Convert.ToInt32(max[0]); was.ptMax.Y = Convert.ToInt32(max[1]);
+                    was.rcNormal = RectOf(r["normal"]);
+                    IntPtr after = new IntPtr(Convert.ToInt64(r["insertAfter"], CultureInfo.InvariantCulture)), original = new IntPtr(Convert.ToInt64(r["original"], CultureInfo.InvariantCulture));
+                    if (after != IntPtr.Zero && !Win.IsWindow(after)) after = IntPtr.Zero;
+                    if (original != IntPtr.Zero && !(Win.IsWindow(original) && Native.IsWindowVisible(original))) original = IntPtr.Zero;
+                    PutWindowBack(h, pid, was, (bool)r["maxMoved"], RectOf(r["maxRect"]), after, original);
+                    Trace("put back " + Hex(h) + ", left off screen by helper " + r["helper"]);
+                    done = true;
+                }
+            }
+            catch (Exception e) { Trace("park record unreadable: " + e.Message); }
+            try { File.Delete(file); } catch { }
+            return done;
+        }
+        // Everything back as it was found: foreground first (a window that holds it would be put on top
+        // by a maximize), then the z-order while it is still off screen, the placement, the z-order again,
+        // the foreground; and the taskbar button's flash a refused grab leaves is stopped. The foreground
+        // is only taken back from the app (or from nothing): a window the person went to stays in front.
+        static void PutWindowBack(IntPtr h, uint pid, Win.WINDOWPLACEMENT was, bool maxMoved, Native.RECT maxRect, IntPtr insertAfter, IntPtr original)
+        {
+            Func<IntPtr, bool> app = w => w != IntPtr.Zero && PidOf(w) == pid;
+            for (int i = 0; i < 60 && original != IntPtr.Zero && app(Win.GetForegroundWindow()) && Win.GetForegroundWindow() != original; i++) { if (GiveBack(original)) break; Thread.Sleep(15); }
+            if (was.showCmd != 2) Win.SetWindowPos(h, insertAfter, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            Win.WINDOWPLACEMENT back = was;
+            if (back.showCmd == 1) back.showCmd = 4;   // normal, without activating it
+            if (back.showCmd == 2) back.showCmd = 7;   // minimized, without activating anything
+            // A maximized one is moved back where it was (it never stopped being maximized).
+            if (maxMoved) Win.SetWindowPos(h, IntPtr.Zero, maxRect.Left, maxRect.Top, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER);
+            else Win.SetWindowPlacement(h, ref back);
+            if (back.showCmd != 7) Win.SetWindowPos(h, insertAfter, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            IntPtr last = Win.GetForegroundWindow();
+            if (original != IntPtr.Zero && last != original && (last == IntPtr.Zero || app(last))) GiveBack(original);
+            Win.FLASHWINFO fi = new Win.FLASHWINFO(); fi.cbSize = Marshal.SizeOf(typeof(Win.FLASHWINFO)); fi.hwnd = h; Win.FlashWindowEx(ref fi);
+            int on = 0; Win.DwmSetWindowAttribute(h, 3, ref on, 4);
+        }
+
         // Parks the window for a flow that acts on the page. Returns false (and leaves it as it is) when
         // the person is in the app themselves, or the window cannot be parked (minimized, another desktop).
+        // Another park on the machine is waited for; one that does not end in time stops the command.
         static bool Park()
         {
             IntPtr fg = Win.GetForegroundWindow();
@@ -1013,13 +1127,23 @@ namespace Frontdesk.Driver
             // The person is in the app: its own window is the one in front (not just some window of its process).
             if (fg != IntPtr.Zero && Root(fg) == window && !minimized) { Parking.Front = true; Parking.Skipped = "front"; return false; }
             if (Cloaked(window) || !Native.IsWindowVisible(window)) { Parking.Skipped = "hidden"; return false; }
+            if (!TakeParkLock(15000)) { Parking.Skipped = "busy"; Fail("busy", "另一个桌面版正在后台操作，稍后再试"); }
+            Recover();
+            fg = Win.GetForegroundWindow();
             Parking.Placement = PlacementOf(window);
             Parking.Original = fg; Parking.InsertAfter = minimized ? IntPtr.Zero : AboveVisible(window);
             Parking.Home = Win.MonitorFromWindow(window, 2);   // a minimized window: the monitor it comes back on
-            int off = 1; Win.DwmSetWindowAttribute(window, 3, ref off, 4);   // DWMWA_TRANSITIONS_FORCEDISABLED: no animation to show
-            Parking.Active = true; Parking.Began = DateTime.UtcNow; Parking.Stop = false;
-            Parking.Guard = new Thread(Watchdog); Parking.Guard.IsBackground = true; Parking.Guard.Start();
             Native.RECT rect; Native.GetWindowRect(window, out rect);
+            // A maximized window stays maximized and is only moved: its size does not change (the page does
+            // not lay out again) and neither do its normal bounds, so the app saves nothing off screen
+            // however long the park lasts. (Shown normal at the maximized rect instead, as first built,
+            // Claude lost its normal bounds to the maximized ones.) Measured: probes/windows/PLAN.md.
+            if (!minimized && Parking.Placement.showCmd == 3) { Parking.MaxMoved = true; Parking.MaxRect = rect; }
+            Parking.Began = DateTime.UtcNow;
+            WriteRecord();
+            int off = 1; Win.DwmSetWindowAttribute(window, 3, ref off, 4);   // DWMWA_TRANSITIONS_FORCEDISABLED: no animation to show
+            Parking.Active = true; Parking.Stop = false;
+            Parking.Guard = new Thread(Watchdog); Parking.Guard.IsBackground = true; Parking.Guard.Start();
             if (minimized)
             {
                 // Shown (not activated) at the size it comes back at: the work area when it restores to
@@ -1038,11 +1162,6 @@ namespace Frontdesk.Driver
                 Win.SetWindowPlacement(window, ref wp);
                 Native.GetWindowRect(window, out rect);
             }
-            // A maximized window stays maximized and is only moved: its size does not change (the page does
-            // not lay out again) and neither do its normal bounds, so the app saves nothing off screen
-            // however long the park lasts. (Shown normal at the maximized rect instead, as first built,
-            // Claude lost its normal bounds to the maximized ones.) Measured: probes/windows/PLAN.md.
-            else if (Parking.Placement.showCmd == 3) { Parking.MaxMoved = true; Parking.MaxRect = rect; }
             Native.RECT ef; if (Win.DwmGetWindowAttribute(window, 9, out ef, 16) != 0) ef = rect;
             Native.RECT frame; Win.POINT probe;
             if (!CornerFor(ef.Right - ef.Left, ef.Bottom - ef.Top, 4, out frame, out probe)) { Unpark(); Parking.Skipped = "no corner"; return false; }
@@ -1056,29 +1175,15 @@ namespace Frontdesk.Driver
             Stale();
             return true;
         }
-        // Everything back as it was found: foreground first (a window that holds it would be put on top
-        // by a maximize), then the z-order while it is still off screen, the placement, the z-order again,
-        // the foreground; and the taskbar button's flash a refused grab leaves is stopped.
+        // The window back as it was found (PutWindowBack), the park's report, its record removed and the
+        // machine's park lock let go. Also runs when the command fails or crashes.
         static Dictionary<string, object> parkReport;
         static void Unpark()
         {
-            if (!Parking.Active) return;
+            if (!Parking.Active) { DropParkLock(); return; }
             Parking.Active = false; Parking.KeepCorner = false; Parking.Held = false;
             Thread.Sleep(30);
-            for (int i = 0; i < 60 && IsOurs(Win.GetForegroundWindow()) && Win.GetForegroundWindow() != Parking.Original; i++) { if (GiveBack(Parking.Original)) break; Thread.Sleep(15); }
-            if (Parking.Placement.showCmd != 2) Win.SetWindowPos(window, Parking.InsertAfter, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            Win.WINDOWPLACEMENT back = Parking.Placement;
-            if (back.showCmd == 1) back.showCmd = 4;   // normal, without activating it
-            if (back.showCmd == 2) back.showCmd = 7;   // minimized, without activating anything
-            // A maximized one is moved back where it was (it never stopped being maximized).
-            if (Parking.MaxMoved) Win.SetWindowPos(window, IntPtr.Zero, Parking.MaxRect.Left, Parking.MaxRect.Top, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER);
-            else Win.SetWindowPlacement(window, ref back);
-            if (back.showCmd != 7) Win.SetWindowPos(window, Parking.InsertAfter, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            // Only taken back from the app (or from nothing): a window the person went to stays in front.
-            IntPtr last = Win.GetForegroundWindow();
-            if (last != Parking.Original && (last == IntPtr.Zero || IsOurs(last))) GiveBack(Parking.Original);
-            Win.FLASHWINFO fi = new Win.FLASHWINFO(); fi.cbSize = Marshal.SizeOf(typeof(Win.FLASHWINFO)); fi.hwnd = window; Win.FlashWindowEx(ref fi);
-            int on = 0; Win.DwmSetWindowAttribute(window, 3, ref on, 4);
+            PutWindowBack(window, PidOf(window), Parking.Placement, Parking.MaxMoved, Parking.MaxRect, Parking.InsertAfter, Parking.Original);
             Parking.Stop = true; if (Parking.Guard != null) Parking.Guard.Join(500);
             Win.WINDOWPLACEMENT now = PlacementOf(window), was = Parking.Placement;
             bool same = now.showCmd == was.showCmd && now.rcNormal.Left == was.rcNormal.Left && now.rcNormal.Top == was.rcNormal.Top && now.rcNormal.Right == was.rcNormal.Right && now.rcNormal.Bottom == was.rcNormal.Bottom;
@@ -1090,6 +1195,8 @@ namespace Frontdesk.Driver
                 { "foregroundBack", Win.GetForegroundWindow() == Parking.Original }, { "followed", Parking.Followed } };
             Trace("put back after " + ms + "ms");
             RepairSavedBounds(ms);
+            try { File.Delete(RecordOf(window)); } catch { }
+            DropParkLock();
         }
         // An app that saves its window's bounds (Claude: window-state.json, about 3.3 s after the window
         // settles) saves the parked ones when a park lasts longer than that. A normal window saves its own
@@ -1143,6 +1250,15 @@ namespace Frontdesk.Driver
             int on = 0; Win.DwmSetWindowAttribute(window, 3, ref on, 4);
             if (parkReport != null) parkReport["savedBoundsRepaired"] = !offScreen();
         }
+        // open-file and show-session: the person asked to go there, so the app comes to the front.
+        [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
+        static void BringForward()
+        {
+            if (Native.IsIconic(window)) ShowWindow(window, 9);   // SW_RESTORE
+            GiveBack(window);
+            Stale();
+        }
+        // ==== end of the window ====
 
         // ---- the page, ready ----
         // Chromium builds its page's tree once a UIA client asks, starting from a shell of a dozen nodes;
@@ -1730,14 +1846,7 @@ namespace Frontdesk.Driver
             return new[] { "not_taken", appName + "没有收下这个回答" };
         }
 
-        // ---- open-file and show-session: the person asked to go there, so the app comes to the front ----
-        [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
-        static void BringForward()
-        {
-            if (Native.IsIconic(window)) ShowWindow(window, 9);   // SW_RESTORE
-            GiveBack(window);
-            Stale();
-        }
+        // ---- open-file and show-session: the person asked to go there, so the app comes to the front (BringForward) ----
         static List<KeyValuePair<Node, int>> FileLinks(string path, string absolute, string text)
         {
             string bare = Regex.Replace(path, @":\d+(:\d+)?$", "");
@@ -2005,6 +2114,10 @@ namespace Frontdesk.Driver
         // ---- the commands ----
         static void Run()
         {
+            // First, whatever command this is: a window a helper left off screen when it was stopped
+            // mid-park is put back (`restore` does only that; the server runs it after stopping one).
+            int restored = Recover();
+            if (command == "restore") Out(new Dictionary<string, object> { { "ok", true }, { "restored", restored } });
             LoadProfile();
             window = FindWindow();
             int self = IntegrityOf(Native.GetCurrentProcess());

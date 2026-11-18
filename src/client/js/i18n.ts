@@ -62,7 +62,7 @@ const EN: Record<string, string> = {
   '刷新会话': 'Refresh chats', '正在读取会话…': 'Loading chats…', '没有匹配的聊天': 'No chats found', '还没有聊天，从新建聊天开始': 'No chats yet. Start a new one.',
   '长对话只从桌面版读到了 {read} / {total} 条消息': 'Only {read} of {total} messages could be read from the desktop app for this long chat', '模式': 'Mode', '{name} 的模式': '{name} mode', '{name} 模式还没有接入': "{name} mode isn't connected yet", '还没有聊天': 'No chats yet', '未命名聊天': 'Untitled', '草稿': 'Draft', '收起': 'Show less', '显示更多': 'Show more', '正在运行': 'Running', '需要查看': 'Needs attention',
   '关闭会话列表': 'Close sidebar', '关闭侧栏': 'Close sidebar', '切换会话列表': 'Toggle sidebar', '拖动调整会话列表宽度，双击恢复默认': 'Drag to resize. Double-click to reset.',
-  '引擎已就绪': 'Connected', '桌面版界面有改动': 'Desktop app changed', '{n} 个控件的认法要更新：{keys}': '{n} controls need a new locator: {keys}', '仅可查看历史': 'Read-only', '引擎未连接': 'Not connected', '正在连接': 'Connecting…', '同步中': 'Syncing',
+  '引擎已就绪': 'Connected', '桌面版界面有改动': 'Desktop app changed', '{n} 个控件的认法要更新：{keys}': '{n} controls need a new locator: {keys}', '上次在后台操作后，窗口没有回到原位': "After the last action from behind, the window didn't go back where it was", '仅可查看历史': 'Read-only', '引擎未连接': 'Not connected', '正在连接': 'Connecting…', '同步中': 'Syncing',
   '我的': 'Profile', '我的头像': 'Your avatar', '设置': 'Settings',
   // settings
   '语言': 'Language', '主题': 'Theme', '跟随系统': 'System', '浅色': 'Light', '深色': 'Dark', 'AI 对话框位置': 'Speech bubbles', '头像下方': 'Below', '头像右侧': 'Beside',
@@ -191,6 +191,7 @@ const REPORTS: Record<string, string> = {
   '桌面代发需要辅助功能权限：在「系统设置 → 隐私与安全性 → 辅助功能」里允许运行工作台服务的程序（例如终端），然后重启工作台': "Sending through the desktop app needs Accessibility access. In System Settings → Privacy & Security → Accessibility, allow the app that runs Frontdesk (for example Terminal), then restart Frontdesk.",
   'Claude 桌面版没有及时响应': "Claude's desktop app didn't respond in time", '桌面代发程序没有正常返回': 'The desktop helper stopped unexpectedly', '桌面代发只支持 macOS': 'Sending through the desktop app only works on macOS', '桌面代发只支持 macOS 和 Windows': 'Sending through the desktop app works on macOS and Windows', '桌面版以更高的权限运行（例如以管理员身份），工作台能读到它的界面但不能操作：请用相同的权限运行两者': 'The desktop app runs with higher rights (as administrator, say): the console can read its window but not act on it. Run both with the same rights.', '桌面代发程序编译失败（需要 Windows 自带的 .NET Framework 4 的 csc.exe）': "The desktop helper didn't compile (it needs the csc.exe of .NET Framework 4, which comes with Windows)", 'Windows 上的桌面代发还在移植中，暂时不能通过窗口操作发送': "Sending through the desktop app's window isn't available on Windows yet: it is still being ported",
   '缺少桌面版在 Windows 上的配置（AX_PROFILE 的 windows.exe）': "The desktop app's Windows settings are missing (windows.exe in AX_PROFILE)",
+  '另一个桌面版正在后台操作，稍后再试': 'Another desktop app is being worked from behind right now. Try again in a moment.',
   '桌面代发程序编译失败（需要 Xcode 命令行工具：xcode-select --install）': "Couldn't build the desktop helper. Install the Xcode command line tools: xcode-select --install", 'Claude 桌面版没有在运行': "Claude's desktop app isn't running",
   '桌面代发程序不可用': 'The desktop helper is unavailable', '工作台没有辅助功能权限': "Frontdesk doesn't have Accessibility access", '缺少会话标题': 'Missing chat title', '消息是空的': 'The message is empty',
   '这个 AI 的桌面版不支持打开会话': "This AI's desktop app can't open chats from here", '没能在桌面版里打开这个会话': "Couldn't open this chat in the desktop app",

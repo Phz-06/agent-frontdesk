@@ -224,7 +224,8 @@ export interface Model {
   [extra: string]: unknown;
 }
 /** `stale`: the controls of the desktop app that its accessibility profile no longer finds by their marks (DesktopAutomation#staleControls): sending still works where their names do. */
-export interface EngineStatus { connected: boolean; error?: string; stale?: string[]; [extra: string]: unknown }
+/** `park` (Windows): the engine's last park of its window, while recent, when it did not put everything back (DesktopAutomation#parkTrouble). */
+export interface EngineStatus { connected: boolean; error?: string; stale?: string[]; park?: { command: string; issues: string[]; at: number }; [extra: string]: unknown }
 export interface Project { id: string; name: string; cwd: string; space?: string }
 
 export interface UsageWindow { id: string; label?: string; windowMinutes?: number | null; remainingPercent?: number | null; usedPercent?: number | null; resetsAt?: number | null }

@@ -760,7 +760,10 @@ class ClaudeBridge {
     return this.auth;
   }
   // Connected means the desktop app can take messages from here: that is the only way they go.
-  async getStatus(): Promise<EngineStatus> { const state = await this.desktop.check(), stale = this.desktop.staleControls?.() ?? []; return { connected: state.available, error: state.available ? undefined : state.reason, ...(stale.length ? { stale } : {}) }; }
+  async getStatus(): Promise<EngineStatus> {
+    const state = await this.desktop.check(), stale = this.desktop.staleControls?.() ?? [], park = this.desktop.parkTrouble?.();
+    return { connected: state.available, error: state.available ? undefined : state.reason, ...(stale.length ? { stale } : {}), ...(park ? { park: { command: park.command, issues: park.issues, at: park.at } } : {}) };
+  }
   async getModels(): Promise<Model[]> {
     if (this.modelCache && Date.now() - this.modelCache.at < 10 * 60000) return this.modelCache.models;
     if (!this.authStatus().loggedIn) return [];

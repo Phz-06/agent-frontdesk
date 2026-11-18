@@ -233,11 +233,13 @@ class CodexBridge extends EventEmitter {
   async getStatus(): Promise<EngineStatus> {
     let error;
     try { await this.start(); } catch (err) { error = messageOf(err); }
+    const park = this.ui.parkTrouble?.();
     return {
       connected: this.isReady, error,
       account: this.accountInfo,
       engine: 'codex',
-      ...(this.ui.staleControls?.().length ? { stale: this.ui.staleControls() } : {})
+      ...(this.ui.staleControls?.().length ? { stale: this.ui.staleControls() } : {}),
+      ...(park ? { park: { command: park.command, issues: park.issues, at: park.at } } : {}),
     };
   }
 

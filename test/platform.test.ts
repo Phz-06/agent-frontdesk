@@ -6,8 +6,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  agentapiCommand, antigravityApp, appAsar, appIconFile, bundledCodexCli, claudeCliIn, claudeDesktopHome, findExecutable,
-  helperCacheDir, linkCommand, openLink, packageRoot, setPackageLookup, PACKAGES,
+  agentapiCommand, antigravityApp, antigravityIconFile, appAsar, appIconFile, bundledCodexCli, claudeCliIn, claudeDesktopHome, findExecutable,
+  helperCacheDir, installedClaudeCli, linkCommand, openLink, packageRoot, setPackageLookup, PACKAGES,
 } from '../src/server/services/desktop-places.js';
 import { readAppIcon } from '../src/server/services/app-assets.js';
 import * as codexDesktop from '../src/server/codex-desktop.js';
@@ -101,4 +101,69 @@ test('finding a program: PATH with PATHEXT on Windows, where any existing file r
   assert.equal(findExecutable(['missing', null, ''], { platform: 'win32', env: { PATH: dir } }), null);
   // An absolute candidate is taken as it is.
   assert.equal(findExecutable([path.join(dir, 'codex.exe')], { platform: 'win32', env: {} }), path.join(dir, 'codex.exe'));
+});
+
+test('Antigravity\'s icon and Claude Code\'s own CLI on Windows', () => {
+  const env = { LOCALAPPDATA: 'C:\\Users\\a\\AppData\\Local' };
+  assert.equal(antigravityIconFile({ platform: 'darwin' }), '/Applications/Antigravity.app/Contents/Resources/icon.icns');
+  // readAppIcon reads the /icon.png inside an app.asar in place.
+  assert.equal(antigravityIconFile({ platform: 'win32', home: 'C:\\Users\\a', env }), 'C:\\Users\\a\\AppData\\Local\\Programs\\Antigravity\\resources\\app.asar');
+  assert.equal(installedClaudeCli({ platform: 'darwin', home: '/Users/a' }), '');
+  assert.equal(installedClaudeCli({ platform: 'win32', home: os.homedir() }), path.join(os.homedir(), '.local', 'bin', 'claude.exe'));
+});
+
+// The low-interruption rule on Windows, held by the sources themselves: no input is sent anywhere
+// (no keys, no mouse, no clipboard, no UIA focus), and only the driver's "the window" section moves
+// a window or hands the foreground anywhere. An engine's flow acts only through that section
+// (Begin(park), HoldForeground, Activate(), BringForward), so whatever flow is added later is as quiet.
+test('Windows: no flow sends input or moves a window itself; only the driver\'s window section does', () => {
+  const native = path.join(import.meta.dirname, '../src/server/native');
+  const code = (file: string): string[] => fs.readFileSync(path.join(native, file), 'utf8').split('\n').map(line => line.replace(/\/\/.*$/, ''));
+  // (UIA's SetFocus as a call: the COM interface declares the method, which is never called.)
+  const input = /\b(SendInput|keybd_event|mouse_event|SendKeys|Clipboard|SetClipboardData|PostMessage|SendMessage)\b|\.SetFocus\s*\(/;
+  const window = /\b(SetForegroundWindow|SetWindowPos|SetWindowPlacement|ShowWindow|AttachThreadInput|SwitchToThisWindow|BringWindowToTop|MoveWindow|AllowSetForegroundWindow|LockSetForegroundWindow)\s*\(/;
+  const flows = fs.readdirSync(native).filter(name => name.endsWith('-desktop.cs'));
+  assert.ok(flows.includes('claude-desktop.cs'), 'the Windows flows are found');
+  for (const flow of flows) code(flow).forEach((line, i) => {
+    assert.doesNotMatch(line, input, `${flow}:${i + 1} sends input`);
+    assert.doesNotMatch(line, window, `${flow}:${i + 1} moves a window or the foreground itself`);
+  });
+  const raw = fs.readFileSync(path.join(native, 'uia-driver.cs'), 'utf8').split('\n'), driver = code('uia-driver.cs');
+  const start = raw.findIndex(line => line.includes('// ==== the window: parked, put back, brought forward ====')), end = raw.findIndex(line => line.includes('// ==== end of the window ===='));
+  assert.ok(start > 0 && end > start, 'the window section is marked');
+  driver.forEach((line, i) => {
+    if (/\bstatic extern\b/.test(line)) return;   // declarations
+    assert.doesNotMatch(line, input, `uia-driver.cs:${i + 1} sends input`);
+    if (i < start || i > end) assert.doesNotMatch(line, window, `uia-driver.cs:${i + 1} moves a window or the foreground outside the window section`);
+  });
+});
+
+test('Windows: a helper stopped mid-park is followed by `restore`, and a park that left something out is reported', async () => {
+  const { DesktopAutomation } = await import('../src/server/core/desktop-automation.js');
+  const ran: string[] = [];
+  let answer: Record<string, unknown> = { ok: false, code: 'crashed', unanswered: true, error: '桌面版没有及时响应' };
+  const desktop = new DesktopAutomation({ engine: 'claude', platform: 'win32', warmEveryMs: 0,
+    runner: async (_file, args) => { ran.push(args[0] || ''); return args[0] === 'restore' ? { ok: true, restored: 1 } : { ok: false, ...answer }; } });
+  // (A file that exists: a helper missing from the cache is built again and run once more.)
+  desktop.binary = process.execPath;
+  const warn = console.warn; console.warn = () => {};
+  try {
+    await desktop.run(['send', 'chat', 'local_1']);
+    assert.deepEqual(ran, ['send', 'restore']);
+    // A failure the helper answered itself (a crash it caught too) has put the window back already.
+    ran.length = 0; answer = { ok: false, code: 'not_found', parked: { ms: 900, grabs: 2, heldMs: 0, placementBack: true, underSame: true, foregroundBack: true } };
+    await desktop.run(['send', 'chat', 'local_1']);
+    assert.deepEqual(ran, ['send']);
+    assert.equal(desktop.parkTrouble(), null);
+    answer = { ok: true, parked: { ms: 1400, grabs: 3, heldMs: 5200, placementBack: false, underSame: true, foregroundBack: true } };
+    await desktop.run(['settings', 'chat', 'local_1']);
+    assert.deepEqual(desktop.parkTrouble()?.issues, ['placement', 'held']);
+    assert.equal(desktop.parkTrouble()?.command, 'settings');
+    assert.equal(desktop.parkTrouble(0), null, 'only while recent');
+  } finally { console.warn = warn; }
+  // macOS has no parks to put back.
+  const mac = new DesktopAutomation({ engine: 'claude', platform: 'darwin', warmEveryMs: 0, runner: async (_file, args) => { ran.push(`mac ${args[0]}`); return { ok: false, code: 'crashed' }; } });
+  mac.binary = process.execPath; ran.length = 0;
+  await mac.run(['send']);
+  assert.deepEqual(ran, ['mac send']);
 });

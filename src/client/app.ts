@@ -318,7 +318,9 @@ function renderDock() {
     // controls are found by their names only, which another language of the desktop would not have.)
     const stale = reach?.connected ? reach.stale ?? [] : [];
     const link = !reach ? null : reach.connected ? stale.length ? { kind: 'limited', text: t('桌面版界面有改动') } : { kind: 'on', text: t('引擎已就绪') } : reach.error ? { kind: 'limited', text: t('仅可查看历史') } : { kind: 'off', text: t('引擎未连接') };
-    const reachNote = reach?.error ? say(reach.error) : stale.length ? t('{n} 个控件的认法要更新：{keys}', { n: stale.length, keys: stale.join(', ') }) : '';
+    // (Windows: the last time the console worked the app's window from behind, the window did not come back where it was.)
+    const misplaced = reach?.park?.issues.includes('placement') ? t('上次在后台操作后，窗口没有回到原位') : '';
+    const reachNote = reach?.error ? say(reach.error) : [stale.length ? t('{n} 个控件的认法要更新：{keys}', { n: stale.length, keys: stale.join(', ') }) : '', misplaced].filter(Boolean).join(' · ');
     const status = running ? t('正在工作') : unread.length ? t('{n} 条新消息', { n: unread.length }) : t('就绪');
     const name = escape(provider.label), key = `<kbd>⌥${index + 1}</kbd>`;
     // The hover card: who this is, whether it can be reached, then every quota window by name.

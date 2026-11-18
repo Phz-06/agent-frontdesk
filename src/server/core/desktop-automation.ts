@@ -93,7 +93,8 @@ function run(file: string, args: string[], { input, timeout = 30000, env }: RunO
   return new Promise(resolve => {
     const child = execFile(file, args, { timeout, maxBuffer: 1 << 20, env: { ...process.env, ...env }, windowsHide: true }, (err, stdout, stderr) => {
       if (TRACE && stderr) process.stderr.write(stderr);
-      const crashed = (): HelperResult => ({ ok: false, code: 'crashed', error: err?.killed ? '桌面版没有及时响应' : '桌面代发程序没有正常返回' });
+      // `unanswered`: the helper was stopped (its timeout) or ended without its answer, so ran no clean-up.
+      const crashed = (): HelperResult => ({ ok: false, code: 'crashed', unanswered: true, error: err?.killed ? '桌面版没有及时响应' : '桌面代发程序没有正常返回' });
       let result: HelperResult;
       try { result = helperResultOf(parseJson(String(stdout).trim().split('\n').at(-1) ?? ''), crashed); } catch { result = crashed(); }
       resolve(result);
@@ -103,6 +104,20 @@ function run(file: string, args: string[], { input, timeout = 30000, env }: RunO
 }
 
 export interface AutomationOptions { engine: string; label?: string; cacheDir?: string; platform?: string; runner?: HelperRunner; parkMs?: number; warmEveryMs?: number }
+/** A Windows park, as the helper reported it: `issues` names what it did not put back. */
+export interface ParkNote { at: number; command: string; ms: number; heldMs: number; grabs: number; issues: string[] }
+// A menu change holds the foreground about half a second (measured); several in one command, a few
+// times that. Longer means the app kept it.
+const HELD_TOO_LONG_MS = 4000;
+/** What a park report says did not come back: `placement` (the window is not where it was), `z-order`, `foreground`, `held`. */
+export function parkIssues(park: Record<string, unknown>): string[] {
+  return [
+    park['placementBack'] === false ? 'placement' : '',
+    park['underSame'] === false ? 'z-order' : '',
+    park['foregroundBack'] === false ? 'foreground' : '',
+    Number(park['heldMs'] || 0) > HELD_TOO_LONG_MS ? 'held' : '',
+  ].filter(Boolean);
+}
 
 class DesktopAutomation {
   engine: string; label: string; flow: string; profile: string; cacheDir: string; platform: string; runner: HelperRunner;
@@ -225,12 +240,35 @@ class DesktopAutomation {
         const again = await this.helper();
         if (again) { file = again; result = await this.runner(file, [...args, ...extra], { input, timeout, env: { AX_PROFILE: this.profile } }); }
       }
+      // Windows: a helper stopped mid-park (past its timeout) runs no clean-up and leaves the window
+      // off screen. It is put back now (the helper's `restore`), not at the next helper's start.
+      if (this.platform === 'win32' && !result.ok && result['unanswered'] === true) {
+        const restored = await this.runner(file, ['restore'], { timeout: 15000, env: { AX_PROFILE: this.profile } }).catch(() => null);
+        if (Number(restored?.['restored'] || 0) > 0) console.warn(`[ax ${this.engine}] ${args[0]}: the helper stopped while ${this.label}'s window was parked; it was put back`);
+      }
+      this.noteParked(args[0] || '', result);
       if (TRACE) console.error(`[ax ${this.engine}] ${args[0]} ${Date.now() - began}ms (helper ${String(result['ms'] ?? '?')}ms, ${String(result['reads'] ?? '?')} reads)${result.ok ? '' : ` failed: ${result.code || result.error || ''}`}${result['via'] ? ` via ${JSON.stringify(result['via'])}` : ''}`);
       // Held back rather than guessed at: the profile needs a look, whoever was at the console.
       for (const field of ['ambiguous', 'unconfirmed']) if (result[field] !== undefined) console.warn(`[ax ${this.engine}] ${args[0]}: ${field} ${JSON.stringify(result[field])} (src/server/native/profiles/${this.engine}.json)`);
       return result;
     });
   }
+  // ---- what a Windows park left (uia-driver.cs, "the window") ----
+  // Every acting command reports its park: how long, how often the page took the foreground and for
+  // how long the app was let keep it, and whether placement, z-order and foreground came back. What
+  // did not come back is kept as the engine's last park (EngineStatus `park`) and logged: the window
+  // not where the person left it is theirs to know about.
+  lastPark: ParkNote | null = null;
+  noteParked(command: string, result: HelperResult): void {
+    const park = bag(result['parked']);
+    if (!park) return;
+    const issues = parkIssues(park);
+    this.lastPark = { at: Date.now(), command, ms: Number(park['ms'] || 0), heldMs: Number(park['heldMs'] || 0), grabs: Number(park['grabs'] || 0), issues };
+    if (issues.length) console.warn(`[ax ${this.engine}] ${command}: the park did not put everything back: ${issues.join(', ')} ${JSON.stringify(park)}`);
+  }
+  // The last park, while it is recent and something did not come back.
+  parkTrouble(withinMs = 10 * 60_000): ParkNote | null { const last = this.lastPark; return last && last.issues.length && Date.now() - last.at < withinMs ? last : null; }
+
   // With the desktop parked on its new-chat page, a command is told which conversation the person
   // had before (`--previous`) and, when the page is in another mode than theirs, which mode
   // (`--previous-space`). A new-page command stays parked; any other one goes back there itself
