@@ -174,6 +174,19 @@ test('a new chat on a desktop without page addresses is handed over as soon as i
   assert.deepEqual(calls, ['chat-new']);
 });
 
+test('only the chats read most recently are kept, and one that is asked for again is the last to go', async () => {
+  const { DesktopChatReader } = __services_desktop_chat;
+  const calls: string[] = [];
+  const reader = new DesktopChatReader({ run: async args => { calls.push(String(args[2])); return { ok: true, messages: [{ role: 'user', text: 'q' }, { role: 'assistant', text: 'a' }] }; } }, { maxKept: 2 });
+  const read = (id: string) => reader.read({ id, title: id, space: 'chat', version: 'v1' });
+  await read('a'); await read('b'); await read('a'); await read('c');
+  assert.deepEqual(calls, ['a', 'b', 'c']);
+  assert.equal(reader.cache.size, 2);
+  await read('a'); // still kept: it was asked for after b
+  await read('b'); // let go: read from the desktop again
+  assert.deepEqual(calls, ['a', 'b', 'c', 'b']);
+});
+
 test('a new chat without a page address is handed over once its message is out, its reply shown as the helper reports it, and its list entry goes by the id it was given', async () => {
   const { ChatMode } = __services_desktop_chat;
   const listed: Array<{ id: string; title: string; updatedAt: string }> = [{ id: 'old', title: 'Old', updatedAt: '2026-11-01T00:00:00Z' }];

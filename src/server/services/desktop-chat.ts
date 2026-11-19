@@ -18,16 +18,21 @@ type DesktopRunner = Pick<DesktopAutomation, 'run'> & Partial<Pick<DesktopAutoma
 // A chat that is answering is read again as it goes, but the desktop is only moved for that every
 // `awayMs`, and never while the person is in the desktop app (the driver's chat-status says both
 // without moving anything); while a run here follows the chat (`held`), its reads are the latest.
+// A read of a chat that has not changed since is good for hours (`ttlMs`): opening it again does not
+// move the desktop. Only the chats used most recently are kept (`maxKept`), so a server left
+// running does not hold every chat ever opened.
 class DesktopChatReader {
+  maxKept: number;
   automation: DesktopRunner; ttlMs: number; freshMs: number; awayMs: number; watchVisible: boolean; held: (id: string) => boolean;
   cache: Map<string, { version: string | null; at: number; value: ChatPage }>; reading: Map<string, Promise<ChatPage>>;
   failed = new Map<string, { at: number; error: Error }>(); retryMs: number;
-  constructor(automation: DesktopRunner, { ttlMs = 10 * 60 * 1000, freshMs = 2 * 60 * 1000, awayMs = 20000, retryMs = 10000, watchVisible = false, held = () => false }: { ttlMs?: number; freshMs?: number; awayMs?: number; retryMs?: number; watchVisible?: boolean; held?: (id: string) => boolean } = {}) { this.automation = automation; this.ttlMs = ttlMs; this.freshMs = freshMs; this.awayMs = awayMs; this.retryMs = retryMs; this.watchVisible = watchVisible; this.held = held; this.cache = new Map(); this.reading = new Map(); }
+  constructor(automation: DesktopRunner, { ttlMs = 6 * 60 * 60 * 1000, freshMs = 2 * 60 * 1000, awayMs = 20000, retryMs = 10000, maxKept = 200, watchVisible = false, held = () => false }: { ttlMs?: number; freshMs?: number; awayMs?: number; retryMs?: number; maxKept?: number; watchVisible?: boolean; held?: (id: string) => boolean } = {}) { this.maxKept = maxKept; this.automation = automation; this.ttlMs = ttlMs; this.freshMs = freshMs; this.awayMs = awayMs; this.retryMs = retryMs; this.watchVisible = watchVisible; this.held = held; this.cache = new Map(); this.reading = new Map(); }
   // { turns, total?, read?, running } or throws with the desktop's reason.
   // `titleNow`: the name the desktop's list has for the chat at this moment (a new chat is renamed
   // after its first message, and a read may have waited its turn behind another command).
   async read({ id, title, space, version = '', titleNow }: { id: string; title: string; space: string; version?: string; titleNow?: () => string }): Promise<ChatPage> {
     const key = `${space}\n${id}`, kept = this.cache.get(key);
+    if (kept) { this.cache.delete(key); this.cache.set(key, kept); } // asked for again: the last to go
     const reading = this.reading.get(key);
     if (reading) return reading;
     const age = kept ? Date.now() - kept.at : Infinity;
@@ -67,14 +72,23 @@ class DesktopChatReader {
       const newer = this.cache.get(key);
       if (newer && newer !== kept) return newer.value;
       const value = pageOf(id, result);
-      this.cache.set(key, { version, at: Date.now(), value });
+      this.keep(key, { version, at: Date.now(), value });
       return value;
     })().finally(() => { this.reading.delete(key); });
     this.reading.set(key, job);
     return job;
   }
   // What a send just read from the page, kept as the chat's latest read.
-  remember(space: string, id: string, value: ChatPage): void { this.cache.set(`${space}\n${id}`, { version: null, at: Date.now(), value }); this.failed.delete(`${space}\n${id}`); }
+  remember(space: string, id: string, value: ChatPage): void { this.keep(`${space}\n${id}`, { version: null, at: Date.now(), value }); this.failed.delete(`${space}\n${id}`); }
+  // Keeps a read as the chat's latest; past `maxKept`, the reads asked for longest ago go (never
+  // one of a chat a run is following: that read is all the page has of it).
+  private keep(key: string, entry: { version: string | null; at: number; value: ChatPage }): void {
+    this.cache.delete(key); this.cache.set(key, entry);
+    for (const old of this.cache.keys()) {
+      if (this.cache.size <= this.maxKept) break;
+      if (old !== key && !this.held(old.slice(old.indexOf('\n') + 1))) { this.cache.delete(old); this.failed.delete(old); }
+    }
+  }
 }
 // The driver's read-chat / chat-send result: { messages: [{ role, text }], total, read, running, restore, title, url }.
 function pageOf(id: string, result: HelperResult): ChatPage {
