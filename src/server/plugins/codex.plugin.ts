@@ -54,7 +54,7 @@ export const setup: PluginSetup = ({ config, registerEngine, registerAsset }) =>
         ? { ...thread.metadata, space: ['codex', 'chatgpt'], bySpace: { chatgpt: { group: null, rank: rank.get(thread.id) }, codex } }
         : { ...thread.metadata, bySpace: { ...thread.metadata?.bySpace, codex } };
     }
-    return [...threads, ...chats.chats().map(item => asSession(item, rank.get(item.id) ?? -1))];
+    return [...threads, ...chats.chats().map(item => asSession(item, rank.get(chats.realOf(item.id)) ?? -1))];
   };
   registerEngine({
     ...IDENTITY, prefix: 'CX', character: () => (loadSprite() ? CHARACTER : null),

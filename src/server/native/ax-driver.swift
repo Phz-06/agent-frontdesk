@@ -1215,14 +1215,30 @@ func chatAnswer(_ extra: [String: Any] = [:]) -> [String: Any] {
   if total > 0 { answer["total"] = total; answer["read"] = read }
   return answer.merging(extra) { $1 }
 }
+// While a command stays on a chat waiting for its reply, it says what the page shows so far: one
+// JSON line each time that changes, marked `"progress": true` (the answer is still the last line).
+// The first says the message went out (`sent`); the ones after carry the chat as chatAnswer does,
+// so whoever started the command can show the reply as the desktop writes it.
+var lastProgress = ""
+func progress(_ object: [String: Any]) {
+  var line = object; line["progress"] = true; line["ok"] = true
+  guard let data = try? JSONSerialization.data(withJSONObject: line, options: [.sortedKeys]), let text = String(data: data, encoding: .utf8), text != lastProgress else { return }
+  lastProgress = text
+  print(text); fflush(stdout)
+}
 // After a message went out: the reply is done once the page stops showing its stop button and
 // its last message is the assistant's; waited for up to `seconds`.
 func awaitReply(_ seconds: Double) {
-  let until = Date().addingTimeInterval(seconds)
-  wait(1.5) // the stop button comes up a moment after the send
+  let began = Date(), until = began.addingTimeInterval(seconds)
   while Date() < until {
-    if !answering(), chatRegion() != nil, (chatMessages().0.last?["role"] as? String) == "assistant" { wait(0.6); if !answering() { return } }
-    wait(1)
+    wait(0.5)
+    guard chatRegion() != nil else { continue }
+    let (messages, total, read) = chatMessages(), running = answering()
+    var shown: [String: Any] = ["messages": messages, "running": true, "title": current()]
+    if total > 0 { shown["total"] = total; shown["read"] = read }
+    progress(shown)
+    // (The stop button comes up a moment after the send.)
+    if Date().timeIntervalSince(began) > 1.5, !running, (messages.last?["role"] as? String) == "assistant" { wait(0.6); if !answering() { return } }
   }
 }
 // Fills the composer and presses send; false (nothing sent) when the page did not take the text.
@@ -1235,8 +1251,9 @@ func sendText(_ text: String) -> StepError? {
   guard let send = sendButton(sendKey("send")) else { clear(sendKey("composer")); return StepError(code: "no_send", message: "\(appName)没有出现发送按钮") }
   press(send)
   if heldBack() { clear(sendKey("composer")); return StepError(code: "no_send", message: "\(appName)没有出现发送按钮") }
-  // Taken once the box is empty again or the page answers.
-  for _ in 0..<40 { wait(); if find(sendKey("composer")).map(value)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? false || answering() { return nil } }
+  // Taken once the box is empty again or the page answers. (An empty box may read as its
+  // placeholder: measured on Codex, a message that had gone out was reported as still in the box.)
+  for _ in 0..<40 { wait(); if find(sendKey("composer")).map({ !holdsText($0) }) ?? false || answering() { return nil } }
   return StepError(code: "not_sent", message: "按了\(appName)的发送，但消息还留在输入框里")
 }
 // The new-chat page, in a project or in none: opened from the sidebar and checked by what it shows.
@@ -1305,6 +1322,7 @@ if ["read-chat", "chat-new", "chat-send", "chat-stop"].contains(args.first ?? ""
     target = ""
     if let error = openChatPage(project) { back(); fail(error.code, error.message) }
     if let error = sendText(text) { back(); fail(error.code, error.message) }
+    progress(["sent": true])
     // The page becomes the chat once the desktop has made it.
     for _ in 0..<40 { wait(); if chatRegion() != nil { break } }
     awaitReply(seconds)
@@ -1321,6 +1339,7 @@ if ["read-chat", "chat-new", "chat-send", "chat-stop"].contains(args.first ?? ""
     for _ in 0..<16 where chatRegion() == nil { wait() }
     if answering() { back(); fail("busy", "这个聊天正在\(appName)里回复，等它回复完再发") }
     if let error = sendText(text) { back(); fail(error.code, error.message) }
+    progress(["sent": true])
     awaitReply(seconds)
     let answer = seconds > 0 ? chatAnswer(["sent": true]) : ["ok": true, "sent": true, "running": answering(), "title": target, "url": pageURL()]
     back(); out(answer)

@@ -23,10 +23,13 @@ class CodexChatgpt {
     this.stateFile = path.join(codexHome, '.codex-global-state.json');
     this.state = { stamp: '', value: { projects: [] } };
   }
+  // (A read that fails, while the desktop is writing the file, answers what the last one read:
+  // the chats have not gone anywhere.)
+  rows: Array<Record<string, unknown>> = [];
   catalog(): Array<Record<string, unknown>> {
     try {
-      return readSqlite(this.db, "SELECT thread_id, display_title, host_id, source_recency_at, source_updated_at FROM local_thread_catalog WHERE COALESCE(missing_candidate, 0) = 0 AND COALESCE(thread_source, '') NOT IN ('guardian_review', 'subagent') ORDER BY COALESCE(source_recency_at, source_updated_at) DESC LIMIT 1000");
-    } catch { return []; }
+      return this.rows = readSqlite(this.db, "SELECT thread_id, display_title, host_id, source_recency_at, source_updated_at FROM local_thread_catalog WHERE COALESCE(missing_candidate, 0) = 0 AND COALESCE(thread_source, '') NOT IN ('guardian_review', 'subagent') ORDER BY COALESCE(source_recency_at, source_updated_at) DESC LIMIT 1000");
+    } catch { return this.rows; }
   }
   projects(): ChatgptProject[] {
     try {

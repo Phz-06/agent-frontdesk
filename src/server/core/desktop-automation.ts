@@ -39,7 +39,8 @@ import type { NewControl, NewOption, NewPick } from '../../shared/contract.js';
  * `controls`, `messages`…); they stay unknown here and the engine's wrapper narrows the ones it reads.
  */
 export interface HelperResult { ok: boolean; code?: string; error?: string; readonly [field: string]: unknown }
-export interface RunOptions { input?: string | null; timeout?: number; env?: Record<string, string> }
+/** `onProgress`: what the helper says while it is still at work (its lines marked `progress`: a chat's reply as it is written). */
+export interface RunOptions { input?: string | null; timeout?: number; env?: Record<string, string>; onProgress?: (seen: HelperResult) => void }
 export type HelperRunner = (file: string, args: string[], options: RunOptions) => Promise<HelperResult>;
 /** The desktop's own names for the settings a command applies, and the mode it acts in. */
 export interface DesktopFlags { model?: string; effort?: string; mode?: string; space?: string }
@@ -93,16 +94,19 @@ const NOT_TRUSTED = '桌面代发需要辅助功能权限：在「系统设置 �
 // helper finishes a park after answering (a minimized window's saved bounds, up to a few seconds:
 // uia-driver.cs, FinishPark), and the person need not wait for that. A park the next command makes
 // meanwhile waits for the machine's park lock, which the finishing helper still holds.
-function run(file: string, args: string[], { input, timeout = 30000, env }: RunOptions = {}): Promise<HelperResult> {
+function run(file: string, args: string[], { input, timeout = 30000, env, onProgress }: RunOptions = {}): Promise<HelperResult> {
   return new Promise(resolve => {
     let answered = false, pending = '';
     const answer = (result: HelperResult) => { if (!answered) { answered = true; resolve(result); } };
-    const child = execFile(file, args, { timeout, maxBuffer: 1 << 20, env: { ...process.env, ...env }, windowsHide: true }, (err, stdout, stderr) => {
+    const child = execFile(file, args, { timeout, maxBuffer: 64 << 20, env: { ...process.env, ...env }, windowsHide: true }, (err, stdout, stderr) => {
       if (TRACE && stderr) process.stderr.write(stderr);
       // `unanswered`: the helper was stopped (its timeout) or ended without its answer, so ran no clean-up.
       const crashed = (): HelperResult => ({ ok: false, code: 'crashed', unanswered: true, error: err?.killed ? '桌面版没有及时响应' : '桌面代发程序没有正常返回' });
       let result: HelperResult;
-      try { result = helperResultOf(parseJson(String(stdout).trim().split('\n').at(-1) ?? ''), crashed); } catch { result = crashed(); }
+      // (The answer is the last line that is not one of the helper's progress lines: a helper stopped
+      // while it was still reporting has given none.)
+      const last = String(stdout).trim().split('\n').at(-1) ?? '';
+      try { const value = parseJson(last); result = get(value, 'progress') === true ? crashed() : helperResultOf(value, crashed); } catch { result = crashed(); }
       answer(result);
     });
     child.stdout?.on('data', (chunk: string | Buffer) => {
@@ -111,6 +115,7 @@ function run(file: string, args: string[], { input, timeout = 30000, env }: RunO
       for (const line of lines) {
         // Only an answer with a park report: any other helper ends right after answering.
         let value: unknown; try { value = parseJson(line.trim()); } catch { continue; }
+        if (get(value, 'progress') === true) { try { onProgress?.(helperResultOf(value, () => ({ ok: false }))); } catch {} continue; }
         if (typeof get(value, 'ok') === 'boolean' && bag(get(value, 'parked'))) answer(helperResultOf(value, () => ({ ok: false, code: 'crashed' })));
       }
     });
@@ -279,20 +284,20 @@ class DesktopAutomation {
   // `settings`: { model, effort, mode, space } as the desktop's own menus (or its profile) name them.
   // `space`: the desktop mode the command acts in (profile "spaces"; default its "home").
   flags(settings: DesktopFlags = {}): string[] { return (['model', 'effort', 'mode', 'space'] as const).flatMap(key => { const value = settings[key]; return value ? [`--${key}`, value] : []; }); }
-  async run(args: string[], { input, timeout = 60000, settings }: { input?: string | null; timeout?: number; settings?: DesktopFlags } = {}): Promise<HelperResult> {
+  async run(args: string[], { input, timeout = 60000, settings, onProgress }: { input?: string | null; timeout?: number; settings?: DesktopFlags; onProgress?: (seen: HelperResult) => void } = {}): Promise<HelperResult> {
     const built = await this.helper();
     if (!built) return { ok: false, error: '桌面代发程序不可用' };
     return this.serial(async () => {
       const began = Date.now();
       const extra = [...this.flags(settings), ...this.returning(args, settings)];
       let file = built;
-      let result = await this.runner(file, [...args, ...extra], { input, timeout, env: { AX_PROFILE: this.profile } });
+      let result = await this.runner(file, [...args, ...extra], { input, timeout, env: { AX_PROFILE: this.profile }, ...(onProgress ? { onProgress } : {}) });
       // The helper was removed from the cache while this server ran (another checkout cleaned up):
       // nothing was done, so it is built again and the command run once more.
       if (!result.ok && result.code === 'crashed' && this.binary === file && !fs.existsSync(file)) {
         this.binary = null;
         const again = await this.helper();
-        if (again) { file = again; result = await this.runner(file, [...args, ...extra], { input, timeout, env: { AX_PROFILE: this.profile } }); }
+        if (again) { file = again; result = await this.runner(file, [...args, ...extra], { input, timeout, env: { AX_PROFILE: this.profile }, ...(onProgress ? { onProgress } : {}) }); }
       }
       // Windows: a helper stopped mid-park (past its timeout) runs no clean-up and leaves the window
       // off screen. It is put back now (the helper's `restore`), not at the next helper's start.

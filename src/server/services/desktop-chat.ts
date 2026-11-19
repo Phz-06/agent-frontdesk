@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { EngineEvents, UnifiedTurn } from '../types.js';
 import { throughFullscreen, FULLSCREEN_EVERY_MS, FULLSCREEN_HOLD_MS, type DesktopAutomation, type HelperResult } from '../core/desktop-automation.js';
 import type { CapabilityFlags, CreateInput, CreateResult, History, SendInput, UnifiedSession } from '../../shared/contract.js';
@@ -160,11 +161,33 @@ class ChatMode {
     this.automation = automation; this.space = space; this.list = list; this.sidebar = sidebar; this.idFrom = idFrom; this.waitSeconds = waitSeconds; this.pollMs = pollMs; this.awayMs = awayMs; this.awayMaxMs = awayMaxMs; this.followMs = followMs; this.label = label;
     this.reader = new DesktopChatReader(automation, { watchVisible, awayMs, held: id => this.following.has(id) || this.beingMade(id) }); this.made = new Map(); this.starts = new Map();
   }
+  // A desktop whose page has no address (Codex) names a new chat only in its list, and the list
+  // gains it late: measured, ten seconds after the message went out, when the reply was written.
+  // So the console gives such a chat an id of its own as soon as the message is out, and the chat
+  // goes by it from then on: once the list has the chat (found by the name the page gave it, among
+  // the entries that were not there before), its entry is shown under that id instead of twice.
+  standins = new Map<string, { known: Set<string>; began: number; title: string; real: string; done: boolean; chat: ModeChat }>();
+  /** The desktop's own id for a chat, where the console knows it by one it gave. */
+  realOf(id: string): string { return this.standins.get(id)?.real || id; }
   chats(): ModeChat[] {
     let listed: ModeChat[] = []; try { listed = this.list() || []; } catch {}
+    const taken = new Set([...this.standins.values()].map(stand => stand.real).filter(Boolean));
+    for (const [id, stand] of this.standins) {
+      if (stand.real) continue;
+      const fresh = listed.filter(chat => !stand.known.has(chat.id) && !taken.has(chat.id) && !this.standins.has(chat.id));
+      // By its name; or, once the helper is back and the name never matched, the one new entry.
+      const hit = (stand.title ? fresh.find(chat => chat.title === stand.title) : undefined)
+        ?? (stand.done && fresh.length === 1 && (Date.parse(fresh[0]?.updatedAt || '') || 0) >= stand.began - 5000 ? fresh[0] : undefined);
+      if (hit) { stand.real = hit.id; taken.add(hit.id); }
+    }
+    const shownAs = new Map([...this.standins].filter(([, stand]) => stand.real).map(([id, stand]) => [stand.real, id]));
+    if (shownAs.size) listed = listed.map(chat => { const id = shownAs.get(chat.id); return id ? { ...chat, id } : chat; });
     const ids = new Set(listed.map(chat => chat.id));
     for (const id of [...this.made.keys()]) if (ids.has(id)) this.made.delete(id);
-    return [...this.made.values(), ...listed];
+    // A chat given its id here stays one of the mode's chats whatever the list says at the moment
+    // (not there yet, or a read of the desktop's files that came back empty).
+    const own = [...this.standins].filter(([id]) => !ids.has(id)).map(([, stand]) => stand.chat);
+    return [...own, ...this.made.values(), ...listed];
   }
   get(id: string): ModeChat | null { return this.chats().find(chat => chat.id === id) || null; }
   // A chat is brought up by its title in the desktop's sidebar: a row carries no id (nor does Codex's
@@ -177,7 +200,10 @@ class ChatMode {
     const title = chat.title.trim();
     let entries: ReadonlyArray<{ id: string; title: string }> = [];
     try { entries = [...this.chats(), ...(this.sidebar() || [])]; } catch {}
-    return entries.some(item => item.id !== id && String(item.title || '').trim() === title)
+    // (The chat's own entry under the desktop's id is not another chat; nor, while a new chat has
+    // not been matched to its entry yet, is an entry the list gained since it was started.)
+    const stand = this.standins.get(id), own = stand?.real || id;
+    return entries.some(item => item.id !== id && item.id !== own && !(stand && !stand.real && !stand.known.has(item.id)) && String(item.title || '').trim() === title)
       ? `${this.label}的侧栏里有不止一个叫「${title}」的会话，工作台分不清是哪一个，没有操作：在桌面版里给它改个名字再试` : '';
   }
   has(id: string | null | undefined): boolean { return !!id && !!this.get(id); }
@@ -193,21 +219,44 @@ class ChatMode {
     const refused = this.refuse(input); if (refused) fail(refused);
     const known = new Set(this.chats().map(chat => chat.id)), began = Date.now();
     this.making.add(known);
-    try { return await this.make(prompt, project, known, began); } finally { this.making.delete(known); }
+    let kept = false;
+    try { return await this.make(prompt, project, known, began, release => { kept = true; void release.then(() => this.making.delete(known), () => this.making.delete(known)); }); }
+    finally { if (!kept) this.making.delete(known); }
   }
-  private async make(prompt: string, project: { id: string; name: string } | null, known: Set<string>, began: number): Promise<CreateResult> {
+  // `keep`: the chat is handed over while its helper is still at work; `making` holds until it is back.
+  private async make(prompt: string, project: { id: string; name: string } | null, known: Set<string>, began: number, keep: (until: Promise<unknown>) => void): Promise<CreateResult> {
     const fail = (message: string, status = 409): never => { throw Object.assign(new Error(message), { status }); };
-    const job = throughFullscreen(() => this.automation.run(['chat-new', project?.name || '-', String(this.waitSeconds)], { input: prompt, settings: { space: this.space }, timeout: (this.waitSeconds + 90) * 1000 }), { everyMs: this.fullscreenRetryMs, maxMs: this.fullscreenHoldMs });
     const firstLine = (prompt.split('\n')[0] ?? '').slice(0, 80);
+    // What the helper says while it stays on the chat (the driver's progress lines): that the
+    // message went out, then the chat as the page shows it, as the reply is written.
+    const watching: Array<(seen: HelperResult) => void> = [];
+    let out: () => void = () => {};
+    const sent = new Promise<'sent'>(resolve => { out = () => resolve('sent'); });
+    const onProgress = (seen: HelperResult) => { if (seen['sent'] === true) out(); for (const tell of [...watching]) tell(seen); };
+    const job = throughFullscreen(() => this.automation.run(['chat-new', project?.name || '-', String(this.waitSeconds)], { input: prompt, settings: { space: this.space }, timeout: (this.waitSeconds + 90) * 1000, onProgress }), { everyMs: this.fullscreenRetryMs, maxMs: this.fullscreenHoldMs });
     // A desktop whose page has no address names the new chat only in its list, and the helper stays
-    // on the chat until the reply is done (`waitSeconds`). The list has the chat as soon as the
-    // desktop has made it, so the console is given it then, and the reply follows when the helper
-    // comes back: the person is not left looking at an empty page for as long as the reply takes.
+    // on the chat until the reply is done (`waitSeconds`): the person is not left looking at an empty
+    // page for as long as that takes. The chat is handed over as soon as the message is out, under
+    // an id given here (standins), and the reply is shown as the helper reports it; with a helper
+    // that reports nothing meanwhile, as soon as the list has the one new chat.
     if (!this.idFrom && this.waitSeconds > 0) {
       let done = false; void job.then(() => { done = true; }, () => { done = true; });
       while (!done) {
-        await Promise.race([job.catch(() => {}), new Promise(resolve => setTimeout(resolve, 700))]);
+        const first = await Promise.race([sent, job.then(() => null, () => null), new Promise<null>(resolve => setTimeout(() => resolve(null), 700))]);
         if (done) break;
+        if (first === 'sent') {
+          const id = randomUUID(), chat: ModeChat = { id, title: firstLine, updatedAt: new Date().toISOString(), projectId: project?.id || '' };
+          const stand = { known, began, title: '', real: '', done: false, chat };
+          this.standins.set(id, stand);
+          // The name the page gives the chat is the one its list entry will have.
+          const named = (seen: HelperResult) => { const title = typeof seen['title'] === 'string' ? seen['title'].trim() : ''; if (title) { stand.title = title; chat.title = title; } };
+          watching.push(named);
+          void job.then(result => { if (result?.ok) named(result); stand.done = true; }, () => { stand.done = true; });
+          keep(job);
+          this.reader.remember(this.space, id, { turns: [], total: 0, read: 0, running: true, restore: '' });
+          this.starts.set(id, this.follow(chat, prompt, job, undefined, { live: tell => { watching.push(tell); } }));
+          return { id, started: true, title: chat.title };
+        }
         const fresh = this.chats().filter(chat => !known.has(chat.id) && (Date.parse(chat.updatedAt) || 0) >= began - 5000);
         const early = fresh.length === 1 ? fresh[0] : undefined;
         if (!early) continue;
@@ -249,9 +298,10 @@ class ChatMode {
       const chat = this.get(id), refused = this.refuse(input) || this.sharedTitle(id);
       if (!chat || refused) { emitter.emit('error', new Error(refused || `这个聊天不在${this.label}的列表里`)); return; }
       const held = () => emitter.emit('warning', { message: '前台的程序独占全屏，消息先留在工作台，你离开它后自动发出', retrying: true });
-      const result = await throughFullscreen(() => this.automation.run(['chat-send', chat.title, String(this.waitSeconds)], { input: input.prompt, settings: { space: this.space }, timeout: (this.waitSeconds + 90) * 1000 }), { everyMs: this.fullscreenRetryMs, maxMs: this.fullscreenHoldMs, held });
-      if (!result?.ok) { emitter.emit('error', new Error(result?.error || `没能把消息交给${this.label}`)); return; }
-      this.follow(chat, input.prompt, result, emitter);
+      // The reply is shown as the helper reports it while it stays on the chat (see make).
+      const watching: Array<(seen: HelperResult) => void> = [];
+      const job = throughFullscreen(() => this.automation.run(['chat-send', chat.title, String(this.waitSeconds)], { input: input.prompt, settings: { space: this.space }, timeout: (this.waitSeconds + 90) * 1000, onProgress: seen => { for (const tell of [...watching]) tell(seen); } }), { everyMs: this.fullscreenRetryMs, maxMs: this.fullscreenHoldMs, held });
+      this.follow(chat, input.prompt, job, emitter, { live: tell => { watching.push(tell); }, failed: result => new Error(result?.error || `没能把消息交给${this.label}`) });
     });
     return emitter;
   }
@@ -279,7 +329,9 @@ class ChatMode {
   }
   // Reports the reply to `prompt` from what the page showed, and looks again while it is not done.
   // `first`: what the send answered, or the send itself while its helper is still on the chat.
-  follow(chat: ModeChat, prompt: string | undefined, first: HelperResult | Promise<HelperResult>, emitter = new EngineEvents()): EngineEvents {
+  // `live`: hands over a listener for what the helper reports while it is at work. `failed`: a send
+  // that did not go out ends the run with this error (without it, the chat exists: the reply is looked for).
+  follow(chat: ModeChat, prompt: string | undefined, first: HelperResult | Promise<HelperResult>, emitter = new EngineEvents(), { live, failed }: { live?: (tell: (seen: HelperResult) => void) => void; failed?: (result: HelperResult | null) => Error } = {}): EngineEvents {
     const until = Date.now() + this.followMs, sent = String(prompt || '').trim().slice(0, 200);
     let ended = false, timer: ReturnType<typeof setTimeout> | undefined;
     const cleanup = () => {
@@ -288,14 +340,17 @@ class ChatMode {
       if (this.following.get(chat.id) === interrupted) this.following.delete(chat.id);
       emitter.off('interrupt', cleanup);
     };
-    const publish = (result: HelperResult) => {
+    // `partial`: the page as it is while the reply is being written. Only the turn of this message
+    // counts then (the page may not have it yet: the turn before is not this reply).
+    const publish = (result: HelperResult, partial = false) => {
       const page = pageOf(chat.id, result);
       if (!page.turns.length) return false;
       this.reader.remember(this.space, chat.id, page);
-      const turn = [...page.turns].reverse().find(item => item.userPrompt.trim().startsWith(sent) || sent.startsWith(item.userPrompt.trim().slice(0, 200))) || page.turns.at(-1);
+      const turn = [...page.turns].reverse().find(item => item.userPrompt.trim().startsWith(sent) || sent.startsWith(item.userPrompt.trim().slice(0, 200))) || (partial ? undefined : page.turns.at(-1));
       if (!turn) return false;
       emitter.turnId = turn.id;
-      for (const message of turn.messages) emitter.emit('item_completed', { item: { type: 'agentMessage', id: message.id, text: message.text, phase: message.phase } });
+      const writing = page.running ? turn.messages.at(-1) : undefined;
+      for (const message of turn.messages) emitter.emit(message === writing ? 'item_started' : 'item_completed', { item: { type: 'agentMessage', id: message.id, text: message.text, phase: message.phase } });
       if (turn.messages.length) said = ''; // a message on the page takes the run's note away: say it again
       return turn.status === 'completed' && !page.running;
     };
@@ -330,15 +385,17 @@ class ChatMode {
       if (result?.ok && publish(result)) { complete(); return; }
       again();
     };
+    live?.(seen => { if (!ended && list(seen['messages']).length) publish({ ...seen, running: true }, true); });
     // Let the caller subscribe first.
     timer = setTimeout(() => {
       void Promise.resolve(first).then(result => {
         if (ended) return;
+        if (failed && !result?.ok) { cleanup(); emitter.emit('error', failed(result)); return; }
         // (A send whose helper did not come back with the page: the chat is in the desktop's list,
         // so the message went out, and the reply is looked for like any other.)
         if (result?.ok && publish(result)) complete();
         else { say(waiting); again(); }
-      }, () => { if (!ended) { say(waiting); again(); } });
+      }, () => { if (ended) return; if (failed) { cleanup(); emitter.emit('error', failed(null)); } else { say(waiting); again(); } });
     }, 50);
     return emitter;
   }

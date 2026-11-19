@@ -174,6 +174,53 @@ test('a new chat on a desktop without page addresses is handed over as soon as i
   assert.deepEqual(calls, ['chat-new']);
 });
 
+test('a new chat without a page address is handed over once its message is out, its reply shown as the helper reports it, and its list entry goes by the id it was given', async () => {
+  const { ChatMode } = __services_desktop_chat;
+  const listed: Array<{ id: string; title: string; updatedAt: string }> = [{ id: 'old', title: 'Old', updatedAt: '2026-11-01T00:00:00Z' }];
+  let finish: (result: HelperResult) => void = () => {}, tell: (seen: HelperResult) => void = () => {};
+  const calls: string[] = [];
+  const automation: Runner = { run: async (args, options) => {
+    calls.push(String(args[0]));
+    if (args[0] !== 'chat-new') return { ok: true, shown: false, running: false, front: false };
+    tell = seen => options?.onProgress?.(seen);
+    return new Promise<HelperResult>(resolve => { finish = resolve; });
+  } };
+  const mode = new ChatMode({ automation, space: 'chatgpt', label: 'Codex 桌面版', list: () => listed, sidebar: () => listed, pollMs: 5 });
+  const creating = mode.create({ prompt: 'hi there' });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  tell({ ok: true, progress: true, sent: true });
+  const made = await creating;
+  // The list does not have the chat yet: it is one of the mode's chats all the same, under the id given here.
+  assert.ok(made.id && made.id !== 'old' && made.started);
+  assert.deepEqual(mode.chats().map(chat => chat.id), [made.id, 'old']);
+  const emitter = mode.observe(made.id);
+  const seen: Array<[string, string]> = [];
+  for (const name of ['item_started', 'item_completed'] as const) emitter.on(name, (data: unknown) => seen.push([name, String(get(get(data, 'item'), 'text'))]));
+  const done = new Promise(resolve => emitter.on('completed', resolve));
+  const session = fake<UnifiedSession>({ id: made.id, title: 'hi there', metadata: { space: 'chatgpt', contentUnavailable: 'not here' } });
+  // The page before it shows this message is not this reply; then the reply as it grows.
+  tell({ ok: true, progress: true, running: true, title: '', messages: [{ role: 'user', text: 'something older' }, { role: 'assistant', text: 'older reply' }] });
+  tell({ ok: true, progress: true, running: true, title: '', messages: [{ role: 'user', text: 'hi there' }, { role: 'assistant', text: 'Hel' }] });
+  tell({ ok: true, progress: true, running: true, title: 'Greeting', messages: [{ role: 'user', text: 'hi there' }, { role: 'assistant', text: 'Hello, wor' }] });
+  assert.deepEqual(seen, [['item_started', 'Hel'], ['item_started', 'Hello, wor']]);
+  const open = await mode.read(session, 'v1');
+  assert.equal(open.session?.status, 'busy');
+  assert.equal(open.turns[0]?.messages[0]?.text, 'Hello, wor');
+  // The desktop's list gains the chat, under the name the page gave it: one chat, still under the id given here.
+  listed.unshift({ id: 'real-1', title: 'Greeting', updatedAt: new Date().toISOString() });
+  assert.deepEqual(mode.chats().map(chat => [chat.id, chat.title]), [[made.id, 'Greeting'], ['old', 'Old']]);
+  assert.equal(mode.realOf(made.id), 'real-1');
+  assert.equal(mode.sharedTitle(made.id), '');
+  // A moment when the list could not be read does not take the chat away.
+  const kept = listed.splice(0);
+  assert.ok(mode.has(made.id));
+  listed.push(...kept);
+  finish({ ok: true, title: 'Greeting', running: false, messages: [{ role: 'user', text: 'hi there' }, { role: 'assistant', text: 'Hello, world.' }] });
+  await done;
+  assert.deepEqual(seen.at(-1), ['item_completed', 'Hello, world.']);
+  assert.deepEqual(calls, ['chat-new']);
+});
+
 test('a new chat opened before its send has answered is not read from the desktop, and a renamed chat is asked for by its new name', async () => {
   const { ChatMode } = __services_desktop_chat;
   // The list shows the chat (two new entries at once, so it is not handed over early) while the helper is still on its page.
