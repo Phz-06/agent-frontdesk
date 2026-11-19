@@ -127,6 +127,83 @@ test('a chat read from the desktop window becomes turns, is kept until it change
   assert.match(String(failed.session?.metadata.contentUnavailable), /^not here（.*no row）$/);
 });
 
+test('a read the desktop could not do is not tried again at once, and what was read before stays', async () => {
+  const { DesktopChatReader, readPage } = __services_desktop_chat;
+  const session = fake<UnifiedSession>({ id: 'c', title: 'T', sendBlocked: 'x', metadata: { space: 'chat', contentUnavailable: 'not here' } });
+  let tries = 0, works = false;
+  const page = { ok: true, messages: [{ role: 'user', text: 'q' }, { role: 'assistant', text: 'a' }] };
+  const reader = new DesktopChatReader({ run: async () => { tries++; return works ? page : { ok: false, error: 'no row' }; } }, { retryMs: 40 });
+  // The page asks every few seconds while the chat is open: the desktop is moved once, not each time.
+  for (let ask = 0; ask < 3; ask++) assert.match(String((await readPage(reader, session, 'chat', 'v1', '')).session?.metadata.contentUnavailable), /no row/);
+  assert.equal(tries, 1);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  works = true;
+  assert.equal((await readPage(reader, session, 'chat', 'v1', '')).turns.length, 1);
+  assert.equal(tries, 2);
+  // The chat changed and the desktop cannot be read just now: the last read is shown, not an error.
+  works = false;
+  const stale = await readPage(reader, session, 'chat', 'v2', '');
+  assert.equal(stale.turns.length, 1);
+  assert.equal(stale.session?.metadata.contentUnavailable, undefined);
+  assert.equal(tries, 3);
+});
+
+test('a new chat on a desktop without page addresses is handed over as soon as its list has it, while the helper still waits for the reply', async () => {
+  const { ChatMode } = __services_desktop_chat;
+  const listed: Array<{ id: string; title: string; updatedAt: string }> = [{ id: 'old', title: 'Old', updatedAt: '2026-11-01T00:00:00Z' }];
+  let finish: (result: HelperResult) => void = () => {};
+  const calls: string[] = [];
+  const automation: Runner = { run: async args => { calls.push(String(args[0])); if (args[0] === 'chat-new') return new Promise<HelperResult>(resolve => { finish = resolve; }); return { ok: true, shown: false, running: false, front: false }; } };
+  const mode = new ChatMode({ automation, space: 'chatgpt', label: 'Codex 桌面版', list: () => listed, pollMs: 5 });
+  setTimeout(() => listed.unshift({ id: 'c-new', title: '', updatedAt: new Date().toISOString() }), 30);
+  const made = await mode.create({ prompt: 'hi there' });
+  assert.deepEqual(made, { id: 'c-new', started: true, title: 'hi there' });
+  // Opening it meanwhile shows the run's own turn and does not drive the desktop.
+  const session = fake<UnifiedSession>({ id: 'c-new', title: 'hi there', metadata: { space: 'chatgpt', contentUnavailable: 'not here' } });
+  const open = await mode.read(session, 'v1');
+  assert.equal(open.session?.status, 'busy');
+  assert.deepEqual(calls, ['chat-new']);
+  const emitter = mode.observe('c-new');
+  const said: string[] = [];
+  emitter.on('item_completed', (data: unknown) => said.push(String(get(get(data, 'item'), 'text'))));
+  const done = new Promise(resolve => emitter.on('completed', resolve));
+  finish({ ok: true, title: 'Greeting', running: false, messages: [{ role: 'user', text: 'hi there' }, { role: 'assistant', text: 'Hello!' }] });
+  await done;
+  assert.deepEqual(said, ['Hello!']);
+  assert.equal((await mode.read(session, 'v1')).turns.length, 1);
+  assert.deepEqual(calls, ['chat-new']);
+});
+
+test('a new chat opened before its send has answered is not read from the desktop, and a renamed chat is asked for by its new name', async () => {
+  const { ChatMode } = __services_desktop_chat;
+  // The list shows the chat (two new entries at once, so it is not handed over early) while the helper is still on its page.
+  const listed: Array<{ id: string; title: string; updatedAt: string }> = [];
+  let finish: (result: HelperResult) => void = () => {};
+  const calls: string[][] = [];
+  const automation: Runner = { run: async args => {
+    calls.push(args.slice(0, 2).map(String));
+    if (args[0] === 'chat-new') return new Promise<HelperResult>(resolve => { finish = resolve; });
+    if (args[0] === 'read-chat') return args[1] === 'Final name' ? { ok: true, messages: [{ role: 'user', text: 'q' }, { role: 'assistant', text: 'a' }] } : { ok: false, code: 'not_found', error: 'no row' };
+    return { ok: true, shown: false, running: false, front: false };
+  } };
+  const mode = new ChatMode({ automation, space: 'chatgpt', label: 'Codex 桌面版', list: () => listed, pollMs: 5 });
+  const creating = mode.create({ prompt: 'hello' });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  listed.push({ id: 'c-1', title: 'hello', updatedAt: new Date().toISOString() }, { id: 'c-2', title: 'other', updatedAt: new Date().toISOString() });
+  const session = fake<UnifiedSession>({ id: 'c-1', title: 'hello', metadata: { space: 'chatgpt', contentUnavailable: 'not here' } });
+  const early = await mode.read(session, 'v1');
+  assert.equal(early.session?.status, 'busy');
+  assert.equal(early.session?.metadata.contentUnavailable, undefined);
+  assert.deepEqual(calls, [['chat-new', '-']]);
+  finish({ ok: true, title: 'hello', running: false, messages: [{ role: 'user', text: 'hello' }, { role: 'assistant', text: 'Hi' }] });
+  assert.equal((await creating).id, 'c-1');
+  // Another chat, read under the name the list had when the read was asked for; the list has renamed it since.
+  listed.push({ id: 'c-3', title: 'Final name', updatedAt: 'v1' });
+  const renamed = await mode.read(fake<UnifiedSession>({ id: 'c-3', title: 'First name', metadata: { space: 'chatgpt', contentUnavailable: 'not here' } }), 'v1');
+  assert.equal(renamed.turns.length, 1);
+  assert.deepEqual(calls.slice(-2), [['read-chat', 'First name'], ['read-chat', 'Final name']]);
+});
+
 test("a chat mode's new chats and messages go through the desktop window, and the reply counts only once the page shows it done", async () => {
   const { ChatMode } = __services_desktop_chat;
   const listed = [{ id: 'old', title: 'Old chat', updatedAt: '2026-11-01T00:00:00Z' }];

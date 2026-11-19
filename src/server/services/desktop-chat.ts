@@ -20,9 +20,12 @@ type DesktopRunner = Pick<DesktopAutomation, 'run'> & Partial<Pick<DesktopAutoma
 class DesktopChatReader {
   automation: DesktopRunner; ttlMs: number; freshMs: number; awayMs: number; watchVisible: boolean; held: (id: string) => boolean;
   cache: Map<string, { version: string | null; at: number; value: ChatPage }>; reading: Map<string, Promise<ChatPage>>;
-  constructor(automation: DesktopRunner, { ttlMs = 10 * 60 * 1000, freshMs = 2 * 60 * 1000, awayMs = 20000, watchVisible = false, held = () => false }: { ttlMs?: number; freshMs?: number; awayMs?: number; watchVisible?: boolean; held?: (id: string) => boolean } = {}) { this.automation = automation; this.ttlMs = ttlMs; this.freshMs = freshMs; this.awayMs = awayMs; this.watchVisible = watchVisible; this.held = held; this.cache = new Map(); this.reading = new Map(); }
+  failed = new Map<string, { at: number; error: Error }>(); retryMs: number;
+  constructor(automation: DesktopRunner, { ttlMs = 10 * 60 * 1000, freshMs = 2 * 60 * 1000, awayMs = 20000, retryMs = 10000, watchVisible = false, held = () => false }: { ttlMs?: number; freshMs?: number; awayMs?: number; retryMs?: number; watchVisible?: boolean; held?: (id: string) => boolean } = {}) { this.automation = automation; this.ttlMs = ttlMs; this.freshMs = freshMs; this.awayMs = awayMs; this.retryMs = retryMs; this.watchVisible = watchVisible; this.held = held; this.cache = new Map(); this.reading = new Map(); }
   // { turns, total?, read?, running } or throws with the desktop's reason.
-  async read({ id, title, space, version = '' }: { id: string; title: string; space: string; version?: string }): Promise<ChatPage> {
+  // `titleNow`: the name the desktop's list has for the chat at this moment (a new chat is renamed
+  // after its first message, and a read may have waited its turn behind another command).
+  async read({ id, title, space, version = '', titleNow }: { id: string; title: string; space: string; version?: string; titleNow?: () => string }): Promise<ChatPage> {
     const key = `${space}\n${id}`, kept = this.cache.get(key);
     const reading = this.reading.get(key);
     if (reading) return reading;
@@ -43,8 +46,23 @@ class DesktopChatReader {
         const status = await this.automation.run(['chat-status', id], { settings: { space }, timeout: 10000 });
         if (!status.ok || !status.running) return this.cache.get(key)?.value ?? kept.value;
       }
-      const result = await this.automation.run(['read-chat', title, id], { settings: { space }, timeout: 120000 });
-      if (!result?.ok) throw Object.assign(new Error(result?.error || '桌面版没有读出这个聊天'), { code: result?.code });
+      // A read that just failed is not tried again at once: the page asks every few seconds while
+      // the chat is open, and each try moves the desktop.
+      const failed = this.failed.get(key);
+      if (failed && Date.now() - failed.at < this.retryMs) { if (kept) return kept.value; throw failed.error; }
+      let result = await this.automation.run(['read-chat', title, id], { settings: { space }, timeout: 120000 });
+      // Not in the sidebar under that name: asked for once more under the name it has by now.
+      const renamed = !result?.ok && result?.code === 'not_found' ? titleNow?.() || '' : '';
+      if (renamed && renamed !== title) result = await this.automation.run(['read-chat', renamed, id], { settings: { space }, timeout: 120000 });
+      if (!result?.ok) {
+        const error = Object.assign(new Error(result?.error || '桌面版没有读出这个聊天'), { code: result?.code });
+        this.failed.set(key, { at: Date.now(), error });
+        // What was read before is still the chat: shown until the desktop can be read again.
+        const newer = this.cache.get(key);
+        if (newer) return newer.value;
+        throw error;
+      }
+      this.failed.delete(key);
       const newer = this.cache.get(key);
       if (newer && newer !== kept) return newer.value;
       const value = pageOf(id, result);
@@ -55,7 +73,7 @@ class DesktopChatReader {
     return job;
   }
   // What a send just read from the page, kept as the chat's latest read.
-  remember(space: string, id: string, value: ChatPage): void { this.cache.set(`${space}\n${id}`, { version: null, at: Date.now(), value }); }
+  remember(space: string, id: string, value: ChatPage): void { this.cache.set(`${space}\n${id}`, { version: null, at: Date.now(), value }); this.failed.delete(`${space}\n${id}`); }
 }
 // The driver's read-chat / chat-send result: { messages: [{ role, text }], total, read, running, restore, title, url }.
 function pageOf(id: string, result: HelperResult): ChatPage {
@@ -87,9 +105,9 @@ function chatTurns(id: string, messages: unknown[]): UnifiedTurn[] {
 
 // A plugin's read() for such a chat: its sidebar entry with the messages the desktop shows, or,
 // when the desktop could not show them, the entry with the reason (and no messages).
-async function readPage(reader: DesktopChatReader, session: UnifiedSession, space: string, version: string, noSend: string): Promise<History> {
+async function readPage(reader: DesktopChatReader, session: UnifiedSession, space: string, version: string, noSend: string, titleNow?: () => string): Promise<History> {
   try {
-    const page = await reader.read({ id: session.id, title: session.title, space, version });
+    const page = await reader.read({ id: session.id, title: session.title, space, version, ...(titleNow ? { titleNow } : {}) });
     const { contentUnavailable: _, ...metadata } = session.metadata;
     // A long chat the page drew only in part says how much was read.
     const partial = page.total && page.read < page.total ? { readFromDesktop: { read: page.read, total: page.total } } : { readFromDesktop: true as const };
@@ -132,11 +150,15 @@ class ChatMode {
   automation: DesktopRunner; space: string; list: () => ModeChat[]; sidebar: () => ReadonlyArray<{ id: string; title: string }>; idFrom: RegExp | null; waitSeconds: number; pollMs: number; awayMs: number; awayMaxMs: number; followMs: number; label: string;
   reader: DesktopChatReader; made: Map<string, ModeChat>; starts: Map<string, EngineEvents>;
   following = new Map<string, (result: HelperResult) => void>();
+  // The chats the list had as each new chat in the making was asked for: until create() answers,
+  // a chat that is in none of them may be the one being made, with the helper still on its page.
+  making = new Set<Set<string>>();
+  beingMade(id: string): boolean { for (const known of this.making) if (!known.has(id)) return true; return false; }
   // How a message waits out a full-screen program in front (throughFullscreen).
   fullscreenRetryMs = FULLSCREEN_EVERY_MS; fullscreenHoldMs = FULLSCREEN_HOLD_MS;
   constructor({ automation, space, list, sidebar = () => [], idFrom = null, waitSeconds = 60, pollMs = 20000, awayMs = 15000, awayMaxMs = 60000, followMs = 30 * 60 * 1000, label = '桌面版', watchVisible = false }: ChatModeOptions) {
     this.automation = automation; this.space = space; this.list = list; this.sidebar = sidebar; this.idFrom = idFrom; this.waitSeconds = waitSeconds; this.pollMs = pollMs; this.awayMs = awayMs; this.awayMaxMs = awayMaxMs; this.followMs = followMs; this.label = label;
-    this.reader = new DesktopChatReader(automation, { watchVisible, awayMs, held: id => this.following.has(id) }); this.made = new Map(); this.starts = new Map();
+    this.reader = new DesktopChatReader(automation, { watchVisible, awayMs, held: id => this.following.has(id) || this.beingMade(id) }); this.made = new Map(); this.starts = new Map();
   }
   chats(): ModeChat[] {
     let listed: ModeChat[] = []; try { listed = this.list() || []; } catch {}
@@ -169,8 +191,33 @@ class ChatMode {
     const fail = (message: string, status = 409): never => { throw Object.assign(new Error(message), { status }); };
     const prompt = input.prompt || fail('请输入首条消息', 400);
     const refused = this.refuse(input); if (refused) fail(refused);
-    const known = new Set(this.chats().map(chat => chat.id));
-    const result = await throughFullscreen(() => this.automation.run(['chat-new', project?.name || '-', String(this.waitSeconds)], { input: prompt, settings: { space: this.space }, timeout: (this.waitSeconds + 90) * 1000 }), { everyMs: this.fullscreenRetryMs, maxMs: this.fullscreenHoldMs });
+    const known = new Set(this.chats().map(chat => chat.id)), began = Date.now();
+    this.making.add(known);
+    try { return await this.make(prompt, project, known, began); } finally { this.making.delete(known); }
+  }
+  private async make(prompt: string, project: { id: string; name: string } | null, known: Set<string>, began: number): Promise<CreateResult> {
+    const fail = (message: string, status = 409): never => { throw Object.assign(new Error(message), { status }); };
+    const job = throughFullscreen(() => this.automation.run(['chat-new', project?.name || '-', String(this.waitSeconds)], { input: prompt, settings: { space: this.space }, timeout: (this.waitSeconds + 90) * 1000 }), { everyMs: this.fullscreenRetryMs, maxMs: this.fullscreenHoldMs });
+    const firstLine = (prompt.split('\n')[0] ?? '').slice(0, 80);
+    // A desktop whose page has no address names the new chat only in its list, and the helper stays
+    // on the chat until the reply is done (`waitSeconds`). The list has the chat as soon as the
+    // desktop has made it, so the console is given it then, and the reply follows when the helper
+    // comes back: the person is not left looking at an empty page for as long as the reply takes.
+    if (!this.idFrom && this.waitSeconds > 0) {
+      let done = false; void job.then(() => { done = true; }, () => { done = true; });
+      while (!done) {
+        await Promise.race([job.catch(() => {}), new Promise(resolve => setTimeout(resolve, 700))]);
+        if (done) break;
+        const fresh = this.chats().filter(chat => !known.has(chat.id) && (Date.parse(chat.updatedAt) || 0) >= began - 5000);
+        const early = fresh.length === 1 ? fresh[0] : undefined;
+        if (!early) continue;
+        const chat: ModeChat = { ...early, title: early.title || firstLine, projectId: project?.id || '' };
+        this.reader.remember(this.space, chat.id, { turns: [], total: 0, read: 0, running: true, restore: '' });
+        this.starts.set(chat.id, this.follow(chat, prompt, job));
+        return { id: chat.id, started: true, title: chat.title };
+      }
+    }
+    const result = await job;
     if (!result?.ok) fail(result?.error || `没能在${this.label}里新建聊天`);
     // Its id: from the page's address, or the entry the desktop's list gained.
     let id = this.idFrom ? String(result.url || '').match(this.idFrom)?.[1] || '' : '';
@@ -181,10 +228,11 @@ class ChatMode {
       if (!id) await new Promise(resolve => setTimeout(resolve, 500));
     }
     if (!id) fail(`消息已在${this.label}里发出，但还没在它的列表里看到这个新聊天，请到桌面版里查看`, 504);
-    const chat: ModeChat = { id, title: title || (prompt.split('\n')[0] ?? '').slice(0, 80), updatedAt: new Date().toISOString(), projectId: project?.id || '' };
+    const chat: ModeChat = { id, title: title || firstLine, updatedAt: new Date().toISOString(), projectId: project?.id || '' };
     if (!known.has(id) && !this.get(id)) this.made.set(id, chat);
-    // Nothing of it read yet: opening it shows the run's own turn, and does not drive the desktop.
-    if (!list(result.messages).length) this.reader.remember(this.space, id, { turns: [], total: 0, read: 0, running: true, restore: '' });
+    // What the helper read is the chat's latest read from here on (nothing of it read yet: opening
+    // it shows the run's own turn): either way opening the chat does not drive the desktop again.
+    this.reader.remember(this.space, id, list(result.messages).length ? pageOf(id, result) : { turns: [], total: 0, read: 0, running: true, restore: '' });
     this.starts.set(id, this.follow(chat, prompt, result));
     return { id, started: true, title: chat.title };
   }
@@ -230,7 +278,8 @@ class ChatMode {
     return { pending: false };
   }
   // Reports the reply to `prompt` from what the page showed, and looks again while it is not done.
-  follow(chat: ModeChat, prompt: string | undefined, first: HelperResult, emitter = new EngineEvents()): EngineEvents {
+  // `first`: what the send answered, or the send itself while its helper is still on the chat.
+  follow(chat: ModeChat, prompt: string | undefined, first: HelperResult | Promise<HelperResult>, emitter = new EngineEvents()): EngineEvents {
     const until = Date.now() + this.followMs, sent = String(prompt || '').trim().slice(0, 200);
     let ended = false, timer: ReturnType<typeof setTimeout> | undefined;
     const cleanup = () => {
@@ -283,15 +332,24 @@ class ChatMode {
     };
     // Let the caller subscribe first.
     timer = setTimeout(() => {
-      if (publish(first)) complete();
-      else { say(waiting); again(); }
+      void Promise.resolve(first).then(result => {
+        if (ended) return;
+        // (A send whose helper did not come back with the page: the chat is in the desktop's list,
+        // so the message went out, and the reply is looked for like any other.)
+        if (result?.ok && publish(result)) complete();
+        else { say(waiting); again(); }
+      }, () => { if (!ended) { say(waiting); again(); } });
     }, 50);
     return emitter;
   }
   read(session: UnifiedSession, version: string, noSend = ''): Promise<History> {
     const shared = this.sharedTitle(session.id);
     if (shared) return Promise.resolve({ session: { ...session, sendBlocked: shared, metadata: { ...session.metadata, contentUnavailable: shared } }, turns: [] });
-    return readPage(this.reader, session, this.space, version, noSend);
+    // The desktop's list can show a new chat before create() has answered for it, and the person
+    // can open it then: the helper is still on that chat, so a read would wait behind it and then
+    // look for a name the chat no longer has. It is shown as the run's own turn until the send is back.
+    if (this.beingMade(session.id) && !this.reader.cache.has(`${this.space}\n${session.id}`)) this.reader.remember(this.space, session.id, { turns: [], total: 0, read: 0, running: true, restore: '' });
+    return readPage(this.reader, session, this.space, version, noSend, () => this.get(session.id)?.title || '');
   }
 }
 
