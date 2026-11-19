@@ -71,7 +71,7 @@ npm start
 
 Open <http://127.0.0.1:4100>. Every AI whose desktop app is installed shows up in the rail, and you can switch them on and off under **+**.
 
-Codex, Claude and Antigravity are connected so far. Open the desktop app and sign in before you use one.
+Codex, Claude and Antigravity are connected so far. Open the desktop app and sign in before you use one. Sessions started in a terminal with the `claude` CLI show up under **Claude Code**, which needs only the CLI, signed in.
 
 On macOS, sending to Codex and Claude needs the Accessibility permission. In System Settings → Privacy & Security → Accessibility, allow the terminal app you run `npm start` in, then start Frontdesk again. On Windows 11 there is no permission to grant; run Frontdesk with the same rights as the desktop apps (both as administrator, or neither), since Windows lets a program read a window of a higher-rights app but not act on it. For now, keep the desktop apps' interface in English.
 
@@ -111,6 +111,7 @@ Frontdesk is a small server on your computer. It reads the records each desktop 
 | Codex | Codex's local app-server | Codex's own message queue and its window-to-window channel (also for model changes), with macOS Accessibility / Windows UIA for new chats |
 | Claude | Claude Code's session transcripts | macOS Accessibility / Windows UIA |
 | Antigravity | Its local database and transcripts | Its local language server |
+| Claude Code (terminal sessions) | Claude Code's session transcripts (`~/.claude/projects`) | The `claude` CLI itself, one `claude -p --resume` run per turn (there is no desktop app to go through) |
 
 Whether a turn has finished is decided by the desktop app's own record. These channels can change when a desktop app updates, and we update with them.
 
