@@ -164,9 +164,9 @@ class ChatMode {
   // A desktop whose page has no address (Codex) names a new chat only in its list, and the list
   // gains it late: measured, ten seconds after the message went out, when the reply was written.
   // So the console gives such a chat an id of its own as soon as the message is out, and the chat
-  // goes by it from then on: once the list has the chat (found by the name the page gave it, among
-  // the entries that were not there before), its entry is shown under that id instead of twice.
-  standins = new Map<string, { known: Set<string>; began: number; title: string; real: string; done: boolean; chat: ModeChat }>();
+  // goes by it from then on: once the list has the chat (the entry that was not there before),
+  // its entry is shown under that id instead of twice.
+  standins = new Map<string, { known: Set<string>; began: number; title: string; real: string; chat: ModeChat }>();
   /** The desktop's own id for a chat, where the console knows it by one it gave. */
   realOf(id: string): string { return this.standins.get(id)?.real || id; }
   chats(): ModeChat[] {
@@ -175,9 +175,13 @@ class ChatMode {
     for (const [id, stand] of this.standins) {
       if (stand.real) continue;
       const fresh = listed.filter(chat => !stand.known.has(chat.id) && !taken.has(chat.id) && !this.standins.has(chat.id));
-      // By its name; or, once the helper is back and the name never matched, the one new entry.
-      const hit = (stand.title ? fresh.find(chat => chat.title === stand.title) : undefined)
-        ?? (stand.done && fresh.length === 1 && (Date.parse(fresh[0]?.updatedAt || '') || 0) >= stand.began - 5000 ? fresh[0] : undefined);
+      // The one entry the list has gained since: the helper holds the desktop while the chat is made,
+      // so a second one can only have come from another device at that moment, and then the name
+      // the page gave the chat tells them apart. (Not by the name alone: while the desktop is still
+      // naming a chat, the page and the list show the name half written, each its own way.)
+      const recent = fresh.filter(chat => (Date.parse(chat.updatedAt) || 0) >= stand.began - 5000);
+      const alike = (title: string) => !!title && !!stand.title && (title.startsWith(stand.title) || stand.title.startsWith(title));
+      const hit = recent.length === 1 ? recent[0] : recent.find(chat => alike(chat.title.trim()));
       if (hit) { stand.real = hit.id; taken.add(hit.id); }
     }
     const shownAs = new Map([...this.standins].filter(([, stand]) => stand.real).map(([id, stand]) => [stand.real, id]));
@@ -246,12 +250,12 @@ class ChatMode {
         if (done) break;
         if (first === 'sent') {
           const id = randomUUID(), chat: ModeChat = { id, title: firstLine, updatedAt: new Date().toISOString(), projectId: project?.id || '' };
-          const stand = { known, began, title: '', real: '', done: false, chat };
+          const stand = { known, began, title: '', real: '', chat };
           this.standins.set(id, stand);
-          // The name the page gives the chat is the one its list entry will have.
-          const named = (seen: HelperResult) => { const title = typeof seen['title'] === 'string' ? seen['title'].trim() : ''; if (title) { stand.title = title; chat.title = title; } };
+          // The name the page gives the chat (half written at first): only to tell its list entry from another.
+          const named = (seen: HelperResult) => { const title = typeof seen['title'] === 'string' ? seen['title'].trim() : ''; if (title) stand.title = title; };
           watching.push(named);
-          void job.then(result => { if (result?.ok) named(result); stand.done = true; }, () => { stand.done = true; });
+          void job.then(result => { if (result?.ok) named(result); }, () => {});
           keep(job);
           this.reader.remember(this.space, id, { turns: [], total: 0, read: 0, running: true, restore: '' });
           this.starts.set(id, this.follow(chat, prompt, job, undefined, { live: tell => { watching.push(tell); } }));
