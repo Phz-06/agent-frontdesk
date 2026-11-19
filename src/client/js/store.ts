@@ -118,7 +118,8 @@ export function createStore(): ConversationStore {
   store.register('approval.resolved', (turn, data) => { turn.approvals = turn.approvals.filter(item => item.id !== data.id); });
   store.register('run.warning', (turn, data) => { turn.warning = data.message; });
   store.register('run.connection_lost', (turn, data) => { turn.status = 'reconnecting'; turn.warning = data.message; });
-  const finish = (status: string) => (turn: PageTurn, data: { message?: string }) => {
+  const finish = (status: string) => (turn: PageTurn, data: { message?: string; nativeTurnId?: string }) => {
+    if (data.nativeTurnId) turn.nativeTurnId = data.nativeTurnId;
     if (terminalStatuses.has(turn.status)) return;
     turn.status = status; turn.statusEvidence = 'run_event'; turn.error = data.message || '';
     for (const message of turn.messages) message.status = 'completed';

@@ -618,9 +618,11 @@ export interface BridgeEventMap {
   'approval.resolved': { id: string };
   'run.warning': { message: string; retrying: boolean; awaitingEnd: boolean };
   'run.connection_lost': { message: string };
-  'run.completed': Record<string, never>;
-  'run.failed': { message?: string };
-  'run.interrupted': Record<string, never>;
+  // (`nativeTurnId`: the desktop's own turn this one was, where the engine named it: the page then
+  // shows the turn once, however the desktop's record of it is dated.)
+  'run.completed': { nativeTurnId?: string };
+  'run.failed': { message?: string; nativeTurnId?: string };
+  'run.interrupted': { nativeTurnId?: string };
   'session.snapshot': { session?: UnifiedSession | null; turns: PresentedTurn[]; [extra: string]: unknown };
   'queue.updated': { items: QueuedMessage[] };
   'assistant.notice': { id: string; preview: string; phase?: string; at?: TimeValue };

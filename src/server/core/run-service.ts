@@ -61,7 +61,10 @@ class RunService {
         // The next queued message goes out once this turn has ended.
         if (this.queues.get(key)?.length) setTimeout(() => this.drain(engineId, id), 400).unref?.();
       }
-      this.hub.publish(engineId, id, run.id, ...event);
+      // The turn's end says which of the desktop's turns it was: a record that carries no time
+      // (a chat read from the desktop's page) can only be matched to it by that.
+      if (isTerminal(event[0]) && run.nativeTurnId) this.hub.publish(engineId, id, run.id, event[0], { ...event[1], nativeTurnId: run.nativeTurnId });
+      else this.hub.publish(engineId, id, run.id, ...event);
     };
     record.emit = emit;
     emit('run.started', { turn: run });

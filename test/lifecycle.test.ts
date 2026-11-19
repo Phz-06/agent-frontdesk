@@ -89,6 +89,17 @@ test('a console turn the server no longer follows yields to the native history',
   const kept = at(store.turns, 0);
   assert.equal(kept.status, 'unknown'); assert.equal(at(kept.activities, 0).status, 'unknown'); assert.match(must(kept.warning), /桌面版的记录/);
 });
+test("a console turn that ended is shown once beside the desktop's record of it, even where that record carries no time", async () => {
+  const { createStore } = await import('../src/client/js/store.js');
+  const started = bridgeEvent('run.started', { turn: fake<RunTurn>({ id: 'local', userPrompt: 'task', timestamp: '2026-11-08T00:00:00Z', status: 'running', messages: [], activities: [], artifacts: [], approvals: [] }) }, { turnId: 'local' });
+  // A chat read from the desktop's page: its turns have no time, and an earlier one may say the same.
+  const earlier = fake<PresentedTurn>({ id: 'chat:0', userPrompt: 'task', timestamp: null, status: 'completed', messages: [{ id: 'm0', text: 'before' }] });
+  const native = fake<PresentedTurn>({ id: 'chat:2', userPrompt: 'task', timestamp: null, status: 'completed', messages: [{ id: 'm2', text: 'done' }] });
+  const store = createStore(); store.apply(started);
+  store.apply(bridgeEvent('run.completed', { nativeTurnId: 'chat:2' }, { turnId: 'local' }));
+  store.reconcile({ turns: [earlier, native], activeTurn: null });
+  assert.deepEqual(store.turns.map(turn => turn.id), ['chat:0', 'chat:2']);
+});
 test('native task completion notifications require explicit end evidence', async () => {
   const hub = new EventHub(); let end = false;
   const host = hostOf({ id: 'native', list: async () => [fake<UnifiedSession>({ id: 's', status: end ? 'idle' : 'busy', updatedAt: Date.now(), metadata: { latestTurn: end ? { id: 't', status: 'completed', completedAt: Date.now(), statusEvidence: 'task_complete' } : { id: 't', status: 'running', statusEvidence: 'task_started', completedAt: null } } })] });
