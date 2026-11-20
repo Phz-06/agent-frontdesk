@@ -58,6 +58,8 @@ export interface Capabilities {
   desktopInterrupt?: boolean;
   /** true: a message is sent by working the desktop app's window, which on this platform takes the keyboard focus for a moment (Windows: docs/windows.md). The page says so once, at the first send. */
   takesFocus?: boolean;
+  /** true: the engine keeps no settings of its own to fall back on (a CLI): the model and effort menus always show a concrete pick, start on the session's last one (metadata.desktop) or the last one sent from here, and what they show goes with every message. */
+  explicitSettings?: boolean;
   /** true: only a new chat (its first message) is sent that way; the others go by a channel that leaves the focus alone (Codex). The page says so once, at the first new chat. */
   newTakesFocus?: boolean;
 }
