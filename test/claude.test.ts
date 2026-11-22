@@ -252,7 +252,7 @@ test('Claude: a worktree chat keeps its project on the checkout it came from, an
 
 test('Claude: a chat started with no folder is in no project, as on the desktop', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-home-'));
-  const app = path.join(home, 'Library/Application Support/Claude'), index = path.join(app, 'claude-code-sessions/acct/org');
+  const app = macDesktopHome(home), index = path.join(app, 'claude-code-sessions/acct/org');
   const project = path.join(home, '.claude/projects/-work');
   fs.mkdirSync(index, { recursive: true }); fs.mkdirSync(project, { recursive: true });
   // Seen on the real app: the desktop makes the chat an empty folder of its own and lists it under "This computer".
@@ -261,7 +261,7 @@ test('Claude: a chat started with no folder is in no project, as on the desktop'
   write('loose', 'l-1', {}); write('kid', 'k-1', { spawnedFrom: { sessionId: 'local_loose' } }); write('filed', 'f-1', {}); write('work', 'w-1', { cwd: '/work', originCwd: '/work' });
   fs.writeFileSync(path.join(app, 'claude_desktop_config.json'), JSON.stringify({ preferences: { epitaxyPrefs: { 'dframe-group-scopes': { 'acct/org': { groups: [{ id: 'g1', name: '中控台' }], assignments: { 'code:local_filed': 'g1' } } } } } }));
   for (const id of ['l-1', 'k-1', 'f-1', 'w-1']) fs.writeFileSync(path.join(project, `${id}.jsonl`), [human('u', 'hi'), say('a', 'hello')].map(r => JSON.stringify(r)).join('\n'));
-  const bridge = new ClaudeBridge({ home, env: {}, bin: '/bin/claude-test', desktop: fake<ClaudeDesktop>({ check: async () => ({ available: true }) }) });
+  const bridge = new ClaudeBridge({ home, desktopHome: app, env: {}, bin: '/bin/claude-test', desktop: fake<ClaudeDesktop>({ check: async () => ({ available: true }) }) });
   const sessions = bridge.list(), by = (id: string) => must(sessions.find(s => s.id === id));
   assert.equal(by('l-1').metadata.group, null); assert.equal(by('l-1').cwd, scratch);
   assert.equal(by('k-1').metadata.group, null, 'a chat it started stays with it');

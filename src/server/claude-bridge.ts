@@ -549,7 +549,11 @@ class ClaudeBridge {
   // A chat started with no folder picked: the desktop gives it an empty folder of its own
   // (scratch-workspaces/<account>/<org>/scratch-<date>-<id>) and lists it under no project
   // ("This computer"). That folder is not a project here either.
-  isScratch(cwd: string): boolean { return !!cwd && !path.relative(path.join(this.appDir, 'scratch-workspaces'), cwd).startsWith('..') && cwd !== path.join(this.appDir, 'scratch-workspaces'); }
+  isScratch(cwd: string): boolean {
+    // (A folder on another Windows drive has no relative path: path.relative gives it back whole.)
+    const within = cwd ? path.relative(path.join(this.appDir, 'scratch-workspaces'), cwd) : '';
+    return !!within && !within.startsWith('..') && !path.isAbsolute(within);
+  }
   repoFor(cwd: string): string {
     if (!cwd) return '其他';
     const known = this.repos.get(cwd);
