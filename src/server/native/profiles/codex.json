@@ -139,13 +139,25 @@
         "index": 1
       }
     ],
-    "projectChooser": {
-      "roles": [
-        "AXPopUpButton",
-        "AXButton"
-      ],
-      "name": "Choose project"
+    "composerActionBar": {
+      "role": "AXGroup",
+      "class": "bg-background-composer-action-bar"
     },
+    "projectChooser": [
+      {
+        "role": "AXPopUpButton",
+        "class": "ComposerFooterDropdown-*",
+        "inside": "composerActionBar",
+        "index": -1
+      },
+      {
+        "roles": [
+          "AXPopUpButton",
+          "AXButton"
+        ],
+        "name": "Choose project"
+      }
+    ],
     "modeSwitch": [
       {
         "role": "AXPopUpButton",

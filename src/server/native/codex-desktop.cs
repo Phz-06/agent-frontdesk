@@ -93,8 +93,14 @@ namespace Frontdesk.Driver
             Func<string[], string[]> stop = error => { CloseMenus(ProjectMenu); HoldForeground(false); return error; };
             if (!OpenMenu(ProjectMenu, () => Find("projectList") != null)) return stop(new[] { "no_project_menu", "没能打开 Codex 桌面版的项目菜单" });
             Node list = Find("projectList");
-            Func<Node, string> text = row => Within(row).Where(n => n.ControlType == CT_Text && n.Name.Trim().Length > 0).Select(n => n.Name.Trim()).FirstOrDefault() ?? Label(row);
-            Node choice = list == null ? null : ChildrenOf(list).FirstOrDefault(row => text(row) == project);
+            // A row is named by the first text inside it: a project in a folder of another name is its
+            // name followed by the folder's as the row's own text.
+            Func<Node, string> text = row => Within(row).Where(n => n.Index != row.Index && n.ControlType == CT_Text && n.Name.Trim().Length > 0).Select(n => n.Name.Trim()).FirstOrDefault()
+                ?? (row.ControlType == CT_Text && row.Name.Trim().Length > 0 ? row.Name.Trim() : Label(row));
+            // The rows are the list's children, and those of a box the page puts some of them in
+            // (measured on the Mac, 26.1117: the projects are in one group, "New project" after it).
+            var rows = list == null ? new List<Node>() : ChildrenOf(list).SelectMany(row => row.ControlType == CT_Group ? ChildrenOf(row) : new[] { row }).ToList();
+            Node choice = rows.FirstOrDefault(row => text(row) == project);
             if (choice == null) return stop(new[] { "project_unavailable", "Codex 桌面版的项目菜单里没有「" + project + "」" });
             Press(choice);
             Until(2.4, () => ShownProject() == project);

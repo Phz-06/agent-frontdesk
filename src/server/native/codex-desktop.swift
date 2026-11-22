@@ -139,8 +139,13 @@ func pickProject(_ project: String) throws {
   }
   if shownProject() == project { return }
   guard open(projectMenu, opened: { find("projectList") != nil }) else { throw Stop(code: "no_project_menu", message: "没能打开 Codex 桌面版的项目菜单") }
-  let rows = find("projectList").flatMap { attr($0, "AXChildren") as? [AXUIElement] } ?? []
-  func text(_ row: AXUIElement) -> String { within(row) { role($0) == "AXStaticText" }.map(value).first { !$0.isEmpty } ?? label(row) }
+  func children(_ e: AXUIElement) -> [AXUIElement] { attr(e, "AXChildren") as? [AXUIElement] ?? [] }
+  // A row is named by the first text inside it: a project in a folder of another name is its name
+  // followed by the folder's ("agent-desktop unified-desktop-web" as the row's own text).
+  func text(_ row: AXUIElement) -> String { within(row) { role($0) == "AXStaticText" && !CFEqual($0, row) }.map(value).first { !$0.isEmpty } ?? (value(row).isEmpty ? label(row) : value(row)) }
+  // The rows are the list's children, and those of a box the page puts some of them in (measured
+  // on 26.1117: the projects are in one group, for the fade at its edge, with "New project" after it).
+  let rows = (find("projectList").map(children) ?? []).flatMap { role($0) == "AXGroup" ? children($0) : [$0] }
   guard let row = rows.first(where: { text($0) == project }) else { close(projectMenu); throw Stop(code: "project_unavailable", message: "Codex 桌面版的项目菜单里没有「\(project)」") }
   press(row)
   for _ in 0..<12 { wait(0.2); if shownProject() == project { break } }
