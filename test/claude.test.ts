@@ -250,6 +250,26 @@ test('Claude: a worktree chat keeps its project on the checkout it came from, an
   fs.rmSync(home, { recursive: true, force: true });
 });
 
+test('Claude: a chat started with no folder is in no project, as on the desktop', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-home-'));
+  const app = path.join(home, 'Library/Application Support/Claude'), index = path.join(app, 'claude-code-sessions/acct/org');
+  const project = path.join(home, '.claude/projects/-work');
+  fs.mkdirSync(index, { recursive: true }); fs.mkdirSync(project, { recursive: true });
+  // Seen on the real app: the desktop makes the chat an empty folder of its own and lists it under "This computer".
+  const scratch = path.join(app, 'scratch-workspaces/acct/org/scratch-2026-11-21-4c3a9e');
+  const write = (local: string, cli: string, extra: object) => fs.writeFileSync(path.join(index, `local_${local}.json`), JSON.stringify({ sessionId: `local_${local}`, cliSessionId: cli, cwd: scratch, originCwd: scratch, title: `T-${local}`, lastActivityAt: 1000, ...extra }));
+  write('loose', 'l-1', {}); write('kid', 'k-1', { spawnedFrom: { sessionId: 'local_loose' } }); write('filed', 'f-1', {}); write('work', 'w-1', { cwd: '/work', originCwd: '/work' });
+  fs.writeFileSync(path.join(app, 'claude_desktop_config.json'), JSON.stringify({ preferences: { epitaxyPrefs: { 'dframe-group-scopes': { 'acct/org': { groups: [{ id: 'g1', name: '中控台' }], assignments: { 'code:local_filed': 'g1' } } } } } }));
+  for (const id of ['l-1', 'k-1', 'f-1', 'w-1']) fs.writeFileSync(path.join(project, `${id}.jsonl`), [human('u', 'hi'), say('a', 'hello')].map(r => JSON.stringify(r)).join('\n'));
+  const bridge = new ClaudeBridge({ home, env: {}, bin: '/bin/claude-test', desktop: fake<ClaudeDesktop>({ check: async () => ({ available: true }) }) });
+  const sessions = bridge.list(), by = (id: string) => must(sessions.find(s => s.id === id));
+  assert.equal(by('l-1').metadata.group, null); assert.equal(by('l-1').cwd, scratch);
+  assert.equal(by('k-1').metadata.group, null, 'a chat it started stays with it');
+  assert.equal(by('f-1').metadata.group?.name, '中控台', 'a group made on the desktop still holds it');
+  assert.equal(by('w-1').metadata.group?.name, 'work');
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
 test('pictures a person attaches show with their message, without the app placeholder lines', () => {
   const records = [{ type: 'user', uuid: 'u-1', timestamp: '2026-11-09T00:00:00Z', message: { role: 'user', content: [
     { type: 'text', text: '看一下这个\n[Image: source: /tmp/a.png][Image: source: /tmp/b.png]' },

@@ -546,6 +546,10 @@ class ClaudeBridge {
       return groups;
     } catch { return new Map(); }
   }
+  // A chat started with no folder picked: the desktop gives it an empty folder of its own
+  // (scratch-workspaces/<account>/<org>/scratch-<date>-<id>) and lists it under no project
+  // ("This computer"). That folder is not a project here either.
+  isScratch(cwd: string): boolean { return !!cwd && !path.relative(path.join(this.appDir, 'scratch-workspaces'), cwd).startsWith('..') && cwd !== path.join(this.appDir, 'scratch-workspaces'); }
   repoFor(cwd: string): string {
     if (!cwd) return '其他';
     const known = this.repos.get(cwd);
@@ -664,6 +668,7 @@ class ClaudeBridge {
       // A project's folder is the checkout its chats were started from, not a worktree one of them
       // works in: that is what the desktop's Folder menu lists when a new chat starts there.
       const folder = root.originCwd || root.cwd;
+      const manual = root.localId !== undefined && groups.get(root.localId);
       sessions.push(new UnifiedSession({
         id, engine: 'claude', title: meta.title || parsed.title || latest.userPrompt.slice(0, 60),
         updatedAt: new Date(meta.lastActivityAt || parsed.mtimeMs).toISOString(), cwd: meta.cwd || parsed.cwd,
@@ -671,7 +676,7 @@ class ClaudeBridge {
         metadata: {
           recentMessages: recentMessages(parsed.turns), turnStartedAt: Date.parse(String(latest.timestamp)) || 0,
           latestTurn: latest.statusEvidence ? { id: latest.id, status: latest.status, completedAt: latest.completedAt, statusEvidence: latest.statusEvidence } : undefined,
-          group: { ...((root.localId !== undefined && groups.get(root.localId)) || { id: `repo:${this.repoFor(root.cwd)}`, name: this.repoFor(root.cwd) }), cwd: folder },
+          group: manual || !this.isScratch(folder) ? { ...(manual || { id: `repo:${this.repoFor(root.cwd)}`, name: this.repoFor(root.cwd) }), cwd: folder } : null,
           parentId: parent?.id || '', attention: !running && unseen(meta) && meta.status && meta.status !== 'completed' ? meta.status : '',
           desktop: { model: meta.model, effort: meta.effort, permissionMode: meta.permissionMode },
         },
