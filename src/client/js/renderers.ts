@@ -199,7 +199,7 @@ function setUpMarked() {
       const match = MATH_INLINE.exec(src); if (match) return { type: 'mathInline', raw: match[0], tex: match[1] }; return undefined;
     }, renderer: token => mathSlot(String(token['tex']), !!token['display']) },
   ];
-  marked.use({ extensions: [...math, writingExtension] });
+  marked.use({ extensions: [...math, writingExtension, ...directiveExtensions] });
 }
 /** The math a reply holds, as the page reads it: each formula's TeX and whether it is shown on a line of its own. */
 export function mathIn(text: string): Array<{ tex: string; display: boolean }> {
@@ -210,6 +210,83 @@ export function mathIn(text: string): Array<{ tex: string; display: boolean }> {
   });
   return found;
 }
+// Codex writes things the desktop draws itself as directives, never as text:
+//   :name{key="value"}     inside a sentence   (:codex-file-citation{path="/a/b.pdf" purpose="source"})
+//   ::name{key="value"}    a line of its own   (::git-commit{cwd="…"}, ::code-comment{title="…" …})
+//   :::name{…} … :::       a block             (:::writing, above)
+// The desktop reads every one of them with one parser and then draws each by name, so the page
+// does the same: one parser here, and a name the page does not know is still read as a directive
+// and left out, as the desktop leaves out the text of the ones it turns into cards and actions.
+// Raw directive text is never shown, whatever name a later desktop version adds.
+const DIRECTIVE = /^(:{1,3})([A-Za-z][\w-]*)(?:\[([^\]\n]*)\])?\{((?:[^"'{}\n]|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')*)\}/;
+const ATTRIBUTE = /([A-Za-z_][\w-]*)(?:\s*=\s*(?:"((?:\\.|[^"\\\n])*)"|'((?:\\.|[^'\\\n])*)'|([^\s"'{}]+)))?/g;
+const NAMED: Record<string, string> = { amp: '&', quot: '"', apos: "'", lt: '<', gt: '>' };
+const plainValue = (value: string) => value.replace(/\\(["'\\\]}:])/g, '$1').replace(/&(amp|quot|apos|lt|gt|#39);/g, (_, name: string) => NAMED[name] ?? "'");
+export interface Directive { raw: string; level: 1 | 2 | 3; name: string; label: string; attributes: Record<string, string> }
+/** The directive `src` opens with, or null. A key without a value reads as "true". */
+export function directiveAt(src: string): Directive | null {
+  const match = DIRECTIVE.exec(src);
+  if (!match) return null;
+  const [raw, marks = ':', name = '', label = '', inside = ''] = match;
+  if (inside.replace(ATTRIBUTE, '').trim()) return null;
+  const attributes: Record<string, string> = {};
+  for (const [, key, double, single, bare] of inside.matchAll(ATTRIBUTE)) if (key) attributes[key] = plainValue(double ?? single ?? bare ?? 'true');
+  return { raw, level: marks.length as 1 | 2 | 3, name, label, attributes };
+}
+// A line that is only directives (`::git-stage{…}`, or two of them side by side).
+function directiveLine(src: string): { raw: string; directives: Directive[] } | null {
+  const line = /^ {0,3}(::(?!:)[^\n]*?)[ \t]*(?:\n|$)/.exec(src);
+  if (!line) return null;
+  const directives: Directive[] = [];
+  let rest = line[1] ?? '';
+  while (rest) {
+    const directive = directiveAt(rest);
+    if (!directive || directive.level !== 2) return null;
+    directives.push(directive); rest = rest.slice(directive.raw.length).trimStart();
+  }
+  return { raw: line[0], directives };
+}
+// The old way Codex cited a file: 【src/a.ts†L10-L12】.
+const OLD_CITATION = /^【([^†】\n]+)†L(\d+)(?:-L(\d+))?】/;
+// A cited file as the desktop draws it: the file's icon and its name (or the label the citation
+// gives), opening the file. One that cites a web page is an ordinary link.
+function citation(attributes: Record<string, string>, label: string): string {
+  const path = (attributes['path'] || attributes['file'] || '').trim();
+  if (!path) return '';
+  const line = /^\d+$/.test(attributes['line_range_start'] || '') && attributes['line_range_start'] !== '1' ? `:${attributes['line_range_start']}` : '';
+  const name = label || attributes['label'] || attributes['title'] || path.replace(/\/+$/, '').split('/').pop() || path;
+  if (/^https?:\/\//i.test(path)) return `<a href="${escape(path)}">${escape(name)}</a>`;
+  return `<a href="#" data-cite-path="${escape(path.replace(/^sandbox:/, '') + line)}">${escape(name)}</a>`;
+}
+// A review comment (`::code-comment`) is drawn as what it says: its title, the place it is about, its text.
+function codeComment(attributes: Record<string, string>): string {
+  const file = attributes['file'] || '', start = attributes['start'] || '';
+  const place = file ? citation({ path: file, line_range_start: start }, `${file.split('/').pop() || file}${start ? `:${start}` : ''}`) : '';
+  return `<div class="md-comment"><p><strong>${escape(attributes['title'] || '')}</strong>${place ? ` ${place}` : ''}</p>${attributes['body'] ? `<p>${escape(attributes['body'])}</p>` : ''}</div>`;
+}
+const directiveExtensions: TokenizerAndRendererExtension[] = [
+  {
+    name: 'directiveLine', level: 'block',
+    start: src => src.match(/(^|\n) {0,3}::(?!:)[A-Za-z]/)?.index,
+    tokenizer(src) { const line = directiveLine(src); return line ? { type: 'directiveLine', raw: line.raw, directives: line.directives } : undefined; },
+    renderer: token => (token['directives'] as Directive[]).map(directive => directive.name === 'code-comment' ? codeComment(directive.attributes) : '').join(''),
+  },
+  {
+    name: 'directiveInline', level: 'inline',
+    // A colon that follows a letter, a digit or another colon is not the start of one (`a::b{}`, `key:value{}`).
+    start: src => { const at = src.search(/(?<![\w:]):[A-Za-z][\w-]*[[{]|【/); return at < 0 ? undefined : at; },
+    tokenizer(src) {
+      const old = OLD_CITATION.exec(src);
+      if (old) { const path = filePathOf(old[1], { link: true }); return path ? { type: 'directiveInline', raw: old[0], name: 'codex-file-citation', label: '', attributes: { path, line_range_start: old[2] ?? '' } } : undefined; }
+      const directive = directiveAt(src);
+      if (directive?.level === 1) return { type: 'directiveInline', raw: directive.raw, name: directive.name, label: directive.label, attributes: directive.attributes };
+      // One still being written, at the end of what has arrived so far, is not shown half-written.
+      const open = /^:[a-z]+-[\w-]*\{[^{}\n]*$/.exec(src);
+      return open ? { type: 'directiveInline', raw: open[0], name: '', label: '', attributes: {} } : undefined;
+    },
+    renderer: token => token['name'] === 'codex-file-citation' ? citation(token['attributes'] as Record<string, string>, String(token['label'] || '')) : escape(String(token['label'] || '')),
+  },
+];
 // Codex writes a draft meant to be used as is (an email, a message, a document) as a writing block:
 //   :::writing{variant="email" id="12345" title="…" subject="…" recipient="…"}
 //   …markdown…
@@ -330,7 +407,12 @@ function drawMarkdown(text: string): string {
     FORBID_TAGS: ['style', 'form', 'input', 'button', 'iframe', 'video', 'audio'], FORBID_ATTR: ['style'], ALLOWED_URI_REGEXP: URI_SAFE,
   });
   const template = document.createElement('template'); template.innerHTML = html;
+  for (const cited of template.content.querySelectorAll<HTMLElement>('a[data-cite-path]')) {
+    const link = fileLink(cited.dataset['citePath'] || '', cited.textContent);
+    link.classList.add('file-cite'); link.insertAdjacentHTML('afterbegin', icon('file-text')); cited.replaceWith(link);
+  }
   for (const link of template.content.querySelectorAll('a')) {
+    if (link.classList.contains('file-cite')) continue;
     const href = link.getAttribute('href') || '';
     if (!/^(https?:\/\/|mailto:|#|\/uploads\/)/i.test(href)) {
       const target = filePathOf(lineAnchor(decoded(href)), { link: true });

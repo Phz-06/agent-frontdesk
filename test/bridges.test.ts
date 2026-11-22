@@ -847,3 +847,17 @@ test('system notices injected into a trajectory are not how a turn ends', async 
   assert.deepEqual(await bridge.turnOutcome('c1', row), { status: 'completed' });
   bridge.dispose(); fs.rmSync(dir, { recursive: true });
 });
+
+test('a Codex directive is read by one parser, whatever its name', async () => {
+  Reflect.set(globalThis, 'window', Reflect.get(globalThis, 'window') || {});
+  const { directiveAt } = await import('../src/client/js/renderers.js');
+  const { previewText } = await import('../src/client/js/message-inbox.js');
+  assert.deepEqual(directiveAt(':codex-file-citation{path="/Users/me/My Docs/讲义 12.pdf" purpose="source"} and more'), { raw: ':codex-file-citation{path="/Users/me/My Docs/讲义 12.pdf" purpose="source"}', level: 1, name: 'codex-file-citation', label: '', attributes: { path: '/Users/me/My Docs/讲义 12.pdf', purpose: 'source' } });
+  // A quoted value may hold a brace, an escaped quote or an entity; a bare key reads as "true".
+  assert.deepEqual(directiveAt('::code-comment{title="[P2] Off-by-one" body="say \\"hi\\" to {x} &amp; y" file=\'/a/b.ts\' start=10 urgent}')?.attributes, { title: '[P2] Off-by-one', body: 'say "hi" to {x} & y', file: '/a/b.ts', start: '10', urgent: 'true' });
+  assert.equal(directiveAt('::some-directive-of-next-year{id="1"}')?.name, 'some-directive-of-next-year');
+  assert.equal(directiveAt(':::writing{variant="email"}')?.level, 3);
+  // Not directives: a ratio, C++ and an object literal.
+  for (const text of [':smile:', ':b{x = y + 1; z}', 'std::vector{1, 2}', ':name{"just a string"}']) assert.equal(directiveAt(text), null, text);
+  assert.equal(previewText('主要考下半学期。 :codex-file-citation{path="/Users/me/final.pdf" purpose="source"}\n\n::git-commit{cwd="/a"}\n见 【src/a.ts†L3-L9】 和 std::vector{1}'), '主要考下半学期。 见 和 std::vector{1}');
+});

@@ -1408,6 +1408,13 @@ html[data-avatars="off"] .turn-avatar { display: none; }
 /* A file named in a reply: a link that opens the read-only file viewer. */
 .file-link { color: var(--link, #2f6fd6); text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent); text-underline-offset: 2px; cursor: pointer; }
 .file-link code { color: inherit; }
+/* A file a Codex reply cites, as the desktop draws it: the file's icon and name in the text's own colour, dotted underneath. */
+.file-link.file-cite, html[data-ui="kit"] .kit-text a.file-cite { padding: 0 4px; white-space: nowrap; color: inherit; text-decoration-style: dotted; text-decoration-thickness: 1px; text-decoration-color: var(--kit-muted, var(--muted)); }
+.file-link.file-cite:hover, html[data-ui="kit"] .kit-text a.file-cite:hover { color: var(--link, #2f6fd6); text-decoration-color: currentColor; }
+.file-link.file-cite svg, .file-link.file-cite i { display: inline-block; width: 14px; height: 14px; margin-right: 3px; vertical-align: -2px; }
+.md-comment { border: 1px solid var(--kit-card-line, var(--border)); border-radius: 10px; margin: 0 0 12px; padding: 10px 14px; }
+.md-comment p { margin: 0; }
+.md-comment p + p { margin-top: 4px; }
 /* Over a hovered file link: its path, then "show in Finder" and "open in <AI>" (js/file-actions.ts). */
 .file-pop { position: fixed; z-index: 1000; display: flex; flex-direction: column; gap: 4px; max-width: min(360px, calc(100vw - 16px)); padding: 6px; background: var(--bubble); border: 1px solid var(--bubble-border); border-radius: 12px; box-shadow: 0 12px 32px rgb(0 0 0 / .22), 0 2px 6px rgb(0 0 0 / .08); animation: menu-in 120ms var(--ease); font-size: 12px; }
 .file-pop[data-side="above"] { animation-name: menu-in-above; }
