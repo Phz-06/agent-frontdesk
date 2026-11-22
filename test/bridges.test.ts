@@ -1,7 +1,8 @@
 import { test, type TestContext } from 'node:test';
 import { EngineEvents } from '../src/server/types.js';
 import { at, dig, fake, must, noRuns, required } from './support.js';
-import { errorField, get } from '../src/shared/guards.js';
+import { errorField, get, list } from '../src/shared/guards.js';
+import { linesOf } from '../src/server/services/jsonl-tail.js';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { CodexDesktopIpc, LiveThread } from '../src/server/codex-desktop.js';
 import type { DesktopAutomation } from '../src/server/core/desktop-automation.js';
@@ -47,6 +48,34 @@ function fakeCodex({ model = 'gpt-a', effort = 'medium' } = {}) {
   return { bridge, calls, thread, take };
 }
 const settle = (emitter: EngineEvents) => new Promise<EngineCompleted>((resolve, reject) => { emitter.once('completed', resolve); emitter.once('error', reject); });
+
+test('Codex: a thread kept in pages is read a page at a time, oldest turn first, and reads as any other', async () => {
+  const { bridge, calls, thread } = fakeCodex();
+  const turn = (id: string, said: string) => ({ id, status: 'completed', items: [{ id: `${id}u`, type: 'userMessage', content: [{ type: 'text', text: said }] }, { id: `${id}a`, type: 'agentMessage', text: `re: ${said}` }] });
+  const pages: Record<string, { data: unknown[]; nextCursor: string | null }> = { first: { data: [turn('t1', 'one'), turn('t2', 'two')], nextCursor: 'c2' }, c2: { data: [turn('t3', 'three')], nextCursor: null } };
+  bridge.send = async (method, params) => {
+    calls.push([method, params]);
+    // A build that refuses the whole history of a paginated thread.
+    if (method === 'thread/read') { if (get(params, 'includeTurns')) throw new Error('paginated threads do not support thread/read(includeTurns=true)'); return { result: { thread: { ...thread, historyMode: 'paginated', turns: [] } } }; }
+    if (method === 'thread/turns/list') return { result: pages[String(get(params, 'cursor') ?? 'first')] };
+    return { result: {} };
+  };
+  const history = await bridge.getThread('th');
+  assert.deepEqual(history.turns.map(each => [each.id, each.userPrompt, each.assistantReply]), [['t1', 'one', 're: one'], ['t2', 'two', 're: two'], ['t3', 'three', 're: three']]);
+  assert.deepEqual(calls.filter(([method]) => method === 'thread/turns/list').map(([, params]) => params), [
+    { threadId: 'th', cursor: null, sortDirection: 'asc', itemsView: 'full' }, { threadId: 'th', cursor: 'c2', sortDirection: 'asc', itemsView: 'full' }]);
+  assert.ok(calls.every(([method, params]) => method !== 'thread/read' || get(params, 'includeTurns') === false), 'the whole history is never asked of a paginated thread');
+  // What a send reads before queuing goes the same way.
+  assert.deepEqual(list(get(await bridge.readThread('th', true), 'turns')).map(each => get(each, 'id')), ['t1', 't2', 't3']);
+});
+
+test('lines of a stream are split at newlines only: a record holding U+2028 stays whole, across chunks and code points', async () => {
+  const record = JSON.stringify({ id: 1, text: `a\u2028b\u2029c 中` }), bytes = Buffer.from(`${record}\r\n{"id":2}\n{"id":3}`);
+  assert.ok(record.includes(String.fromCharCode(0x2028)), 'the separator is in the record unescaped');
+  const chunks = async function* () { for (let at = 0; at < bytes.length; at += 5) yield bytes.subarray(at, at + 5); };
+  const lines: string[] = []; for await (const line of linesOf(chunks())) lines.push(line);
+  assert.deepEqual(lines, [record, '{"id":2}', '{"id":3}']);
+});
 
 test('Codex: a message to a chat is queued for the desktop and the desktop is woken; the console never runs the turn', async () => {
   const { bridge, calls, take } = fakeCodex();

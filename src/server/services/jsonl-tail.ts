@@ -33,4 +33,21 @@ function tailJsonl(file: string, offset: number, onRecord: (record: unknown) => 
   const timer = setInterval(read, interval); timer.unref?.();
   return { read, close() { stopped = true; clearInterval(timer); } };
 }
-export { tailJsonl };
+// A stream's lines, split at "\n" only. (node:readline also splits at U+2028 and U+2029, which JSON
+// may hold unescaped inside a string: a record with one in it came apart and was lost. Measured on
+// Codex: a thread whose search results held U+2028 never answered a read.)
+async function* linesOf(stream: AsyncIterable<Buffer | string>): AsyncGenerator<string> {
+  const decoder = new StringDecoder('utf8');
+  let pending = '';
+  for await (const chunk of stream) {
+    let from = pending.length, index;
+    pending += typeof chunk === 'string' ? chunk : decoder.write(chunk);
+    while ((index = pending.indexOf('\n', from)) >= 0) {
+      yield pending.slice(0, index).replace(/\r$/, '');
+      pending = pending.slice(index + 1); from = 0;
+    }
+  }
+  pending += decoder.end();
+  if (pending) yield pending;
+}
+export { tailJsonl, linesOf };

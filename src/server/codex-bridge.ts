@@ -4,7 +4,6 @@
 // differently reads as nothing, as optional chaining did.
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import readline from 'node:readline';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -20,6 +19,7 @@ import type { CodexDesktopIpc, CodexInput, DesktopRequest, ThreadSettings } from
 import { DesktopAutomation, throughFullscreen, FULLSCREEN_EVERY_MS, FULLSCREEN_HOLD_MS, type DesktopFlags } from './core/desktop-automation.js';
 import { CodexProjects } from './services/codex-projects.js';
 import { openLink } from './services/desktop-places.js';
+import { linesOf } from './services/jsonl-tail.js';
 import { UnifiedSession, UnifiedTurn, UnifiedStep, EngineEvents } from './types.js';
 import { arr, bag, errorField, get, isBag, list, messageOf, num, parseJson, str, strOrNull, text } from '../shared/guards.js';
 import type {
@@ -109,7 +109,6 @@ class CodexBridge extends EventEmitter {
   starting: Promise<void> | null;
   stopping: boolean;
   proc: ChildProcessWithoutNullStreams | null;
-  rl: readline.Interface | null;
   reqId: number;
   pending: Map<number, Reply>;
   followMs: number;
@@ -130,7 +129,6 @@ class CodexBridge extends EventEmitter {
     this.starting = null;
     this.stopping = false;
     this.proc = null;
-    this.rl = null;
     this.reqId = 1;
     this.pending = new Map();
     this.followMs = 800; // how often a running turn's record is read (shortened in tests)
@@ -158,8 +156,7 @@ class CodexBridge extends EventEmitter {
       });
       proc.stderr.on('data', () => {});
       proc.stdin.on('error', err => this.failPending(err));
-      this.rl = readline.createInterface({ input: proc.stdout });
-      this.rl.on('line', line => { try { this.handleMessage(parseJson(line)); } catch {} });
+      void (async () => { try { for await (const line of linesOf(proc.stdout)) { try { this.handleMessage(parseJson(line)); } catch {} } } catch {} })();
       await this.send('initialize', {
         clientInfo: { name: 'agent-frontdesk', version: '2.0.0' },
         capabilities: { experimentalApi: true }
@@ -183,7 +180,7 @@ class CodexBridge extends EventEmitter {
     this.stopping = true;
     for (const emitter of this.starts.values()) emitter.emit('interrupt');
     this.failPending(new Error('Bridge stopped'));
-    this.rl?.close(); this.proc?.kill();
+    this.proc?.kill();
   }
 
   // One JSON-RPC request to the app-server; answers its whole response message.
@@ -316,17 +313,7 @@ class CodexBridge extends EventEmitter {
 
   async getThread(threadId: string): Promise<History> {
     await this.start();
-    let res: unknown;
-    try {
-      res = await this.send('thread/read', { threadId, includeTurns: true });
-    } catch (err) {
-      if (messageOf(err).includes('list_turns is not supported yet')) {
-        res = await this.send('thread/read', { threadId, includeTurns: false });
-      } else {
-        throw err;
-      }
-    }
-    const rawThread = get(res, 'result', 'thread') || {};
+    const rawThread = await this.readThread(threadId, true);
     const turns = list(get(rawThread, 'turns'));
     const lifecycle = await this.lifecycle.read(str(get(rawThread, 'path')));
 
@@ -558,9 +545,34 @@ class CodexBridge extends EventEmitter {
     if (!result.ok) throw Object.assign(new Error(result.error || '没能在 Codex 桌面版里打开这个会话'), { status: 409 });
     return result;
   }
+  // A thread's record, with its turns when asked. A thread Codex keeps in pages ("historyMode":
+  // "paginated") gives its turns through thread/turns/list: thread/read with turns is deprecated
+  // for those, and some builds refuse it ("paginated threads do not support
+  // thread/read(includeTurns=true)", reported on 0.146.1).
   async readThread(threadId: string, includeTurns = false): Promise<unknown> {
     await this.start();
-    return get(await this.send('thread/read', { threadId, includeTurns }), 'result', 'thread') || {};
+    const read = async (turns: boolean): Promise<unknown> => get(await this.send('thread/read', { threadId, includeTurns: turns }), 'result', 'thread') || {};
+    const thread = await read(false);
+    if (!includeTurns) return thread;
+    if (get(thread, 'historyMode') === 'paginated') return { ...bag(thread), turns: await this.pagedTurns(threadId) };
+    try { return await read(true); }
+    catch (err) {
+      // An older build that cannot list turns yet: the record without them.
+      if (messageOf(err).includes('list_turns is not supported yet')) return thread;
+      throw err;
+    }
+  }
+  // Every turn of a paginated thread, oldest first with all its items: the shape thread/read gave.
+  async pagedTurns(threadId: string): Promise<unknown[]> {
+    const turns: unknown[] = [], seen = new Set<string>();
+    for (let cursor: string | null = null; ;) {
+      const page: unknown = get(await this.send('thread/turns/list', { threadId, cursor, sortDirection: 'asc', itemsView: 'full' }), 'result');
+      turns.push(...list(get(page, 'data')));
+      cursor = str(get(page, 'nextCursor')) || null;
+      // (A cursor handed out twice would never end.)
+      if (!cursor || seen.has(cursor)) return turns;
+      seen.add(cursor);
+    }
   }
 
   async create(input: CreateInput = {}): Promise<CreateResult> {

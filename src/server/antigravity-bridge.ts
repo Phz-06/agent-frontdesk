@@ -12,7 +12,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import readline from 'node:readline';
 import { execFile, execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import EventEmitter from 'node:events';
@@ -20,7 +19,7 @@ import { UnifiedSession, UnifiedTurn, UnifiedStep, EngineEvents, assignPhases } 
 import { questionCard } from './core/presentation.js';
 import { withAttachments } from './core/attachments.js';
 import { loadConfig, winSpawnArgs } from './config.js';
-import { tailJsonl } from './services/jsonl-tail.js';
+import { linesOf, tailJsonl } from './services/jsonl-tail.js';
 import { readSqlite } from './services/sqlite-reader.js';
 import { DesktopAutomation, type HelperResult } from './core/desktop-automation.js';
 import { bag, errorField, get, isBag, list, messageOf, parseJson, str, text as asText, type Bag } from '../shared/guards.js';
@@ -447,7 +446,7 @@ class AntigravityBridge extends EventEmitter {
   }
 
   async parseTranscript(file: string): Promise<ParsedHistory> {
-    const lines = readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
+    const lines = linesOf(fs.createReadStream(file));
     const records = (async function* () { for await (const line of lines) { if (!line.trim()) continue; try { yield parseJson(line); } catch {} } })();
     return this.parseRecords(records, path.basename(path.resolve(file, '../../..')));
   }
