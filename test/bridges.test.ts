@@ -596,6 +596,15 @@ test('Antigravity starts a new chat in a folder through the language server, and
   assert.deepEqual(at(calls, 0).body, { source: 'CORTEX_TRAJECTORY_SOURCE_CASCADE_CLIENT', trajectoryType: 'CORTEX_TRAJECTORY_TYPE_CASCADE', workspaceUris: [__node_url.pathToFileURL(dir).href], config: { plannerConfig: { requestedModel: { model: 'MODEL_A' } } } });
   assert.deepEqual([at(calls, 1).method, dig(at(calls, 1).body, 'cascadeId'), dig(at(calls, 1).body, 'items', 0, 'text'), dig(at(calls, 1).body, 'cascadeConfig', 'plannerConfig', 'requestedModel', 'model')], ['SendUserCascadeMessage', 'new1', 'hello', 'MODEL_A']);
   await assert.rejects(bridge.newConversation({ prompt: 'x', cwd: path.join(dir, 'missing') }), /文件夹不存在/);
+  // Without a folder agentapi makes the chat. Its answer repeats the prompt, and an attached
+  // file's stored name in it is an id too: the chat's id is the one agentapi names, not the first seen.
+  const upload = '/uploads/12fa021a-d5d6-4f03-82a5-a3bcf8f224c6.png', made = '8df58e0a-0a53-45cc-b078-1896361480b0';
+  const sent: string[][] = [];
+  bridge.agentapi = async args => { sent.push(args); const data = { response: { newConversation: { prompt: at(args, -1), conversationId: made } } }; return { data, stdout: JSON.stringify(data, null, 2) }; };
+  assert.equal((await bridge.newConversation({ prompt: 'look', attachments: [{ filename: path.basename(upload), path: upload, originalname: 'shot.png', mimetype: 'image/png', url: upload }] })).id, made);
+  assert.match(at(at(sent, 0), -1), /12fa021a/);
+  bridge.agentapi = async args => ({ data: null, stdout: `sent ${at(args, -1)}` });
+  await assert.rejects(bridge.newConversation({ prompt: `see ${upload}` }), /未返回会话 ID/);
   // Pictures live in the conversation's own upload folder; anything else is only counted.
   const uploads = path.join(dir, 'brain', 'c9', '.user_uploaded'), logs = path.join(dir, 'brain', 'c9', '.system_generated', 'logs');
   fs.mkdirSync(uploads, { recursive: true }); fs.mkdirSync(logs, { recursive: true });

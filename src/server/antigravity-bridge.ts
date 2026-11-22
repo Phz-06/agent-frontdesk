@@ -874,7 +874,10 @@ class AntigravityBridge extends EventEmitter {
     if (model) args.push(`--model=${(await this.getModels()).find(item => item.id === model)?.['agentId'] || model}`);
     args.push(String(this.buildAgyPrompt(prompt, attachments)));
     const { data, stdout } = await this.agentapi(args);
-    const id = asText(get(data, 'response', 'conversationId') || get(data, 'conversationId') || stdout.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i)?.[0] || '');
+    // The id is the one agentapi names as the conversation's. Its answer also repeats the prompt,
+    // which can hold other ids (an attached file's stored name is one), so no id is guessed from the text.
+    const id = asText(get(data, 'response', 'newConversation', 'conversationId') || get(data, 'response', 'conversationId') || get(data, 'conversationId')
+      || stdout.match(/"conversationId"\s*:\s*"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"/i)?.[1] || '');
     if (!id) throw new Error('Antigravity 未返回会话 ID');
     this.ownIds.add(id);
     return { id, engine: 'antigravity', started: true };
