@@ -206,7 +206,17 @@ const newTargets: Record<string, { cwd: string }> = (() => { try { return JSON.p
 // now, even if it changed since this page last read it. `data-picked` marks a person's pick.
 type Menu = 'model' | 'effort' | 'permission';
 const picked = (id: Menu) => $(id).dataset.picked && !$(id).hidden ? $(id).value || undefined : undefined;
-const options = () => ({ model: picked('model'), reasoningEffort: picked('effort'), permissionMode: picked('permission') });
+const shown = (id: Menu) => !$(id).hidden && !$(id).disabled ? $(id).value || undefined : undefined;
+const options = () => capsOf().explicitSettings
+  ? { model: shown('model'), reasoningEffort: shown('effort'), permissionMode: picked('permission') }
+  : { model: picked('model'), reasoningEffort: picked('effort'), permissionMode: picked('permission') };
+// Engines with explicitSettings: the model and effort last sent from here, per engine, for a new chat's menus.
+const lastPicks: Record<string, { model?: string; effort?: string }> = (() => { try { return JSON.parse(storageFor('localStorage')?.getItem('desktop-bridge:last-picks') || '{}') || {}; } catch { return {}; } })();
+const rememberPicks = (engineId: string, picks: { model?: string | undefined; reasoningEffort?: string | undefined }) => {
+  if (!picks.model && !picks.reasoningEffort) return;
+  lastPicks[engineId] = { ...lastPicks[engineId], ...(picks.model ? { model: picks.model } : {}), ...(picks.reasoningEffort ? { effort: picks.reasoningEffort } : {}) };
+  try { storageFor('localStorage')?.setItem('desktop-bridge:last-picks', JSON.stringify(lastPicks)); } catch {}
+};
 // A change the page made itself carries `data-auto` on the menu while it is dispatched.
 const notePick = (id: Menu) => { if ($(id).dataset.auto) delete $(id).dataset.picked; else $(id).dataset.picked = '1'; };
 let restoredKey: string | null = null;
@@ -509,8 +519,14 @@ function renderHeader() {
 function renderModels() {
   const current = $('model').value;
   const models = state.models[state.engine] || [];
-  $('model').innerHTML = `<option value="">${t('桌面端默认模型')}</option>${models.map(model => `<option value="${escape(model.id)}" data-hint="${escape(model.hint || '')}" data-description="${escape(model.description || '')}">${escape(model.name)}</option>`).join('')}`;
+  const explicit = !!capsOf().explicitSettings && models.length > 0;
+  $('model').innerHTML = `${explicit ? '' : `<option value="">${t('桌面端默认模型')}</option>`}${models.map(model => `<option value="${escape(model.id)}" data-hint="${escape(model.hint || '')}" data-description="${escape(model.description || '')}">${escape(model.name)}</option>`).join('')}`;
   if (models.some(model => model.id === current)) $('model').value = current;
+  else if (explicit) {
+    // No pick yet: the session's own model, else the last one sent from here, else the first.
+    const wanted = [state.session?.metadata?.desktop?.model, lastPicks[state.engine]?.model].find(id => id && models.some(model => model.id === id));
+    $('model').value = wanted || models[0]?.id || '';
+  }
   $('model').disabled = !models.length || !capsOf().models;
   $('model').title = models.length ? t('选择下一次任务的模型') : t('使用引擎自身的默认模型');
   renderEffort(); renderPermissions();
@@ -531,7 +547,8 @@ function renderEffort() {
   $('effort').hidden = !capsOf().reasoning || !efforts.length;
   $('effort').dataset.mode = capsOf().reasoning === false ? 'off' : 'on';
   $('effort').innerHTML = efforts.map(effort => `<option value="${escape(effort)}">${escape(effort)}</option>`).join('');
-  $('effort').value = efforts.includes(previous) ? previous : model?.defaultReasoningEffort || efforts[0] || '';
+  const fallback = capsOf().explicitSettings ? [state.session?.metadata?.desktop?.effort, lastPicks[state.engine]?.effort].find(effort => effort && efforts.includes(effort)) : undefined;
+  $('effort').value = efforts.includes(previous) ? previous : fallback || model?.defaultReasoningEffort || efforts[0] || '';
 }
 function renderControls() {
   state.submitting = sending.has(currentKey()); state.uploading = uploads.get(currentKey()) || 0;
@@ -804,6 +821,8 @@ async function selectSession(id: string, { engineId = state.engine, route = true
     const history = await request<SessionHistoryResponse>(sessionUrl(engineId, id), { signal: controller.signal });
     if (view !== state.view) return;
     state.session = history.session;
+    // Menus that always show a concrete pick start on this session's own model once it is read (unless the person picked one).
+    if (capsOf().explicitSettings) { if (!$('model').dataset.picked) $('model').value = ''; if (!$('effort').dataset.picked) $('effort').value = ''; renderModels(); }
     // Messages read from the desktop's own window (a cloud chat mode): say a partial read plainly.
     const page = history.session?.metadata?.readFromDesktop;
     if (typeof page === 'object' && page.total) notify(t('长对话只从桌面版读到了 {read} / {total} 条消息', { read: page.read, total: page.total }));
@@ -841,10 +860,11 @@ async function sendMessage(event?: Event | null, queue = false): Promise<void> {
   const view = state.view, url = endpoint(), owner = currentKey();
   saveDraft();
   const originalInput = $('prompt').value;
-  const prompt = originalInput.trim(), attachments = [...state.attachments];
+  const prompt = originalInput.trim(), attachments = [...state.attachments], picks = options();
+  if (capsOf().explicitSettings) rememberPicks(state.engine, picks);
   sending.add(owner); renderControls(); notify('');
   try {
-    const result = await request<{ status?: string; reason?: string } | null>(`${url}/messages`, { method: 'POST', body: JSON.stringify({ prompt, attachments, cwd: state.session.cwd || undefined, mode, ...options() }) });
+    const result = await request<{ status?: string; reason?: string } | null>(`${url}/messages`, { method: 'POST', body: JSON.stringify({ prompt, attachments, cwd: state.session.cwd || undefined, mode, ...picks }) });
     if (mode === 'steer' && result?.status === 'queued' && view === state.view) notify(`${say(result.reason) || t('这一轮没法插进去，消息已排队')}${t('，可以在队列里再点“插入”')}`);
     drafts.clearSent(owner, originalInput, attachments);
     noteFocusOnce('send');
@@ -872,6 +892,7 @@ async function sendFirst() {
   }
   cancelDictation(); saveDraft();
   const originalInput = $('prompt').value, prompt = originalInput.trim(), attachments = [...state.attachments], chosen = options();
+  if (capsOf().explicitSettings) rememberPicks(provider.id, chosen);
   const direct = !!capsOf().createRequiresPrompt;
   if (direct && !prompt && !attachments.length) return notify(t('请先输入第一条消息'));
   // With desktop-side choices (newOptions) the desktop's page says where the chat goes.

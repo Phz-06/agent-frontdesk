@@ -71,7 +71,7 @@ npm start
 
 打开 <http://127.0.0.1:4100>。电脑上装了哪个桌面应用，哪个 AI 就会出现在左边一栏里，之后可以在栏里的 **+** 中开关。
 
-目前已经接好的有 Codex、Claude 和 Antigravity，用之前先把对应的桌面应用打开并登录。
+目前已经接好的有 Codex、Claude 和 Antigravity，用之前先把对应的桌面应用打开并登录。在终端里用 `claude` 命令行开的会话显示在 **Claude Code** 下，只需要命令行已登录。
 
 在 macOS 上，给 Codex 和 Claude 发消息需要辅助功能权限：在「系统设置 → 隐私与安全性 → 辅助功能」里允许你运行 `npm start` 的那个终端应用，然后重新启动 Frontdesk。Windows 11 没有要授予的权限，但 Frontdesk 要和桌面应用以相同的权限运行（都以管理员身份，或都不是）：Windows 允许程序读取更高权限应用的窗口，但不允许操作它。桌面应用的界面语言建议先用英文。
 
@@ -111,6 +111,7 @@ Frontdesk 是跑在你电脑上的一个小服务。它读各家桌面应用留�
 | Codex | Codex 本机的 app-server | Codex 自己的消息队列和窗口间通道（改模型也走它），新建聊天在 macOS 用辅助功能 / 在 Windows 用 UIA |
 | Claude | Claude Code 的会话记录 | macOS 辅助功能 / Windows UIA |
 | Antigravity | 它的本地数据库和会话记录 | 它本机的 language server |
+| Claude Code（终端会话） | Claude Code 的会话记录（`~/.claude/projects`） | `claude` 命令行本身，每一轮跑一次 `claude -p --resume`（没有桌面应用可走） |
 
 一轮对话有没有完成，以桌面应用自己的记录为准。桌面应用更新后这些通道可能会变，我们会跟着更新。
 

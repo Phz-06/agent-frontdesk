@@ -144,6 +144,9 @@ const EN: Record<string, string> = {
 // They are written in Chinese where they arise; say() puts them into the interface language
 // where they are shown. Exact texts first, then the ones that carry a name or a reason.
 const REPORTS: Record<string, string> = {
+  // Claude Code sessions started in a terminal (plugins/claude-code.plugin.ts).
+  '没有找到 claude 命令行，装好 Claude Code 后再试': "Couldn't find the claude command. Install Claude Code and try again", '没有找到 claude 命令行': "Couldn't find the claude command",
+  'Claude Code 未登录，在终端运行 claude 登录': 'Claude Code is not signed in. Run claude in a terminal to sign in', '（未知）': '(unknown)',
   // a chat written out for another agent to read (POST …/transcript)
   '没有找到这个聊天': "Couldn't find this chat", '这个聊天还没有内容可以引用': "There's nothing in this chat to refer to yet",
   // an agent's name and faces (settings)
@@ -338,6 +341,8 @@ const REPORT_PATTERNS: Array<[RegExp, (match: RegExpExecArray) => string]> = [
   [/^这一轮没法插进去（(.*)），消息已排队$/, match => `Couldn't reach the current turn (${english(match[1])}), so your message is queued`],
   [/^(.*)，消息还在队列里$/, match => `${english(match[1])}. Your message is still in the queue.`],
   [/^(.+) 没有可用的原生语音识别$/, match => `${match[1]} has no built-in speech-to-text`],
+  [/^这个会话的目录已不存在：(.*)$/, match => `This session's folder no longer exists: ${match[1]}`],
+  [/^claude 退出（代码 (.*)）$/, match => `claude exited (code ${match[1]})`],
   [/^暂时无法读取额度：(.*)$/, match => `Couldn't check usage right now: ${english(match[1])}`],
   [/^Antigravity 语音识别不可用 \((.*)\)$/, match => `Antigravity speech-to-text is unavailable (${match[1]})`],
   [/^(.+) 语音识别暂时不可用$/, match => `${match[1]} speech-to-text is unavailable right now`],
